@@ -220,7 +220,14 @@ final class CompletionCoordinator: NSObject {
                     snapshot.processID
                 ]?.scale ?? 1
             ),
-            foregroundColor: snapshot.foregroundColor
+            foregroundColor: snapshot.foregroundColor,
+            leadingWhitespaceCompensation: CGFloat(
+                LeadingWhitespaceCompensation.points(
+                    for: text,
+                    caretHeight: snapshot.caretRect.height,
+                    isWebBacked: snapshot.isWebBacked
+                )
+            )
         )
     }
 

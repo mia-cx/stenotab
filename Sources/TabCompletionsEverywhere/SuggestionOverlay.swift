@@ -31,7 +31,8 @@ final class SuggestionOverlay {
         _ suggestion: String,
         at caretRect: CGRect,
         typography: EditorTypography,
-        foregroundColor: CGColor?
+        foregroundColor: CGColor?,
+        leadingWhitespaceCompensation: CGFloat
     ) {
         guard !suggestion.isEmpty, caretRect != .zero else {
             hide()
@@ -45,13 +46,24 @@ final class SuggestionOverlay {
         let sourceColor = foregroundColor.flatMap(NSColor.init(cgColor:))
             ?? .labelColor
         solidCaretColor = sourceColor
-        let attributedSuggestion = NSAttributedString(
+        let attributedSuggestion = NSMutableAttributedString(
             string: suggestion,
             attributes: [
                 .font: font,
                 .foregroundColor: sourceColor.withAlphaComponent(0.34),
             ]
         )
+        let leadingSpaceLength = suggestion.prefix { $0 == " " }.utf16.count
+        if leadingWhitespaceCompensation > 0, leadingSpaceLength > 0 {
+            attributedSuggestion.addAttribute(
+                .kern,
+                value: leadingWhitespaceCompensation,
+                range: NSRange(
+                    location: leadingSpaceLength - 1,
+                    length: 1
+                )
+            )
+        }
         let layout = layout(
             for: attributedSuggestion,
             minimumHeight: caretRect.height
@@ -85,24 +97,24 @@ final class SuggestionOverlay {
             return
         }
 
-        let attributes = textView.attributedText.attributes(
-            at: 0,
-            effectiveRange: nil
-        )
-        let matched = NSAttributedString(
-            string: matchedText,
-            attributes: attributes
-        )
-        let remaining = NSAttributedString(
-            string: remainingSuggestion,
-            attributes: attributes
+        let previous = textView.attributedText
+        let matchedLength = (matchedText as NSString).length
+        guard matchedLength <= previous.length else {
+            hide()
+            return
+        }
+        let remaining = previous.attributedSubstring(
+            from: NSRange(
+                location: matchedLength,
+                length: previous.length - matchedLength
+            )
         )
         let layout = layout(
             for: remaining,
             minimumHeight: panel.frame.height
         )
         var frame = panel.frame
-        frame.origin.x += lineWidth(of: matched)
+        frame.origin.x += lineWidth(of: previous) - lineWidth(of: remaining)
         frame.size = layout.size
 
         textView.set(

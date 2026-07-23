@@ -10,6 +10,7 @@ struct EditorSnapshot {
     let typography: EditorTypography
     let foregroundColor: CGColor?
     let processID: pid_t
+    let isWebBacked: Bool
 }
 
 @MainActor
@@ -108,7 +109,8 @@ final class AccessibilityReader {
             caretRect: caretRect,
             typography: appearance.typography,
             foregroundColor: appearance.foregroundColor,
-            processID: pid
+            processID: pid,
+            isWebBacked: appIsWebBacked
         )
     }
 
