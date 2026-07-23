@@ -1,6 +1,14 @@
 import CoreGraphics
 
 public enum OverlayGeometry {
+    public static func shouldStabilizeCaret(
+        for suggestion: String
+    ) -> Bool {
+        suggestion.first?.unicodeScalars.allSatisfy(
+            \.properties.isWhitespace
+        ) == true
+    }
+
     public static func isUsableCaretRect(_ rect: CGRect) -> Bool {
         !rect.isNull
             && !rect.isInfinite

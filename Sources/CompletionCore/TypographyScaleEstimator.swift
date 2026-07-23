@@ -33,3 +33,39 @@ public enum TypographyScaleEstimator {
         return scale
     }
 }
+
+public struct TypographyScaleCalibration: Sendable, Equatable {
+    public private(set) var scale: Double = 1
+    public private(set) var referenceCaretHeight: Double?
+
+    public init() {}
+
+    @discardableResult
+    public mutating func consider(
+        candidateScale: Double,
+        caretHeight: Double,
+        sampleLength: Int
+    ) -> Bool {
+        guard
+            candidateScale.isFinite,
+            candidateScale > 0,
+            caretHeight > 0,
+            sampleLength >= 3
+        else {
+            return false
+        }
+
+        if let referenceCaretHeight {
+            let relativeHeightChange = abs(
+                caretHeight - referenceCaretHeight
+            ) / max(referenceCaretHeight, 1)
+            guard relativeHeightChange >= 0.12 else {
+                return false
+            }
+        }
+
+        scale = candidateScale
+        referenceCaretHeight = caretHeight
+        return true
+    }
+}

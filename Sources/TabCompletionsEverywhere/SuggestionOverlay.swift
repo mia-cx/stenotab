@@ -6,6 +6,7 @@ import CoreText
 final class SuggestionOverlay {
     private let panel: NSPanel
     private let textView: GhostTextView
+    private var solidCaretColor: NSColor?
 
     init() {
         panel = NSPanel(
@@ -43,6 +44,7 @@ final class SuggestionOverlay {
         } ?? .systemFont(ofSize: pointSize)
         let sourceColor = foregroundColor.flatMap(NSColor.init(cgColor:))
             ?? .labelColor
+        solidCaretColor = sourceColor
         let attributedSuggestion = NSAttributedString(
             string: suggestion,
             attributes: [
@@ -61,7 +63,10 @@ final class SuggestionOverlay {
 
         textView.set(
             attributedSuggestion,
-            baselineOffset: layout.baselineOffset
+            baselineOffset: layout.baselineOffset,
+            caretColor: OverlayGeometry.shouldStabilizeCaret(
+                for: suggestion
+            ) ? sourceColor : nil
         )
         panel.setFrame(
             NSRect(origin: origin, size: layout.size),
@@ -100,13 +105,20 @@ final class SuggestionOverlay {
         frame.origin.x += lineWidth(of: matched)
         frame.size = layout.size
 
-        textView.set(remaining, baselineOffset: layout.baselineOffset)
+        textView.set(
+            remaining,
+            baselineOffset: layout.baselineOffset,
+            caretColor: OverlayGeometry.shouldStabilizeCaret(
+                for: remainingSuggestion
+            ) ? solidCaretColor : nil
+        )
         panel.setFrame(frame, display: true)
         textView.frame = NSRect(origin: .zero, size: layout.size)
     }
 
     func hide() {
         panel.orderOut(nil)
+        solidCaretColor = nil
     }
 
     private func layout(
@@ -158,15 +170,18 @@ final class SuggestionOverlay {
 private final class GhostTextView: NSView {
     private(set) var attributedText = NSAttributedString()
     private var baselineOffset: CGFloat = 0
+    private var caretColor: NSColor?
 
     override var isOpaque: Bool { false }
 
     func set(
         _ attributedText: NSAttributedString,
-        baselineOffset: CGFloat
+        baselineOffset: CGFloat,
+        caretColor: NSColor?
     ) {
         self.attributedText = attributedText
         self.baselineOffset = baselineOffset
+        self.caretColor = caretColor
         needsDisplay = true
     }
 
@@ -179,6 +194,12 @@ private final class GhostTextView: NSView {
         }
 
         context.saveGState()
+        if let caretColor {
+            context.setFillColor(caretColor.cgColor)
+            context.fill(
+                CGRect(x: 0, y: 0, width: 1, height: bounds.height)
+            )
+        }
         context.textMatrix = .identity
         context.textPosition = CGPoint(x: 0, y: baselineOffset)
         CTLineDraw(CTLineCreateWithAttributedString(attributedText), context)

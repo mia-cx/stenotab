@@ -58,4 +58,46 @@ final class TypographyScaleEstimatorTests: XCTestCase {
             )
         )
     }
+
+    func testCalibrationLocksAtSameZoomAndReopensAfterZoomChange() {
+        var calibration = TypographyScaleCalibration()
+
+        XCTAssertTrue(
+            calibration.consider(
+                candidateScale: 1.1,
+                caretHeight: 39,
+                sampleLength: 5
+            )
+        )
+        XCTAssertFalse(
+            calibration.consider(
+                candidateScale: 1.04,
+                caretHeight: 40,
+                sampleLength: 4
+            )
+        )
+        XCTAssertEqual(calibration.scale, 1.1)
+
+        XCTAssertTrue(
+            calibration.consider(
+                candidateScale: 0.98,
+                caretHeight: 48,
+                sampleLength: 5
+            )
+        )
+        XCTAssertEqual(calibration.scale, 0.98)
+    }
+
+    func testCalibrationRejectsNoisyShortSamples() {
+        var calibration = TypographyScaleCalibration()
+
+        XCTAssertFalse(
+            calibration.consider(
+                candidateScale: 1.2,
+                caretHeight: 39,
+                sampleLength: 1
+            )
+        )
+        XCTAssertEqual(calibration.scale, 1)
+    }
 }

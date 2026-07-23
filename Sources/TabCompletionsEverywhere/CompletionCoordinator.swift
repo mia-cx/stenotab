@@ -19,7 +19,8 @@ final class CompletionCoordinator: NSObject {
     private var enabled = true
     private var permissionObserver: ((PermissionState) -> Void)?
     private var lastPermissionState: PermissionState?
-    private var typographyScaleByProcess: [pid_t: Double] = [:]
+    private var typographyCalibrationByProcess:
+        [pid_t: TypographyScaleCalibration] = [:]
 
     private lazy var requestPump = LatestRequestPump<CompletionRequest, CompletionResponse>(
         operation: { [provider] request in
@@ -215,7 +216,9 @@ final class CompletionCoordinator: NSObject {
             text,
             at: snapshot.caretRect,
             typography: snapshot.typography.scaled(
-                by: typographyScaleByProcess[snapshot.processID] ?? 1
+                by: typographyCalibrationByProcess[
+                    snapshot.processID
+                ]?.scale ?? 1
             ),
             foregroundColor: snapshot.foregroundColor
         )
@@ -264,7 +267,15 @@ final class CompletionCoordinator: NSObject {
         ) else {
             return
         }
-        typographyScaleByProcess[current.processID] = scale
+        var calibration = typographyCalibrationByProcess[
+            current.processID
+        ] ?? TypographyScaleCalibration()
+        calibration.consider(
+            candidateScale: scale,
+            caretHeight: current.caretRect.height,
+            sampleLength: inserted.count
+        )
+        typographyCalibrationByProcess[current.processID] = calibration
     }
 
     private func acceptSuggestion() -> Bool {

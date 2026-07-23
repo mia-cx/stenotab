@@ -3,6 +3,18 @@ import XCTest
 @testable import CompletionCore
 
 final class OverlayGeometryTests: XCTestCase {
+    func testStabilizesCaretOnlyForLeadingWhitespace() {
+        XCTAssertTrue(
+            OverlayGeometry.shouldStabilizeCaret(for: " you")
+        )
+        XCTAssertFalse(
+            OverlayGeometry.shouldStabilizeCaret(for: "you")
+        )
+        XCTAssertFalse(
+            OverlayGeometry.shouldStabilizeCaret(for: ",")
+        )
+    }
+
     func testRejectsChromiumZeroHeightSentinelBounds() {
         let sentinel = CGRect(x: 0, y: 1_440, width: 0, height: 0)
 
