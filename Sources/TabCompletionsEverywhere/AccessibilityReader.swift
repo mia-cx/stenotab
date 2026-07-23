@@ -1,10 +1,13 @@
 import AppKit
 import ApplicationServices
+import CompletionCore
 
 struct EditorSnapshot {
     let prefix: String
     let suffix: String
     let caretRect: CGRect
+    let typography: EditorTypography
+    let foregroundColor: CGColor?
     let processID: pid_t
 }
 
@@ -55,12 +58,92 @@ final class AccessibilityReader {
 
         var pid: pid_t = 0
         AXUIElementGetPid(focused, &pid)
+        let caretRect = caretBounds(of: focused, range: range) ?? .zero
+        let appearance = textAppearance(
+            of: focused,
+            caretLocation: range.location,
+            textLength: value.utf16.count,
+            caretHeight: caretRect.height
+        )
 
         return EditorSnapshot(
             prefix: prefix,
             suffix: suffix,
-            caretRect: caretBounds(of: focused, range: range) ?? .zero,
+            caretRect: caretRect,
+            typography: appearance.typography,
+            foregroundColor: appearance.foregroundColor,
             processID: pid
+        )
+    }
+
+    private func textAppearance(
+        of element: AXUIElement,
+        caretLocation: Int,
+        textLength: Int,
+        caretHeight: CGFloat
+    ) -> (typography: EditorTypography, foregroundColor: CGColor?) {
+        guard textLength > 0 else {
+            return (
+                EditorTypography(
+                    reportedFontName: nil,
+                    reportedPointSize: nil,
+                    caretHeight: caretHeight
+                ),
+                nil
+            )
+        }
+
+        var styleRange = CFRange(
+            location: min(max(caretLocation - 1, 0), textLength - 1),
+            length: 1
+        )
+        guard
+            let rangeValue = AXValueCreate(.cfRange, &styleRange),
+            let attributed = copyParameterizedAttribute(
+                kAXAttributedStringForRangeParameterizedAttribute,
+                parameter: rangeValue,
+                from: element
+            ) as? NSAttributedString,
+            attributed.length > 0
+        else {
+            return (
+                EditorTypography(
+                    reportedFontName: nil,
+                    reportedPointSize: nil,
+                    caretHeight: caretHeight
+                ),
+                nil
+            )
+        }
+
+        let attributes = attributed.attributes(at: 0, effectiveRange: nil)
+        let fontDictionary = attributes[.accessibilityFont] as? NSDictionary
+        let fontName = fontDictionary?[
+            NSAccessibility.FontAttributeKey.fontName
+        ] as? String
+        let fontSize = (
+            fontDictionary?[
+                NSAccessibility.FontAttributeKey.fontSize
+            ] as? NSNumber
+        )?.doubleValue
+        let foregroundValue = attributes[.accessibilityForegroundColor]
+        let foregroundColor: CGColor?
+        if
+            let foregroundValue,
+            CFGetTypeID(foregroundValue as CFTypeRef) == CGColor.typeID
+        {
+            foregroundColor = (foregroundValue as! CGColor)
+        } else {
+            foregroundColor = nil
+        }
+
+        return (
+            EditorTypography(
+                reportedFontName: fontName,
+                reportedPointSize: fontSize,
+                caretHeight: caretHeight
+            ),
+            foregroundColor
         )
     }
 
@@ -111,5 +194,22 @@ final class AccessibilityReader {
             return nil
         }
         return raw as? T
+    }
+
+    private func copyParameterizedAttribute(
+        _ name: String,
+        parameter: CFTypeRef,
+        from element: AXUIElement
+    ) -> CFTypeRef? {
+        var raw: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            name as CFString,
+            parameter,
+            &raw
+        ) == .success else {
+            return nil
+        }
+        return raw
     }
 }

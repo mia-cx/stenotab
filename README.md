@@ -2,7 +2,7 @@
 
 > Experimental macOS prototype. The name, UX, and model integrations are intentionally unfinished.
 
-Low-latency, system-wide text completion for macOS. Type in an editable field, see a suggestion beside the caret, and press Tab to accept it.
+Low-latency, system-wide text completion for macOS. Type in an editable field, see translucent inline ghost text at the caret, and press Tab to accept it. The renderer uses the editor's Accessibility-exposed font, size, and foreground colour when available.
 
 ## Try it
 

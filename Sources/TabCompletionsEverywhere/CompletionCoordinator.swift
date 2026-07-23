@@ -133,7 +133,12 @@ final class CompletionCoordinator: NSObject {
 
         lastSnapshot = snapshot
         suggestion = text
-        overlay.show(text, at: snapshot.caretRect)
+        overlay.show(
+            text,
+            at: snapshot.caretRect,
+            typography: snapshot.typography,
+            foregroundColor: snapshot.foregroundColor
+        )
     }
 
     private func acceptSuggestion() -> Bool {
