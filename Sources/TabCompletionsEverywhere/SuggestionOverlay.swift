@@ -67,9 +67,15 @@ final class SuggestionOverlay {
             for: attributedSuggestion,
             minimumHeight: caretRect.height
         )
-        let origin = CGPoint(
-            x: caretRect.maxX,
-            y: caretRect.minY - (layout.size.height - caretRect.height) / 2
+        let backingScaleFactor = screen(containing: caretRect)?
+            .backingScaleFactor ?? 2
+        let origin = OverlayGeometry.pixelAlignedOrigin(
+            CGPoint(
+                x: caretRect.maxX,
+                y: caretRect.minY
+                    - (layout.size.height - caretRect.height) / 2
+            ),
+            backingScaleFactor: backingScaleFactor
         )
 
         panel.setFrame(
@@ -79,7 +85,8 @@ final class SuggestionOverlay {
         textView.frame = NSRect(origin: .zero, size: layout.size)
         textView.set(
             attributedSuggestion,
-            baselineOffset: layout.baselineOffset
+            baselineOffset: layout.baselineOffset,
+            backingScaleFactor: backingScaleFactor
         )
         panel.displayIfNeeded()
         panel.orderFrontRegardless()
@@ -112,13 +119,19 @@ final class SuggestionOverlay {
         )
         var frame = panel.frame
         frame.origin.x += lineWidth(of: previous) - lineWidth(of: remaining)
+        let backingScaleFactor = panel.backingScaleFactor
+        frame.origin = OverlayGeometry.pixelAlignedOrigin(
+            frame.origin,
+            backingScaleFactor: backingScaleFactor
+        )
         frame.size = layout.size
 
         panel.setFrame(frame, display: false)
         textView.frame = NSRect(origin: .zero, size: layout.size)
         textView.set(
             remaining,
-            baselineOffset: layout.baselineOffset
+            baselineOffset: layout.baselineOffset,
+            backingScaleFactor: backingScaleFactor
         )
         panel.displayIfNeeded()
     }
@@ -171,35 +184,78 @@ final class SuggestionOverlay {
             )
         )
     }
+
+    private func screen(containing rect: CGRect) -> NSScreen? {
+        let midpoint = CGPoint(x: rect.midX, y: rect.midY)
+        return NSScreen.screens.first { $0.frame.contains(midpoint) }
+            ?? NSScreen.main
+    }
 }
 
 private final class GhostTextView: NSView {
     private(set) var attributedText = NSAttributedString()
-    private var baselineOffset: CGFloat = 0
+    private var renderedImage: CGImage?
 
     override var isOpaque: Bool { false }
 
     func set(
         _ attributedText: NSAttributedString,
-        baselineOffset: CGFloat
+        baselineOffset: CGFloat,
+        backingScaleFactor: CGFloat
     ) {
         self.attributedText = attributedText
-        self.baselineOffset = baselineOffset
+        renderedImage = rasterize(
+            attributedText,
+            baselineOffset: baselineOffset,
+            backingScaleFactor: backingScaleFactor
+        )
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
         guard
-            attributedText.length > 0,
+            let renderedImage,
             let context = NSGraphicsContext.current?.cgContext
         else {
             return
         }
 
         context.saveGState()
+        context.interpolationQuality = .none
+        context.draw(renderedImage, in: bounds)
+        context.restoreGState()
+    }
+
+    private func rasterize(
+        _ text: NSAttributedString,
+        baselineOffset: CGFloat,
+        backingScaleFactor: CGFloat
+    ) -> CGImage? {
+        let scale = max(backingScaleFactor, 1)
+        let pixelWidth = max(Int(ceil(bounds.width * scale)), 1)
+        let pixelHeight = max(Int(ceil(bounds.height * scale)), 1)
+        guard
+            let context = CGContext(
+                data: nil,
+                width: pixelWidth,
+                height: pixelHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        else {
+            return nil
+        }
+
+        context.scaleBy(x: scale, y: scale)
+        context.setAllowsAntialiasing(true)
+        context.setShouldAntialias(true)
+        context.setAllowsFontSmoothing(true)
+        context.setShouldSmoothFonts(true)
         context.textMatrix = .identity
         context.textPosition = CGPoint(x: 0, y: baselineOffset)
-        CTLineDraw(CTLineCreateWithAttributedString(attributedText), context)
-        context.restoreGState()
+        CTLineDraw(CTLineCreateWithAttributedString(text), context)
+        return context.makeImage()
     }
 }

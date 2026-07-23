@@ -1,6 +1,21 @@
 import CoreGraphics
 
 public enum OverlayGeometry {
+    public static func pixelAlignedOrigin(
+        _ origin: CGPoint,
+        backingScaleFactor: CGFloat
+    ) -> CGPoint {
+        guard backingScaleFactor.isFinite, backingScaleFactor > 0 else {
+            return origin
+        }
+        return CGPoint(
+            x: (origin.x * backingScaleFactor).rounded()
+                / backingScaleFactor,
+            y: (origin.y * backingScaleFactor).rounded()
+                / backingScaleFactor
+        )
+    }
+
     public static func isUsableCaretRect(_ rect: CGRect) -> Bool {
         !rect.isNull
             && !rect.isInfinite
