@@ -32,6 +32,39 @@ final class EditorTypographyTests: XCTestCase {
         )
     }
 
+    func testWebEditorReconcilesUnscaledReportedSizeWithZoomedCaret() {
+        let typography = EditorTypography(
+            reportedFontName: nil,
+            reportedPointSize: 16,
+            caretHeight: 39,
+            reconcileReportedSizeWithCaret: true
+        )
+
+        XCTAssertEqual(typography.pointSize, 25.35, accuracy: 0.001)
+    }
+
+    func testWebEditorKeepsReportedSizeAtNormalCaretRatio() {
+        let typography = EditorTypography(
+            reportedFontName: nil,
+            reportedPointSize: 16,
+            caretHeight: 27,
+            reconcileReportedSizeWithCaret: true
+        )
+
+        XCTAssertEqual(typography.pointSize, 16)
+    }
+
+    func testWebEditorUsesConservativeCaretFallbackWhenSizeIsMissing() {
+        let typography = EditorTypography(
+            reportedFontName: nil,
+            reportedPointSize: nil,
+            caretHeight: 39,
+            reconcileReportedSizeWithCaret: true
+        )
+
+        XCTAssertEqual(typography.pointSize, 25.35, accuracy: 0.001)
+    }
+
     func testUnavailableCaretGeometryUsesSystemTextSize() {
         XCTAssertEqual(
             EditorTypography(

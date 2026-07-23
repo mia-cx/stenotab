@@ -98,7 +98,8 @@ final class AccessibilityReader {
             of: focused,
             caretLocation: range.location,
             textLength: value.utf16.count,
-            caretHeight: caretRect.height
+            caretHeight: caretRect.height,
+            reconcileReportedSizeWithCaret: appIsWebBacked
         )
 
         return EditorSnapshot(
@@ -222,10 +223,15 @@ final class AccessibilityReader {
         of element: AXUIElement,
         caretLocation: Int,
         textLength: Int,
-        caretHeight: CGFloat
+        caretHeight: CGFloat,
+        reconcileReportedSizeWithCaret: Bool
     ) -> (typography: EditorTypography, foregroundColor: CGColor?) {
         guard textLength > 0 else {
-            return fallbackAppearance(caretHeight: caretHeight)
+            return fallbackAppearance(
+                caretHeight: caretHeight,
+                reconcileReportedSizeWithCaret:
+                    reconcileReportedSizeWithCaret
+            )
         }
 
         var styleRange = CFRange(
@@ -241,7 +247,11 @@ final class AccessibilityReader {
             ) as? NSAttributedString,
             attributed.length > 0
         else {
-            return fallbackAppearance(caretHeight: caretHeight)
+            return fallbackAppearance(
+                caretHeight: caretHeight,
+                reconcileReportedSizeWithCaret:
+                    reconcileReportedSizeWithCaret
+            )
         }
 
         let attributes = attributed.attributes(at: 0, effectiveRange: nil)
@@ -269,20 +279,25 @@ final class AccessibilityReader {
             EditorTypography(
                 reportedFontName: fontName,
                 reportedPointSize: fontSize,
-                caretHeight: caretHeight
+                caretHeight: caretHeight,
+                reconcileReportedSizeWithCaret:
+                    reconcileReportedSizeWithCaret
             ),
             foregroundColor
         )
     }
 
     private func fallbackAppearance(
-        caretHeight: CGFloat
+        caretHeight: CGFloat,
+        reconcileReportedSizeWithCaret: Bool
     ) -> (typography: EditorTypography, foregroundColor: CGColor?) {
         (
             EditorTypography(
                 reportedFontName: nil,
                 reportedPointSize: nil,
-                caretHeight: caretHeight
+                caretHeight: caretHeight,
+                reconcileReportedSizeWithCaret:
+                    reconcileReportedSizeWithCaret
             ),
             nil
         )
