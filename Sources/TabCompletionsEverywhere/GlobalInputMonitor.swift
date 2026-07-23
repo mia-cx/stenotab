@@ -13,6 +13,10 @@ final class GlobalInputMonitor {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
+    var isRunning: Bool {
+        eventTap != nil
+    }
+
     init(onMutation: @escaping MutationHandler, onTab: @escaping TabHandler) {
         self.onMutation = onMutation
         self.onTab = onTab
@@ -20,6 +24,11 @@ final class GlobalInputMonitor {
 
     @MainActor
     func start() -> Bool {
+        if let eventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: true)
+            return true
+        }
+
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue) |
             CGEventMask(1 << CGEventType.leftMouseDown.rawValue) |
             CGEventMask(1 << CGEventType.rightMouseDown.rawValue)
@@ -90,6 +99,13 @@ final class GlobalInputMonitor {
         let monitor = Unmanaged<GlobalInputMonitor>
             .fromOpaque(userInfo)
             .takeUnretainedValue()
+
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let tap = monitor.eventTap {
+                CGEvent.tapEnable(tap: tap, enable: true)
+            }
+            return Unmanaged.passUnretained(event)
+        }
 
         if type == .leftMouseDown || type == .rightMouseDown {
             monitor.onMutation(.invalidate)

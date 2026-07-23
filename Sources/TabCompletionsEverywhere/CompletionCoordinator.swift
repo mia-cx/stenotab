@@ -53,6 +53,9 @@ final class CompletionCoordinator: NSObject {
             repeats: true
         ) { [weak self] _ in
             Task { @MainActor in
+                if self?.inputMonitor?.isRunning == false {
+                    _ = self?.inputMonitor?.start()
+                }
                 self?.reconcile()
             }
         }
