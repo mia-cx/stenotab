@@ -19,6 +19,7 @@ final class CompletionCoordinator: NSObject {
     private var enabled = true
     private var permissionObserver: ((PermissionState) -> Void)?
     private var lastPermissionState: PermissionState?
+    private var typographyScaleByProcess: [pid_t: Double] = [:]
 
     private lazy var requestPump = LatestRequestPump<CompletionRequest, CompletionResponse>(
         operation: { [provider] request in
@@ -169,7 +170,9 @@ final class CompletionCoordinator: NSObject {
             return
         }
 
-        let focusChanged = lastSnapshot?.processID != snapshot.processID
+        let previousSnapshot = lastSnapshot
+        let focusChanged = previousSnapshot?.processID != snapshot.processID
+        updateTypographyScale(from: previousSnapshot, to: snapshot)
         lastSnapshot = snapshot
 
         if focusChanged || buffer.needsReconciliation ||
@@ -204,15 +207,64 @@ final class CompletionCoordinator: NSObject {
             return
         }
 
+        updateTypographyScale(from: lastSnapshot, to: snapshot)
         lastSnapshot = snapshot
         suggestion = text
         suggestionConsumption = SuggestionConsumption(suggestion: text)
         overlay.show(
             text,
             at: snapshot.caretRect,
-            typography: snapshot.typography,
+            typography: snapshot.typography.scaled(
+                by: typographyScaleByProcess[snapshot.processID] ?? 1
+            ),
             foregroundColor: snapshot.foregroundColor
         )
+    }
+
+    private func updateTypographyScale(
+        from previous: EditorSnapshot?,
+        to current: EditorSnapshot
+    ) {
+        guard
+            let previous,
+            previous.processID == current.processID,
+            current.prefix.hasPrefix(previous.prefix)
+        else {
+            return
+        }
+
+        let inserted = String(
+            current.prefix.dropFirst(previous.prefix.count)
+        )
+        guard !inserted.isEmpty else { return }
+
+        let pointSize = CGFloat(current.typography.pointSize)
+        let font = current.typography.fontName.flatMap {
+            NSFont(name: $0, size: pointSize)
+        } ?? .systemFont(ofSize: pointSize)
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        let context = String(previous.prefix.suffix(1))
+        let contextWidth = (context as NSString).size(
+            withAttributes: attributes
+        ).width
+        let combinedWidth = ((context + inserted) as NSString).size(
+            withAttributes: attributes
+        ).width
+        let expectedAdvance = combinedWidth - contextWidth
+
+        guard let scale = TypographyScaleEstimator.estimate(
+            previousPrefix: previous.prefix,
+            currentPrefix: current.prefix,
+            previousCaretX: previous.caretRect.minX,
+            currentCaretX: current.caretRect.minX,
+            previousCaretY: previous.caretRect.minY,
+            currentCaretY: current.caretRect.minY,
+            lineHeight: current.caretRect.height,
+            expectedAdvance: expectedAdvance
+        ) else {
+            return
+        }
+        typographyScaleByProcess[current.processID] = scale
     }
 
     private func acceptSuggestion() -> Bool {

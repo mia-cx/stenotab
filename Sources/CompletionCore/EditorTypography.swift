@@ -30,4 +30,20 @@ public struct EditorTypography: Sendable, Equatable {
             pointSize = min(max(inferredSize, 10), 72)
         }
     }
+
+    public func scaled(by factor: Double) -> Self {
+        guard factor.isFinite, factor > 0 else { return self }
+        return Self(
+            resolvedFontName: fontName,
+            resolvedPointSize: min(max(pointSize * factor, 10), 72)
+        )
+    }
+
+    private init(
+        resolvedFontName: String?,
+        resolvedPointSize: Double
+    ) {
+        fontName = resolvedFontName
+        pointSize = resolvedPointSize
+    }
 }
