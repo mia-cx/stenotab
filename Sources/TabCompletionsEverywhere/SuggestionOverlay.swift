@@ -6,7 +6,6 @@ import CoreText
 final class SuggestionOverlay {
     private let panel: NSPanel
     private let textView: GhostTextView
-    private var solidCaretColor: NSColor?
 
     init() {
         panel = NSPanel(
@@ -45,7 +44,6 @@ final class SuggestionOverlay {
         } ?? .systemFont(ofSize: pointSize)
         let sourceColor = foregroundColor.flatMap(NSColor.init(cgColor:))
             ?? .labelColor
-        solidCaretColor = sourceColor
         let attributedSuggestion = NSMutableAttributedString(
             string: suggestion,
             attributes: [
@@ -54,7 +52,8 @@ final class SuggestionOverlay {
             ]
         )
         let leadingSpaceLength = suggestion.prefix { $0 == " " }.utf16.count
-        if leadingWhitespaceCompensation > 0, leadingSpaceLength > 0 {
+        if abs(leadingWhitespaceCompensation) > 0.001,
+           leadingSpaceLength > 0 {
             attributedSuggestion.addAttribute(
                 .kern,
                 value: leadingWhitespaceCompensation,
@@ -75,10 +74,7 @@ final class SuggestionOverlay {
 
         textView.set(
             attributedSuggestion,
-            baselineOffset: layout.baselineOffset,
-            caretColor: OverlayGeometry.shouldStabilizeCaret(
-                for: suggestion
-            ) ? sourceColor : nil
+            baselineOffset: layout.baselineOffset
         )
         panel.setFrame(
             NSRect(origin: origin, size: layout.size),
@@ -119,10 +115,7 @@ final class SuggestionOverlay {
 
         textView.set(
             remaining,
-            baselineOffset: layout.baselineOffset,
-            caretColor: OverlayGeometry.shouldStabilizeCaret(
-                for: remainingSuggestion
-            ) ? solidCaretColor : nil
+            baselineOffset: layout.baselineOffset
         )
         panel.setFrame(frame, display: true)
         textView.frame = NSRect(origin: .zero, size: layout.size)
@@ -130,7 +123,6 @@ final class SuggestionOverlay {
 
     func hide() {
         panel.orderOut(nil)
-        solidCaretColor = nil
     }
 
     private func layout(
@@ -182,18 +174,15 @@ final class SuggestionOverlay {
 private final class GhostTextView: NSView {
     private(set) var attributedText = NSAttributedString()
     private var baselineOffset: CGFloat = 0
-    private var caretColor: NSColor?
 
     override var isOpaque: Bool { false }
 
     func set(
         _ attributedText: NSAttributedString,
-        baselineOffset: CGFloat,
-        caretColor: NSColor?
+        baselineOffset: CGFloat
     ) {
         self.attributedText = attributedText
         self.baselineOffset = baselineOffset
-        self.caretColor = caretColor
         needsDisplay = true
     }
 
@@ -206,12 +195,6 @@ private final class GhostTextView: NSView {
         }
 
         context.saveGState()
-        if let caretColor {
-            context.setFillColor(caretColor.cgColor)
-            context.fill(
-                CGRect(x: 0, y: 0, width: 1, height: bounds.height)
-            )
-        }
         context.textMatrix = .identity
         context.textPosition = CGPoint(x: 0, y: baselineOffset)
         CTLineDraw(CTLineCreateWithAttributedString(attributedText), context)

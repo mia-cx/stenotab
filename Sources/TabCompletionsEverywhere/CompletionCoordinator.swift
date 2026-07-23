@@ -21,6 +21,9 @@ final class CompletionCoordinator: NSObject {
     private var lastPermissionState: PermissionState?
     private var typographyCalibrationByProcess:
         [pid_t: TypographyScaleCalibration] = [:]
+    private var whitespaceCalibrationByEditor:
+        [String: LeadingWhitespaceCalibration] = [:]
+    private var whitespaceCalibrationTask: Task<Void, Never>?
 
     private lazy var requestPump = LatestRequestPump<CompletionRequest, CompletionResponse>(
         operation: { [provider] request in
@@ -222,7 +225,10 @@ final class CompletionCoordinator: NSObject {
             ),
             foregroundColor: snapshot.foregroundColor,
             leadingWhitespaceCompensation: CGFloat(
-                LeadingWhitespaceCompensation.points(
+                (
+                    whitespaceCalibrationByEditor[snapshot.editorIdentifier]
+                        ?? LeadingWhitespaceCalibration()
+                ).points(
                     for: text,
                     caretHeight: snapshot.caretRect.height,
                     isWebBacked: snapshot.isWebBacked
@@ -287,11 +293,96 @@ final class CompletionCoordinator: NSObject {
 
     private func acceptSuggestion() -> Bool {
         guard enabled, let suggestion, !suggestion.isEmpty else { return false }
+        let snapshotBeforeAcceptance = accessibility.snapshot() ?? lastSnapshot
         inputMonitor?.paste(suggestion)
         buffer.apply(.insert(suggestion))
         suggestionConsumption = .waitingForWhitespace()
         clearSuggestion(resetConsumption: false)
+        scheduleWhitespaceCalibration(
+            suggestion: suggestion,
+            snapshotBeforeAcceptance: snapshotBeforeAcceptance
+        )
         return true
+    }
+
+    private func scheduleWhitespaceCalibration(
+        suggestion: String,
+        snapshotBeforeAcceptance: EditorSnapshot?
+    ) {
+        whitespaceCalibrationTask?.cancel()
+        guard
+            let before = snapshotBeforeAcceptance,
+            before.isWebBacked,
+            suggestion.first == " "
+        else {
+            return
+        }
+
+        whitespaceCalibrationTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled, let self else { return }
+            self.calibrateLeadingWhitespace(
+                suggestion: suggestion,
+                before: before
+            )
+        }
+    }
+
+    private func calibrateLeadingWhitespace(
+        suggestion: String,
+        before: EditorSnapshot
+    ) {
+        guard
+            let after = accessibility.snapshot(),
+            after.processID == before.processID,
+            after.editorIdentifier == before.editorIdentifier,
+            after.prefix == before.prefix + suggestion,
+            abs(after.caretRect.minY - before.caretRect.minY)
+                <= max(2, after.caretRect.height * 0.35)
+        else {
+            return
+        }
+
+        let typography = before.typography.scaled(
+            by: typographyCalibrationByProcess[before.processID]?.scale ?? 1
+        )
+        let renderedAdvance = textAdvance(
+            suggestion,
+            after: String(before.prefix.suffix(1)),
+            typography: typography
+        )
+        let observedAdvance = after.caretRect.minX - before.caretRect.minX
+        let leadingSpaceCount = suggestion.prefix { $0 == " " }.count
+        var calibration = whitespaceCalibrationByEditor[
+            before.editorIdentifier
+        ] ?? LeadingWhitespaceCalibration()
+        calibration.consider(
+            observedAdvance: observedAdvance,
+            renderedAdvance: renderedAdvance,
+            caretHeight: before.caretRect.height,
+            leadingSpaceCount: leadingSpaceCount
+        )
+        whitespaceCalibrationByEditor[before.editorIdentifier] = calibration
+        lastSnapshot = after
+    }
+
+    private func textAdvance(
+        _ text: String,
+        after context: String,
+        typography: EditorTypography
+    ) -> Double {
+        let pointSize = CGFloat(typography.pointSize)
+        let font = typography.fontName.flatMap {
+            NSFont(name: $0, size: pointSize)
+        } ?? .systemFont(ofSize: pointSize)
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        let contextWidth = (context as NSString).size(
+            withAttributes: attributes
+        ).width
+        let combinedWidth = ((context + text) as NSString).size(
+            withAttributes: attributes
+        ).width
+        return combinedWidth - contextWidth
     }
 
     private func clearSuggestion(resetConsumption: Bool = true) {

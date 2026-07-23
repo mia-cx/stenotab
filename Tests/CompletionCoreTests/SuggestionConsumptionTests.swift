@@ -10,6 +10,23 @@ final class SuggestionConsumptionTests: XCTestCase {
         XCTAssertEqual(state.apply(insertedText: "ou"), .waitingForWhitespace)
     }
 
+    func testMultiWordSuggestionKeepsItsLiteralSpacesWhileMatching() {
+        var state = SuggestionConsumption(suggestion: " you very much")
+
+        XCTAssertEqual(
+            state.apply(insertedText: " you"),
+            .matched(remaining: " very much")
+        )
+        XCTAssertEqual(
+            state.apply(insertedText: " very"),
+            .matched(remaining: " much")
+        )
+        XCTAssertEqual(
+            state.apply(insertedText: " much"),
+            .waitingForWhitespace
+        )
+    }
+
     func testCompletedSuggestionTriggersOnlyAtNextWhitespace() {
         var state = SuggestionConsumption.waitingForWhitespace()
 
