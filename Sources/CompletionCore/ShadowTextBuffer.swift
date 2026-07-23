@@ -16,10 +16,16 @@ public struct ShadowTextBuffer: Sendable, Equatable {
         self.needsReconciliation = false
     }
 
-    public mutating func reconcile(prefix: String, suffix: String) {
+    @discardableResult
+    public mutating func reconcile(
+        prefix: String,
+        suffix: String
+    ) -> Bool {
+        let contentChanged = self.prefix != prefix || self.suffix != suffix
         self.prefix = prefix
         self.suffix = suffix
         needsReconciliation = false
+        return contentChanged
     }
 
     public mutating func apply(_ mutation: Mutation) {

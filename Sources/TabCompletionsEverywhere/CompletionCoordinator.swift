@@ -24,6 +24,7 @@ final class CompletionCoordinator: NSObject {
     private var whitespaceCalibrationByEditor:
         [String: LeadingWhitespaceCalibration] = [:]
     private var whitespaceCalibrationTask: Task<Void, Never>?
+    private var consecutiveSnapshotFailures = 0
 
     private lazy var requestPump = LatestRequestPump<CompletionRequest, CompletionResponse>(
         operation: { [provider] request in
@@ -169,19 +170,55 @@ final class CompletionCoordinator: NSObject {
     }
 
     private func reconcile() {
-        guard enabled, let snapshot = accessibility.snapshot() else {
+        guard enabled else {
             clearSuggestion()
             return
         }
+        guard let snapshot = accessibility.snapshot() else {
+            consecutiveSnapshotFailures += 1
+            let frontmostPID = NSWorkspace.shared.frontmostApplication?
+                .processIdentifier
+            let frontmostMatches = lastSnapshot.map {
+                $0.processID == frontmostPID
+            } ?? false
+            if SnapshotFailurePolicy.shouldClearSuggestion(
+                consecutiveFailures: consecutiveSnapshotFailures,
+                frontmostProcessMatchesLastSnapshot: frontmostMatches
+            ) {
+                clearSuggestion()
+            }
+            return
+        }
+        let recoveringFromSnapshotFailure = consecutiveSnapshotFailures > 0
+        consecutiveSnapshotFailures = 0
 
         let previousSnapshot = lastSnapshot
-        let focusChanged = previousSnapshot?.processID != snapshot.processID
+        let focusChanged = previousSnapshot.map {
+            $0.editorIdentifier != snapshot.editorIdentifier
+        } ?? true
+        if focusChanged {
+            clearSuggestion()
+        }
         updateTypographyScale(from: previousSnapshot, to: snapshot)
         lastSnapshot = snapshot
 
         if focusChanged || buffer.needsReconciliation ||
-            (buffer.prefix != snapshot.prefix && suggestion == nil) {
-            buffer.reconcile(prefix: snapshot.prefix, suffix: snapshot.suffix)
+            (buffer.prefix != snapshot.prefix && suggestion == nil) ||
+            recoveringFromSnapshotFailure {
+            let contentChanged = buffer.reconcile(
+                prefix: snapshot.prefix,
+                suffix: snapshot.suffix
+            )
+            if CompletionRefreshPolicy.shouldScheduleAfterReconciliation(
+                contentChanged: contentChanged,
+                recoveringFromSnapshotFailure:
+                    recoveringFromSnapshotFailure,
+                hasVisibleSuggestion: suggestion != nil,
+                isTrackingSuggestionConsumption:
+                    suggestionConsumption != nil
+            ) {
+                scheduleCompletion()
+            }
         }
     }
 

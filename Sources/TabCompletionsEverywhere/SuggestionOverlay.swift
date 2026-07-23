@@ -72,15 +72,16 @@ final class SuggestionOverlay {
             y: caretRect.minY - (layout.size.height - caretRect.height) / 2
         )
 
+        panel.setFrame(
+            NSRect(origin: origin, size: layout.size),
+            display: false
+        )
+        textView.frame = NSRect(origin: .zero, size: layout.size)
         textView.set(
             attributedSuggestion,
             baselineOffset: layout.baselineOffset
         )
-        panel.setFrame(
-            NSRect(origin: origin, size: layout.size),
-            display: true
-        )
-        textView.frame = NSRect(origin: .zero, size: layout.size)
+        panel.displayIfNeeded()
         panel.orderFrontRegardless()
     }
 
@@ -113,12 +114,13 @@ final class SuggestionOverlay {
         frame.origin.x += lineWidth(of: previous) - lineWidth(of: remaining)
         frame.size = layout.size
 
+        panel.setFrame(frame, display: false)
+        textView.frame = NSRect(origin: .zero, size: layout.size)
         textView.set(
             remaining,
             baselineOffset: layout.baselineOffset
         )
-        panel.setFrame(frame, display: true)
-        textView.frame = NSRect(origin: .zero, size: layout.size)
+        panel.displayIfNeeded()
     }
 
     func hide() {
