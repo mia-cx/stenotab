@@ -14,6 +14,7 @@ final class SuggestionOverlay {
             backing: .buffered,
             defer: false
         )
+        panel.animationBehavior = .none
         panel.level = .statusBar
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -85,8 +86,7 @@ final class SuggestionOverlay {
         textView.frame = NSRect(origin: .zero, size: layout.size)
         textView.set(
             attributedSuggestion,
-            baselineOffset: layout.baselineOffset,
-            backingScaleFactor: backingScaleFactor
+            baselineOffset: layout.baselineOffset
         )
         panel.displayIfNeeded()
         panel.orderFrontRegardless()
@@ -130,8 +130,7 @@ final class SuggestionOverlay {
         textView.frame = NSRect(origin: .zero, size: layout.size)
         textView.set(
             remaining,
-            baselineOffset: layout.baselineOffset,
-            backingScaleFactor: backingScaleFactor
+            baselineOffset: layout.baselineOffset
         )
         panel.displayIfNeeded()
     }
@@ -194,68 +193,34 @@ final class SuggestionOverlay {
 
 private final class GhostTextView: NSView {
     private(set) var attributedText = NSAttributedString()
-    private var renderedImage: CGImage?
+    private var baselineOffset: CGFloat = 0
 
     override var isOpaque: Bool { false }
 
     func set(
         _ attributedText: NSAttributedString,
-        baselineOffset: CGFloat,
-        backingScaleFactor: CGFloat
+        baselineOffset: CGFloat
     ) {
         self.attributedText = attributedText
-        renderedImage = rasterize(
-            attributedText,
-            baselineOffset: baselineOffset,
-            backingScaleFactor: backingScaleFactor
-        )
+        self.baselineOffset = baselineOffset
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
         guard
-            let renderedImage,
+            attributedText.length > 0,
             let context = NSGraphicsContext.current?.cgContext
         else {
             return
         }
 
         context.saveGState()
-        context.interpolationQuality = .none
-        context.draw(renderedImage, in: bounds)
-        context.restoreGState()
-    }
-
-    private func rasterize(
-        _ text: NSAttributedString,
-        baselineOffset: CGFloat,
-        backingScaleFactor: CGFloat
-    ) -> CGImage? {
-        let scale = max(backingScaleFactor, 1)
-        let pixelWidth = max(Int(ceil(bounds.width * scale)), 1)
-        let pixelHeight = max(Int(ceil(bounds.height * scale)), 1)
-        guard
-            let context = CGContext(
-                data: nil,
-                width: pixelWidth,
-                height: pixelHeight,
-                bitsPerComponent: 8,
-                bytesPerRow: 0,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            )
-        else {
-            return nil
-        }
-
-        context.scaleBy(x: scale, y: scale)
-        context.setAllowsAntialiasing(true)
-        context.setShouldAntialias(true)
-        context.setAllowsFontSmoothing(true)
-        context.setShouldSmoothFonts(true)
         context.textMatrix = .identity
         context.textPosition = CGPoint(x: 0, y: baselineOffset)
-        CTLineDraw(CTLineCreateWithAttributedString(text), context)
-        return context.makeImage()
+        CTLineDraw(
+            CTLineCreateWithAttributedString(attributedText),
+            context
+        )
+        context.restoreGState()
     }
 }
