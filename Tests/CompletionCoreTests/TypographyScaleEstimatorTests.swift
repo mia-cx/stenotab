@@ -2,16 +2,18 @@ import CompletionCore
 import XCTest
 
 final class TypographyScaleEstimatorTests: XCTestCase {
-    func testEstimatesResidualScaleFromSameLineCaretAdvance() {
-        let scale = TypographyScaleEstimator.estimate(
-            previousPrefix: "",
-            currentPrefix: "thank",
-            previousCaretX: 100,
-            currentCaretX: 166,
-            previousCaretY: 50,
-            currentCaretY: 50,
-            lineHeight: 39,
-            expectedAdvance: 60
+    func testEstimatesResidualScaleFromSameLineCaretAdvance() throws {
+        let scale = try XCTUnwrap(
+            TypographyScaleEstimator.estimate(
+                previousPrefix: "",
+                currentPrefix: "thank",
+                previousCaretX: 100,
+                currentCaretX: 166,
+                previousCaretY: 50,
+                currentCaretY: 50,
+                lineHeight: 39,
+                expectedAdvance: 60
+            )
         )
 
         XCTAssertEqual(scale, 1.1, accuracy: 0.001)
