@@ -5,22 +5,30 @@ import CompletionCore
 final class GlobalInputMonitor {
     typealias MutationHandler = (ShadowTextBuffer.Mutation) -> Void
     typealias TabHandler = () -> Bool
+    typealias FocusHandler = () -> Void
 
     private static let syntheticMarker: Int64 = 0x5441_4243
 
     private let onMutation: MutationHandler
     private let onTab: TabHandler
+    private let onFocus: FocusHandler
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var isSelectingScreenshotRegion = false
+    private var reconcileFocusOnTabKeyUp = false
 
     var isRunning: Bool {
         eventTap != nil
     }
 
-    init(onMutation: @escaping MutationHandler, onTab: @escaping TabHandler) {
+    init(
+        onMutation: @escaping MutationHandler,
+        onTab: @escaping TabHandler,
+        onFocus: @escaping FocusHandler
+    ) {
         self.onMutation = onMutation
         self.onTab = onTab
+        self.onFocus = onFocus
     }
 
     @MainActor
@@ -31,6 +39,7 @@ final class GlobalInputMonitor {
         }
 
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue) |
+            CGEventMask(1 << CGEventType.keyUp.rawValue) |
             CGEventMask(1 << CGEventType.leftMouseDown.rawValue) |
             CGEventMask(1 << CGEventType.leftMouseUp.rawValue) |
             CGEventMask(1 << CGEventType.rightMouseDown.rawValue) |
@@ -113,6 +122,8 @@ final class GlobalInputMonitor {
         if type == .leftMouseUp || type == .rightMouseUp {
             if monitor.isSelectingScreenshotRegion {
                 monitor.isSelectingScreenshotRegion = false
+            } else {
+                monitor.onFocus()
             }
             return Unmanaged.passUnretained(event)
         }
@@ -125,6 +136,15 @@ final class GlobalInputMonitor {
             return Unmanaged.passUnretained(event)
         }
 
+        if type == .keyUp {
+            let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            if keyCode == 48, monitor.reconcileFocusOnTabKeyUp {
+                monitor.reconcileFocusOnTabKeyUp = false
+                monitor.onFocus()
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
         guard type == .keyDown else {
             return Unmanaged.passUnretained(event)
         }
@@ -134,8 +154,13 @@ final class GlobalInputMonitor {
             monitor.isSelectingScreenshotRegion = false
             return Unmanaged.passUnretained(event)
         }
-        if keyCode == 48, monitor.onTab() {
-            return nil
+        if keyCode == 48 {
+            if monitor.onTab() {
+                return nil
+            }
+            monitor.reconcileFocusOnTabKeyUp = true
+            monitor.onMutation(.invalidate)
+            return Unmanaged.passUnretained(event)
         }
         if keyCode == 51 {
             monitor.onMutation(.deleteBackward)

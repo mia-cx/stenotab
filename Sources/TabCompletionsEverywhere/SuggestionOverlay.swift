@@ -4,8 +4,15 @@ import CoreText
 
 @MainActor
 final class SuggestionOverlay {
+    private struct PreparedPresentation {
+        let attributes: [NSAttributedString.Key: Any]
+        let linePlacement: PreparedOverlayLinePlacement
+        let leadingWhitespaceCompensation: CGFloat
+    }
+
     private let panel: NSPanel
     private let textView: GhostTextView
+    private var preparedPresentation: PreparedPresentation?
 
     init() {
         panel = NSPanel(
@@ -27,15 +34,14 @@ final class SuggestionOverlay {
         panel.contentView = textView
     }
 
-    func show(
-        _ suggestion: String,
+    func prepare(
         at caretRect: CGRect,
         typography: EditorTypography,
         foregroundColor: CGColor?,
         leadingWhitespaceCompensation: CGFloat
     ) {
-        guard !suggestion.isEmpty, caretRect != .zero else {
-            hide()
+        guard OverlayGeometry.isUsableCaretRect(caretRect) else {
+            preparedPresentation = nil
             return
         }
 
@@ -45,48 +51,71 @@ final class SuggestionOverlay {
         } ?? .systemFont(ofSize: pointSize)
         let sourceColor = foregroundColor.flatMap(NSColor.init(cgColor:))
             ?? .labelColor
-        let attributedSuggestion = NSMutableAttributedString(
-            string: suggestion,
+        let coreTextFont = CTFontCreateWithName(
+            font.fontName as CFString,
+            font.pointSize,
+            nil
+        )
+        let backingScaleFactor = screen(containing: caretRect)?
+            .backingScaleFactor ?? 2
+        preparedPresentation = PreparedPresentation(
             attributes: [
                 .font: font,
                 .foregroundColor: sourceColor.withAlphaComponent(0.34),
-            ]
+            ],
+            linePlacement: OverlayGeometry.prepareLinePlacement(
+                caretRect: caretRect,
+                ascent: CTFontGetAscent(coreTextFont),
+                descent: CTFontGetDescent(coreTextFont),
+                leading: CTFontGetLeading(coreTextFont),
+                backingScaleFactor: backingScaleFactor
+            ),
+            leadingWhitespaceCompensation: leadingWhitespaceCompensation
+        )
+    }
+
+    func show(_ suggestion: String) {
+        guard
+            !suggestion.isEmpty,
+            let preparedPresentation
+        else {
+            hide()
+            return
+        }
+
+        let attributedSuggestion = NSMutableAttributedString(
+            string: suggestion,
+            attributes: preparedPresentation.attributes
         )
         let leadingSpaceLength = suggestion.prefix { $0 == " " }.utf16.count
-        if abs(leadingWhitespaceCompensation) > 0.001,
+        if abs(preparedPresentation.leadingWhitespaceCompensation) > 0.001,
            leadingSpaceLength > 0 {
             attributedSuggestion.addAttribute(
                 .kern,
-                value: leadingWhitespaceCompensation,
+                value: preparedPresentation.leadingWhitespaceCompensation
+                    * CGFloat(leadingSpaceLength),
                 range: NSRange(
                     location: leadingSpaceLength - 1,
                     length: 1
                 )
             )
         }
-        let layout = layout(
-            for: attributedSuggestion,
-            minimumHeight: caretRect.height
-        )
-        let backingScaleFactor = screen(containing: caretRect)?
-            .backingScaleFactor ?? 2
-        let origin = OverlayGeometry.pixelAlignedOrigin(
-            CGPoint(
-                x: caretRect.maxX,
-                y: caretRect.minY
-                    - (layout.size.height - caretRect.height) / 2
-            ),
-            backingScaleFactor: backingScaleFactor
+        let size = CGSize(
+            width: overlayWidth(of: attributedSuggestion),
+            height: preparedPresentation.linePlacement.height
         )
 
         panel.setFrame(
-            NSRect(origin: origin, size: layout.size),
+            NSRect(
+                origin: preparedPresentation.linePlacement.origin,
+                size: size
+            ),
             display: false
         )
-        textView.frame = NSRect(origin: .zero, size: layout.size)
+        textView.frame = NSRect(origin: .zero, size: size)
         textView.set(
             attributedSuggestion,
-            baselineOffset: layout.baselineOffset
+            baselineOffset: preparedPresentation.linePlacement.baselineOffset
         )
         panel.displayIfNeeded()
         panel.orderFrontRegardless()
@@ -182,6 +211,10 @@ final class SuggestionOverlay {
                 nil
             )
         )
+    }
+
+    private func overlayWidth(of text: NSAttributedString) -> CGFloat {
+        min(max(ceil(lineWidth(of: text)) + 1, 1), 720)
     }
 
     private func screen(containing rect: CGRect) -> NSScreen? {

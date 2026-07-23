@@ -1,5 +1,21 @@
 import CoreGraphics
 
+public struct PreparedOverlayLinePlacement: Sendable, Equatable {
+    public let origin: CGPoint
+    public let height: CGFloat
+    public let baselineOffset: CGFloat
+
+    public init(
+        origin: CGPoint,
+        height: CGFloat,
+        baselineOffset: CGFloat
+    ) {
+        self.origin = origin
+        self.height = height
+        self.baselineOffset = baselineOffset
+    }
+}
+
 public enum OverlayGeometry {
     public static func pixelAlignedOrigin(
         _ origin: CGPoint,
@@ -35,5 +51,35 @@ public enum OverlayGeometry {
         let lineHeight = ascent + descent + leading
         let verticalInset = max(0, containerHeight - lineHeight) / 2
         return verticalInset + descent + leading / 2
+    }
+
+    public static func prepareLinePlacement(
+        caretRect: CGRect,
+        ascent: CGFloat,
+        descent: CGFloat,
+        leading: CGFloat,
+        backingScaleFactor: CGFloat
+    ) -> PreparedOverlayLinePlacement {
+        let height = max(
+            ceil(ascent + descent + leading),
+            caretRect.height
+        )
+        let origin = pixelAlignedOrigin(
+            CGPoint(
+                x: caretRect.maxX,
+                y: caretRect.minY - (height - caretRect.height) / 2
+            ),
+            backingScaleFactor: backingScaleFactor
+        )
+        return PreparedOverlayLinePlacement(
+            origin: origin,
+            height: height,
+            baselineOffset: baselineOffset(
+                containerHeight: height,
+                ascent: ascent,
+                descent: descent,
+                leading: leading
+            )
+        )
     }
 }

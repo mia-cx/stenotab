@@ -16,6 +16,8 @@ final class CompletionCoordinator: NSObject {
     private var suggestion: String?
     private var suggestionConsumption: SuggestionConsumption?
     private var newestRequestID: UInt64 = 0
+    private var preparedRequestSnapshot:
+        (requestID: UInt64, snapshot: EditorSnapshot)?
     private var enabled = true
     private var permissionObserver: ((PermissionState) -> Void)?
     private var lastPermissionState: PermissionState?
@@ -53,6 +55,9 @@ final class CompletionCoordinator: NSObject {
             },
             onTab: { [weak self] in
                 self?.acceptSuggestion() ?? false
+            },
+            onFocus: { [weak self] in
+                self?.reconcile()
             }
         )
         inputMonitor = monitor
@@ -123,6 +128,7 @@ final class CompletionCoordinator: NSObject {
         enabled.toggle()
         sender.state = enabled ? .on : .off
         if !enabled {
+            invalidatePendingCompletion()
             clearSuggestion()
         } else {
             reconcile()
@@ -161,6 +167,7 @@ final class CompletionCoordinator: NSObject {
             }
         }
 
+        invalidatePendingCompletion()
         clearSuggestion()
         if buffer.needsReconciliation {
             reconcile()
@@ -185,6 +192,7 @@ final class CompletionCoordinator: NSObject {
                 consecutiveFailures: consecutiveSnapshotFailures,
                 frontmostProcessMatchesLastSnapshot: frontmostMatches
             ) {
+                invalidatePendingCompletion()
                 clearSuggestion()
             }
             return
@@ -197,10 +205,12 @@ final class CompletionCoordinator: NSObject {
             $0.editorIdentifier != snapshot.editorIdentifier
         } ?? true
         if focusChanged {
+            invalidatePendingCompletion()
             clearSuggestion()
         }
         updateTypographyScale(from: previousSnapshot, to: snapshot)
         lastSnapshot = snapshot
+        prepareOverlay(for: snapshot)
 
         if focusChanged || buffer.needsReconciliation ||
             (buffer.prefix != snapshot.prefix && suggestion == nil) ||
@@ -225,6 +235,7 @@ final class CompletionCoordinator: NSObject {
     private func scheduleCompletion() {
         debounceTask?.cancel()
         newestRequestID &+= 1
+        preparedRequestSnapshot = nil
         let request = CompletionRequest(
             id: newestRequestID,
             prefix: buffer.prefix,
@@ -234,8 +245,45 @@ final class CompletionCoordinator: NSObject {
         debounceTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(45))
             guard !Task.isCancelled, let self else { return }
+            guard self.prepare(request) else { return }
             await self.requestPump.submit(request)
         }
+    }
+
+    private func prepare(_ request: CompletionRequest) -> Bool {
+        guard let snapshot = accessibility.snapshot() ?? lastSnapshot else {
+            return false
+        }
+
+        let previousSnapshot = lastSnapshot
+        let focusChanged = previousSnapshot.map {
+            $0.editorIdentifier != snapshot.editorIdentifier
+        } ?? true
+        if focusChanged {
+            suggestion = nil
+            suggestionConsumption = nil
+            overlay.hide()
+        }
+        updateTypographyScale(from: previousSnapshot, to: snapshot)
+        lastSnapshot = snapshot
+        prepareOverlay(for: snapshot)
+
+        guard
+            snapshot.prefix == request.prefix,
+            snapshot.suffix == request.suffix
+        else {
+            let contentChanged = buffer.reconcile(
+                prefix: snapshot.prefix,
+                suffix: snapshot.suffix
+            )
+            if contentChanged {
+                scheduleCompletion()
+            }
+            return false
+        }
+
+        preparedRequestSnapshot = (request.id, snapshot)
+        return true
     }
 
     private func receive(_ response: CompletionResponse) {
@@ -243,17 +291,21 @@ final class CompletionCoordinator: NSObject {
             enabled,
             response.requestID == newestRequestID,
             let text = response.text,
-            let snapshot = accessibility.snapshot() ?? lastSnapshot
+            let preparedRequestSnapshot,
+            preparedRequestSnapshot.requestID == response.requestID,
+            lastSnapshot?.editorIdentifier
+                == preparedRequestSnapshot.snapshot.editorIdentifier
         else {
             return
         }
 
-        updateTypographyScale(from: lastSnapshot, to: snapshot)
-        lastSnapshot = snapshot
         suggestion = text
         suggestionConsumption = SuggestionConsumption(suggestion: text)
-        overlay.show(
-            text,
+        overlay.show(text)
+    }
+
+    private func prepareOverlay(for snapshot: EditorSnapshot) {
+        overlay.prepare(
             at: snapshot.caretRect,
             typography: snapshot.typography.scaled(
                 by: typographyCalibrationByProcess[
@@ -266,7 +318,7 @@ final class CompletionCoordinator: NSObject {
                     whitespaceCalibrationByEditor[snapshot.editorIdentifier]
                         ?? LeadingWhitespaceCalibration()
                 ).points(
-                    for: text,
+                    for: " ",
                     caretHeight: snapshot.caretRect.height,
                     isWebBacked: snapshot.isWebBacked
                 )
@@ -429,5 +481,11 @@ final class CompletionCoordinator: NSObject {
             suggestionConsumption = nil
         }
         overlay.hide()
+    }
+
+    private func invalidatePendingCompletion() {
+        debounceTask?.cancel()
+        preparedRequestSnapshot = nil
+        newestRequestID &+= 1
     }
 }

@@ -42,4 +42,18 @@ final class OverlayGeometryTests: XCTestCase {
 
         XCTAssertEqual(baseline, 6)
     }
+
+    func testPreparesLinePlacementBeforeSuggestionTextExists() {
+        let placement = OverlayGeometry.prepareLinePlacement(
+            caretRect: CGRect(x: 100, y: 50, width: 2, height: 20),
+            ascent: 12,
+            descent: 4,
+            leading: 0,
+            backingScaleFactor: 2
+        )
+
+        XCTAssertEqual(placement.origin, CGPoint(x: 102, y: 50))
+        XCTAssertEqual(placement.height, 20)
+        XCTAssertEqual(placement.baselineOffset, 6)
+    }
 }
