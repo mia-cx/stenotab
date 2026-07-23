@@ -58,14 +58,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         accessibilitySettings.target = coordinator
         menu.addItem(accessibilitySettings)
 
-        let inputMonitoringSettings = NSMenuItem(
-            title: "Open Input Monitoring Settings…",
-            action: #selector(CompletionCoordinator.openInputMonitoringSettings),
-            keyEquivalent: ""
-        )
-        inputMonitoringSettings.target = coordinator
-        menu.addItem(inputMonitoringSettings)
-
         coordinator.observePermissionState { [weak status, weak fixPermissions] state in
             status?.title = state.menuTitle
             let ready = state.nextSettingsPane == nil

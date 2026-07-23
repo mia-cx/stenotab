@@ -12,7 +12,9 @@ Requirements: macOS 14 or later and Swift 6.2 or later. A full Xcode install is 
 ./Scripts/build-and-run.sh
 ```
 
-Grant the resulting app both Accessibility and Input Monitoring access when macOS asks. Then type `thank`, `looking forward`, or `let me know` in TextEdit to exercise the built-in zero-dependency demo provider.
+Grant the resulting app Accessibility access when macOS asks. Input Monitoring
+is not required. Then type `thank`, `looking forward`, or `let me know` in an
+editable field to exercise the built-in zero-dependency demo provider.
 
 The app lives in the menu bar. Quit or disable completions there.
 

@@ -2,36 +2,20 @@ import CompletionCore
 import XCTest
 
 final class PermissionStateTests: XCTestCase {
-    func testRoutesToFirstMissingPermission() {
+    func testRoutesToAccessibilityWhenMissing() {
         XCTAssertEqual(
-            PermissionState(
-                accessibilityGranted: false,
-                inputMonitoringGranted: false
-            ).nextSettingsPane,
+            PermissionState(accessibilityGranted: false).nextSettingsPane,
             .accessibility
         )
-        XCTAssertEqual(
-            PermissionState(
-                accessibilityGranted: true,
-                inputMonitoringGranted: false
-            ).nextSettingsPane,
-            .inputMonitoring
-        )
         XCTAssertNil(
-            PermissionState(
-                accessibilityGranted: true,
-                inputMonitoringGranted: true
-            ).nextSettingsPane
+            PermissionState(accessibilityGranted: true).nextSettingsPane
         )
     }
 
-    func testMenuTitleReportsBothPermissions() {
+    func testMenuTitleReportsAccessibility() {
         XCTAssertEqual(
-            PermissionState(
-                accessibilityGranted: true,
-                inputMonitoringGranted: false
-            ).menuTitle,
-            "Accessibility ✓  Input Monitoring ✗"
+            PermissionState(accessibilityGranted: true).menuTitle,
+            "Accessibility ✓"
         )
     }
 }

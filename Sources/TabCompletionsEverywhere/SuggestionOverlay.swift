@@ -1,10 +1,11 @@
 import AppKit
 import CompletionCore
+import CoreText
 
 @MainActor
 final class SuggestionOverlay {
     private let panel: NSPanel
-    private let label: NSTextField
+    private let textView: GhostTextView
 
     init() {
         panel = NSPanel(
@@ -21,14 +22,8 @@ final class SuggestionOverlay {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        label = NSTextField(labelWithAttributedString: NSAttributedString())
-        label.isBezeled = false
-        label.drawsBackground = false
-        label.isEditable = false
-        label.isSelectable = false
-        label.lineBreakMode = .byClipping
-        label.cell?.usesSingleLineMode = true
-        panel.contentView = label
+        textView = GhostTextView()
+        panel.contentView = textView
     }
 
     func show(
@@ -55,67 +50,138 @@ final class SuggestionOverlay {
                 .foregroundColor: sourceColor.withAlphaComponent(0.34),
             ]
         )
-        let size = fittedSize(
+        let layout = layout(
             for: attributedSuggestion,
             minimumHeight: caretRect.height
         )
         let origin = CGPoint(
             x: caretRect.maxX,
-            y: caretRect.minY - (size.height - caretRect.height) / 2
+            y: caretRect.minY - (layout.size.height - caretRect.height) / 2
         )
 
-        label.attributedStringValue = attributedSuggestion
-        panel.setFrame(NSRect(origin: origin, size: size), display: true)
-        label.frame = NSRect(origin: .zero, size: size)
+        textView.set(
+            attributedSuggestion,
+            baselineOffset: layout.baselineOffset
+        )
+        panel.setFrame(
+            NSRect(origin: origin, size: layout.size),
+            display: true
+        )
+        textView.frame = NSRect(origin: .zero, size: layout.size)
         panel.orderFrontRegardless()
     }
 
     func consume(matchedText: String, remainingSuggestion: String) {
         guard
             !remainingSuggestion.isEmpty,
-            label.attributedStringValue.length > 0
+            textView.attributedText.length > 0
         else {
             hide()
             return
         }
 
-        let attributes = label.attributedStringValue.attributes(
+        let attributes = textView.attributedText.attributes(
             at: 0,
             effectiveRange: nil
         )
-        let matchedWidth = NSAttributedString(
+        let matched = NSAttributedString(
             string: matchedText,
             attributes: attributes
-        ).size().width
+        )
         let remaining = NSAttributedString(
             string: remainingSuggestion,
             attributes: attributes
         )
-        let size = fittedSize(
+        let layout = layout(
             for: remaining,
             minimumHeight: panel.frame.height
         )
         var frame = panel.frame
-        frame.origin.x += matchedWidth
-        frame.size = size
+        frame.origin.x += lineWidth(of: matched)
+        frame.size = layout.size
 
-        label.attributedStringValue = remaining
+        textView.set(remaining, baselineOffset: layout.baselineOffset)
         panel.setFrame(frame, display: true)
-        label.frame = NSRect(origin: .zero, size: size)
+        textView.frame = NSRect(origin: .zero, size: layout.size)
     }
 
     func hide() {
         panel.orderOut(nil)
     }
 
-    private func fittedSize(
+    private func layout(
         for text: NSAttributedString,
         minimumHeight: CGFloat
-    ) -> CGSize {
-        let measured = text.size()
-        return CGSize(
-            width: min(max(ceil(measured.width) + 1, 1), 720),
-            height: max(ceil(measured.height), minimumHeight)
+    ) -> (size: CGSize, baselineOffset: CGFloat) {
+        let line = CTLineCreateWithAttributedString(text)
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        var leading: CGFloat = 0
+        let width = CGFloat(
+            CTLineGetTypographicBounds(
+                line,
+                &ascent,
+                &descent,
+                &leading
+            )
         )
+        let height = max(
+            ceil(ascent + descent + leading),
+            minimumHeight
+        )
+        return (
+            CGSize(
+                width: min(max(ceil(width) + 1, 1), 720),
+                height: height
+            ),
+            OverlayGeometry.baselineOffset(
+                containerHeight: height,
+                ascent: ascent,
+                descent: descent,
+                leading: leading
+            )
+        )
+    }
+
+    private func lineWidth(of text: NSAttributedString) -> CGFloat {
+        CGFloat(
+            CTLineGetTypographicBounds(
+                CTLineCreateWithAttributedString(text),
+                nil,
+                nil,
+                nil
+            )
+        )
+    }
+}
+
+private final class GhostTextView: NSView {
+    private(set) var attributedText = NSAttributedString()
+    private var baselineOffset: CGFloat = 0
+
+    override var isOpaque: Bool { false }
+
+    func set(
+        _ attributedText: NSAttributedString,
+        baselineOffset: CGFloat
+    ) {
+        self.attributedText = attributedText
+        self.baselineOffset = baselineOffset
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard
+            attributedText.length > 0,
+            let context = NSGraphicsContext.current?.cgContext
+        else {
+            return
+        }
+
+        context.saveGState()
+        context.textMatrix = .identity
+        context.textPosition = CGPoint(x: 0, y: baselineOffset)
+        CTLineDraw(CTLineCreateWithAttributedString(attributedText), context)
+        context.restoreGState()
     }
 }

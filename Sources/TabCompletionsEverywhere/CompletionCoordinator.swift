@@ -82,22 +82,12 @@ final class CompletionCoordinator: NSObject {
         openSettings(.accessibility)
     }
 
-    @objc func openInputMonitoringSettings() {
-        openSettings(.inputMonitoring)
-    }
-
     private func requestInitialPermissionPrompts() {
         accessibility.requestTrustPrompt()
-        if !CGPreflightListenEventAccess() {
-            CGRequestListenEventAccess()
-        }
     }
 
     private var currentPermissionState: PermissionState {
-        PermissionState(
-            accessibilityGranted: AXIsProcessTrusted(),
-            inputMonitoringGranted: CGPreflightListenEventAccess()
-        )
+        PermissionState(accessibilityGranted: AXIsProcessTrusted())
     }
 
     private func publishPermissionState(force: Bool = false) {
@@ -113,11 +103,6 @@ final class CompletionCoordinator: NSObject {
         case .accessibility:
             accessibility.requestTrustPrompt()
             anchor = "Privacy_Accessibility"
-        case .inputMonitoring:
-            if !CGPreflightListenEventAccess() {
-                CGRequestListenEventAccess()
-            }
-            anchor = "Privacy_ListenEvent"
         }
 
         guard let url = URL(

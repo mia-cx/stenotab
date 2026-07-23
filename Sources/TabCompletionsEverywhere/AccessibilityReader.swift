@@ -20,6 +20,7 @@ final class AccessibilityReader {
         "com.hnc.DiscordPTB",
         "com.openai.chat",
         "com.openai.chatgpt",
+        "com.openai.codex",
         "com.tinyspeck.slackmacgap",
         "com.google.Chrome",
         "company.thebrowser.Browser",
@@ -307,22 +308,34 @@ final class AccessibilityReader {
 
     private func caretBounds(of element: AXUIElement, range: CFRange) -> CGRect? {
         var caretRange = CFRange(location: range.location, length: 0)
-        guard
+        if
             let rangeValue = AXValueCreate(.cfRange, &caretRange),
             let raw = copyParameterizedAttribute(
                 kAXBoundsForRangeParameterizedAttribute,
                 parameter: rangeValue,
                 from: element
             ),
-            CFGetTypeID(raw) == AXValueGetTypeID()
+            let bounds = rect(from: raw),
+            OverlayGeometry.isUsableCaretRect(bounds)
+        {
+            return cocoaRect(fromAccessibilityRect: bounds)
+        }
+
+        guard
+            let markerRange = copyRawAttribute(
+                "AXSelectedTextMarkerRange",
+                from: element
+            ),
+            let raw = copyParameterizedAttribute(
+                "AXBoundsForTextMarkerRange",
+                parameter: markerRange,
+                from: element
+            ),
+            let bounds = rect(from: raw),
+            OverlayGeometry.isUsableCaretRect(bounds)
         else {
             return nil
         }
-        let boundsValue = unsafeDowncast(raw, to: AXValue.self)
-        guard AXValueGetType(boundsValue) == .cgRect else { return nil }
-
-        var bounds = CGRect.zero
-        guard AXValueGetValue(boundsValue, .cgRect, &bounds) else { return nil }
         return cocoaRect(fromAccessibilityRect: bounds)
     }
 
@@ -454,12 +467,12 @@ final class AccessibilityReader {
         _ name: String,
         from element: AXUIElement
     ) -> CGRect? {
-        guard
-            let raw = copyRawAttribute(name, from: element),
-            CFGetTypeID(raw) == AXValueGetTypeID()
-        else {
-            return nil
-        }
+        guard let raw = copyRawAttribute(name, from: element) else { return nil }
+        return rect(from: raw)
+    }
+
+    private func rect(from raw: CFTypeRef) -> CGRect? {
+        guard CFGetTypeID(raw) == AXValueGetTypeID() else { return nil }
         let value = unsafeDowncast(raw, to: AXValue.self)
         guard AXValueGetType(value) == .cgRect else { return nil }
         var rect = CGRect.zero
