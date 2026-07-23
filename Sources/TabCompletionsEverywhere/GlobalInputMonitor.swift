@@ -12,6 +12,7 @@ final class GlobalInputMonitor {
     private let onTab: TabHandler
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var isSelectingScreenshotRegion = false
 
     var isRunning: Bool {
         eventTap != nil
@@ -31,7 +32,9 @@ final class GlobalInputMonitor {
 
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue) |
             CGEventMask(1 << CGEventType.leftMouseDown.rawValue) |
-            CGEventMask(1 << CGEventType.rightMouseDown.rawValue)
+            CGEventMask(1 << CGEventType.leftMouseUp.rawValue) |
+            CGEventMask(1 << CGEventType.rightMouseDown.rawValue) |
+            CGEventMask(1 << CGEventType.rightMouseUp.rawValue)
 
         let context = Unmanaged.passUnretained(self).toOpaque()
         guard let tap = CGEvent.tapCreate(
@@ -107,7 +110,17 @@ final class GlobalInputMonitor {
             return Unmanaged.passUnretained(event)
         }
 
+        if type == .leftMouseUp || type == .rightMouseUp {
+            if monitor.isSelectingScreenshotRegion {
+                monitor.isSelectingScreenshotRegion = false
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
         if type == .leftMouseDown || type == .rightMouseDown {
+            if monitor.isSelectingScreenshotRegion {
+                return Unmanaged.passUnretained(event)
+            }
             monitor.onMutation(.invalidate)
             return Unmanaged.passUnretained(event)
         }
@@ -117,6 +130,10 @@ final class GlobalInputMonitor {
         }
 
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        if monitor.isSelectingScreenshotRegion, keyCode == 53 {
+            monitor.isSelectingScreenshotRegion = false
+            return Unmanaged.passUnretained(event)
+        }
         if keyCode == 48, monitor.onTab() {
             return nil
         }
@@ -131,6 +148,23 @@ final class GlobalInputMonitor {
 
         let flags = event.flags
         if !flags.intersection([.maskCommand, .maskControl, .maskAlternate]).isEmpty {
+            if KeyboardShortcutPolicy.preservesSuggestion(
+                keyCode: keyCode,
+                command: flags.contains(.maskCommand),
+                shift: flags.contains(.maskShift),
+                control: flags.contains(.maskControl),
+                option: flags.contains(.maskAlternate)
+            ) {
+                monitor.isSelectingScreenshotRegion =
+                    KeyboardShortcutPolicy.beginsInteractiveScreenshot(
+                        keyCode: keyCode,
+                        command: flags.contains(.maskCommand),
+                        shift: flags.contains(.maskShift),
+                        control: flags.contains(.maskControl),
+                        option: flags.contains(.maskAlternate)
+                    )
+                return Unmanaged.passUnretained(event)
+            }
             monitor.onMutation(.invalidate)
             return Unmanaged.passUnretained(event)
         }
