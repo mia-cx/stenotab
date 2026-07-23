@@ -39,4 +39,16 @@ final class CompletionSanitizerTests: XCTestCase {
             "!"
         )
     }
+
+    func testPreservesExactPartialWordContinuationForPrefill() {
+        XCTAssertEqual(
+            CompletionSanitizer.sanitize(
+                "ping.",
+                after: "actually ty",
+                maximumWords: 8,
+                inferLeadingSpace: false
+            ),
+            "ping."
+        )
+    }
 }

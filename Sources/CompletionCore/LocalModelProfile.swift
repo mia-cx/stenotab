@@ -3,6 +3,7 @@ import Foundation
 public enum CompletionAPIStyle: String, Codable, Sendable {
     case textCompletions
     case chatCompletions
+    case gemmaChatPrefill
 }
 
 public struct LocalModelProfile: Codable, Sendable, Equatable, Identifiable {
@@ -73,12 +74,12 @@ public enum LocalModelProfiles {
         ),
         LocalModelProfile(
             id: "gemma-4-e2b-it",
-            displayName: "Gemma 4 E2B IT · Context Quality",
+            displayName: "Gemma 4 E2B IT · Assistant Prefill",
             repository: "mlx-community/gemma-4-e2b-it-4bit",
-            apiStyle: .chatCompletions,
+            apiStyle: .gemmaChatPrefill,
             minimumUnifiedMemoryGB: 16,
             supportsImages: true,
-            qualityNote: "Recommended for cached OCR or conversation context."
+            qualityNote: "Recommended; continues the exact typed prefix."
         ),
     ]
 

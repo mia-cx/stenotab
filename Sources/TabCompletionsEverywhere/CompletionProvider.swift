@@ -45,7 +45,7 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
 
     func complete(_ request: CompletionRequest) async -> CompletionResponse {
         let resource = switch apiStyle {
-        case .textCompletions:
+        case .textCompletions, .gemmaChatPrefill:
             "completions"
         case .chatCompletions:
             "chat/completions"
@@ -70,6 +70,19 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                     maxTokens: 16,
                     temperature: 0,
                     stop: ["\n"]
+                )
+            )
+        case .gemmaChatPrefill:
+            urlRequest.httpBody = try? JSONEncoder().encode(
+                TextCompletionBody(
+                    model: model,
+                    prompt: GemmaAssistantPrefill.prompt(
+                        prefix: String(request.prefix.suffix(1_500)),
+                        suffix: String(request.suffix.prefix(300))
+                    ),
+                    maxTokens: 16,
+                    temperature: 0,
+                    stop: ["<turn|>", "\n"]
                 )
             )
         case .chatCompletions:
@@ -103,7 +116,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                 CompletionSanitizer.sanitize(
                     $0,
                     after: request.prefix,
-                    maximumWords: maximumWords
+                    maximumWords: maximumWords,
+                    inferLeadingSpace: apiStyle == .chatCompletions
                 )
             }
             return CompletionResponse(

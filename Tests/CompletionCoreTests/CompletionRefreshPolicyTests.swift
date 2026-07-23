@@ -2,6 +2,12 @@ import CompletionCore
 import XCTest
 
 final class CompletionRefreshPolicyTests: XCTestCase {
+    func testDoesNotRequestCompletionForAnEmptyInput() {
+        XCTAssertFalse(CompletionRequestPolicy.shouldRequest(prefix: ""))
+        XCTAssertFalse(CompletionRequestPolicy.shouldRequest(prefix: " \n\t"))
+        XCTAssertTrue(CompletionRequestPolicy.shouldRequest(prefix: "thank"))
+    }
+
     func testSchedulesWhenAccessibilityFindsUnobservedText() {
         var buffer = ShadowTextBuffer(prefix: "than")
 

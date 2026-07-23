@@ -57,8 +57,8 @@ only files missing from the shared Hugging Face cache.
 | `gemma-3-270m-base` | 8 GB+ | Experimental speed floor; quality is inconsistent |
 | `gemma-3-1b-base` | 8 GB+ | Fast raw continuation |
 | `gemma-3-1b-it` | 8 GB+ | Promptable text-only alternative |
-| `gemma-4-e2b-base` | 16 GB+ | Higher-quality raw continuation |
-| `gemma-4-e2b-it` | 16 GB+ | Recommended for conversation or OCR context |
+| `gemma-4-e2b-base` | 16 GB+ | Non-IT base model for raw continuation |
+| `gemma-4-e2b-it` | 16 GB+ | Recommended; exact-prefix assistant prefill |
 
 On a 10-core M4 MacBook Air with 16 GB unified memory, the current measured
 MLX baselines are:
@@ -73,6 +73,11 @@ MLX baselines are:
 The real HTTP benchmark for Gemma 4 E2B IT measured a 220 ms warm median TTFT,
 271 ms median total latency, and 50 tok/s mean streamed decode rate. Its first
 cold request measured approximately 702 ms TTFT.
+
+The E2B IT profile uses Gemma's chat template with the text already typed as an
+unfinished model response. This makes the model continue the exact final
+character, including completing a partially typed word, instead of answering a
+separate autocomplete instruction.
 
 `max_tokens` primarily limits generation and KV-cache growth. It does not avoid
 loading the model weights.

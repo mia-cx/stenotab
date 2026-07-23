@@ -1,3 +1,9 @@
+public enum CompletionRequestPolicy {
+    public static func shouldRequest(prefix: String) -> Bool {
+        prefix.contains { !$0.isWhitespace }
+    }
+}
+
 public enum CompletionRefreshPolicy {
     public static func shouldScheduleAfterReconciliation(
         contentChanged: Bool,

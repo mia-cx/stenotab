@@ -2,7 +2,8 @@ public enum CompletionSanitizer {
     public static func sanitize(
         _ rawCompletion: String,
         after prefix: String,
-        maximumWords: Int
+        maximumWords: Int,
+        inferLeadingSpace: Bool = true
     ) -> String {
         guard maximumWords > 0 else { return "" }
 
@@ -40,6 +41,7 @@ public enum CompletionSanitizer {
         }
 
         guard
+            inferLeadingSpace,
             let previous = prefix.last,
             let first = limited.first,
             !first.isWhitespace,

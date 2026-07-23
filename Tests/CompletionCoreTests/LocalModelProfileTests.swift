@@ -13,7 +13,7 @@ final class LocalModelProfileTests: XCTestCase {
         )
         XCTAssertEqual(
             LocalModelProfiles.profile(id: "gemma-4-e2b-it")?.apiStyle,
-            .chatCompletions
+            .gemmaChatPrefill
         )
         XCTAssertTrue(
             LocalModelProfiles.profile(id: "gemma-4-e2b-it")?

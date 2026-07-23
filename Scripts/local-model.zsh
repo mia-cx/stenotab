@@ -29,8 +29,8 @@ profile() {
             ;;
         gemma-4-e2b-it)
             repo="mlx-community/gemma-4-e2b-it-4bit"
-            api_style="chatCompletions"
-            label="Gemma 4 E2B IT · Context Quality · 16 GB"
+            api_style="gemmaChatPrefill"
+            label="Gemma 4 E2B IT · Assistant Prefill · 16 GB"
             ;;
         *)
             print -u2 "Unknown profile: $1"
@@ -80,7 +80,7 @@ serve() {
         --temp 0
         --prompt-cache-size 8
     )
-    if [[ "$api_style" == "chatCompletions" ]]; then
+    if [[ "$api_style" != "textCompletions" ]]; then
         arguments+=(--chat-template-args '{"enable_thinking":false}')
     fi
 

@@ -46,6 +46,7 @@ def benchmark_once(
     api_style: str,
     prompt: str,
 ) -> tuple[float, float, float, str]:
+    raw_prompt = prompt.rsplit("CONTEXT: ", 1)[-1].replace("<CURSOR>", "")
     if api_style == "chatCompletions":
         endpoint = f"{url.rstrip('/')}/chat/completions"
         body = {
@@ -57,7 +58,13 @@ def benchmark_once(
         }
     else:
         endpoint = f"{url.rstrip('/')}/completions"
-        raw_prompt = prompt.rsplit("CONTEXT: ", 1)[-1].replace("<CURSOR>", "")
+        if api_style == "gemmaChatPrefill":
+            raw_prompt = (
+                "<bos><|turn>user\n"
+                "Continue the assistant text naturally. "
+                "Return only the continuation.<turn|>\n"
+                f"<|turn>model\n{raw_prompt}"
+            )
         body = {
             "model": model,
             "prompt": raw_prompt,
@@ -112,7 +119,11 @@ def main() -> None:
     parser.add_argument("--model", required=True)
     parser.add_argument(
         "--api-style",
-        choices=["textCompletions", "chatCompletions"],
+        choices=[
+            "textCompletions",
+            "chatCompletions",
+            "gemmaChatPrefill",
+        ],
         required=True,
     )
     parser.add_argument("--trials", type=int, default=5)

@@ -233,6 +233,12 @@ final class CompletionCoordinator: NSObject {
     }
 
     private func scheduleCompletion() {
+        guard CompletionRequestPolicy.shouldRequest(prefix: buffer.prefix) else {
+            invalidatePendingCompletion()
+            clearSuggestion()
+            return
+        }
+
         debounceTask?.cancel()
         newestRequestID &+= 1
         preparedRequestSnapshot = nil
@@ -382,13 +388,26 @@ final class CompletionCoordinator: NSObject {
 
     private func acceptSuggestion() -> Bool {
         guard enabled, let suggestion, !suggestion.isEmpty else { return false }
+        let acceptance = SuggestionAcceptance.nextWord(in: suggestion)
+        guard !acceptance.accepted.isEmpty else { return false }
         let snapshotBeforeAcceptance = accessibility.snapshot() ?? lastSnapshot
-        inputMonitor?.paste(suggestion)
-        buffer.apply(.insert(suggestion))
-        suggestionConsumption = .waitingForWhitespace()
-        clearSuggestion(resetConsumption: false)
+        inputMonitor?.paste(acceptance.accepted)
+        buffer.apply(.insert(acceptance.accepted))
+        if acceptance.remaining.isEmpty {
+            suggestionConsumption = .waitingForWhitespace()
+            clearSuggestion(resetConsumption: false)
+        } else {
+            self.suggestion = acceptance.remaining
+            suggestionConsumption = SuggestionConsumption(
+                suggestion: acceptance.remaining
+            )
+            overlay.consume(
+                matchedText: acceptance.accepted,
+                remainingSuggestion: acceptance.remaining
+            )
+        }
         scheduleWhitespaceCalibration(
-            suggestion: suggestion,
+            suggestion: acceptance.accepted,
             snapshotBeforeAcceptance: snapshotBeforeAcceptance
         )
         return true
