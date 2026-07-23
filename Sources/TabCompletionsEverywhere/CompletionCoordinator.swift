@@ -14,8 +14,11 @@ final class CompletionCoordinator: NSObject {
     private var buffer = ShadowTextBuffer()
     private var lastSnapshot: EditorSnapshot?
     private var suggestion: String?
+    private var suggestionConsumption: SuggestionConsumption?
     private var newestRequestID: UInt64 = 0
     private var enabled = true
+    private var permissionObserver: ((PermissionState) -> Void)?
+    private var lastPermissionState: PermissionState?
 
     private lazy var requestPump = LatestRequestPump<CompletionRequest, CompletionResponse>(
         operation: { [provider] request in
@@ -34,7 +37,8 @@ final class CompletionCoordinator: NSObject {
     }
 
     func start() {
-        requestPermissions()
+        requestInitialPermissionPrompts()
+        publishPermissionState(force: true)
         reconcile()
 
         let monitor = GlobalInputMonitor(
@@ -56,16 +60,72 @@ final class CompletionCoordinator: NSObject {
                 if self?.inputMonitor?.isRunning == false {
                     _ = self?.inputMonitor?.start()
                 }
+                self?.publishPermissionState()
                 self?.reconcile()
             }
         }
     }
 
-    @objc func requestPermissions() {
+    func observePermissionState(
+        _ observer: @escaping (PermissionState) -> Void
+    ) {
+        permissionObserver = observer
+        publishPermissionState(force: true)
+    }
+
+    @objc func openNextMissingPermission() {
+        guard let pane = currentPermissionState.nextSettingsPane else { return }
+        openSettings(pane)
+    }
+
+    @objc func openAccessibilitySettings() {
+        openSettings(.accessibility)
+    }
+
+    @objc func openInputMonitoringSettings() {
+        openSettings(.inputMonitoring)
+    }
+
+    private func requestInitialPermissionPrompts() {
         accessibility.requestTrustPrompt()
         if !CGPreflightListenEventAccess() {
             CGRequestListenEventAccess()
         }
+    }
+
+    private var currentPermissionState: PermissionState {
+        PermissionState(
+            accessibilityGranted: AXIsProcessTrusted(),
+            inputMonitoringGranted: CGPreflightListenEventAccess()
+        )
+    }
+
+    private func publishPermissionState(force: Bool = false) {
+        let state = currentPermissionState
+        guard force || state != lastPermissionState else { return }
+        lastPermissionState = state
+        permissionObserver?(state)
+    }
+
+    private func openSettings(_ pane: PermissionState.SettingsPane) {
+        let anchor: String
+        switch pane {
+        case .accessibility:
+            accessibility.requestTrustPrompt()
+            anchor = "Privacy_Accessibility"
+        case .inputMonitoring:
+            if !CGPreflightListenEventAccess() {
+                CGRequestListenEventAccess()
+            }
+            anchor = "Privacy_ListenEvent"
+        }
+
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)"
+        ) else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 
     @objc func toggleEnabled(_ sender: NSMenuItem) {
@@ -80,9 +140,37 @@ final class CompletionCoordinator: NSObject {
 
     private func handle(_ mutation: ShadowTextBuffer.Mutation) {
         guard enabled else { return }
-        clearSuggestion()
         buffer.apply(mutation)
 
+        if case let .insert(text) = mutation,
+           var consumption = suggestionConsumption {
+            let outcome = consumption.apply(insertedText: text)
+            suggestionConsumption = consumption
+
+            switch outcome {
+            case let .matched(remaining):
+                suggestion = remaining
+                overlay.consume(
+                    matchedText: text,
+                    remainingSuggestion: remaining
+                )
+                return
+            case .waitingForWhitespace:
+                suggestion = nil
+                overlay.hide()
+                return
+            case .triggerInference:
+                clearSuggestion()
+                scheduleCompletion()
+                return
+            case .diverged:
+                clearSuggestion()
+                scheduleCompletion()
+                return
+            }
+        }
+
+        clearSuggestion()
         if buffer.needsReconciliation {
             reconcile()
         } else {
@@ -133,6 +221,7 @@ final class CompletionCoordinator: NSObject {
 
         lastSnapshot = snapshot
         suggestion = text
+        suggestionConsumption = SuggestionConsumption(suggestion: text)
         overlay.show(
             text,
             at: snapshot.caretRect,
@@ -145,13 +234,17 @@ final class CompletionCoordinator: NSObject {
         guard enabled, let suggestion, !suggestion.isEmpty else { return false }
         inputMonitor?.paste(suggestion)
         buffer.apply(.insert(suggestion))
-        clearSuggestion()
+        suggestionConsumption = .waitingForWhitespace()
+        clearSuggestion(resetConsumption: false)
         return true
     }
 
-    private func clearSuggestion() {
+    private func clearSuggestion(resetConsumption: Bool = true) {
         debounceTask?.cancel()
         suggestion = nil
+        if resetConsumption {
+            suggestionConsumption = nil
+        }
         overlay.hide()
     }
 }

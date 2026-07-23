@@ -4,7 +4,7 @@ import CompletionCore
 @MainActor
 final class SuggestionOverlay {
     private let panel: NSPanel
-    private let ghostTextView: GhostTextView
+    private let label: NSTextField
 
     init() {
         panel = NSPanel(
@@ -21,17 +21,23 @@ final class SuggestionOverlay {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        ghostTextView = GhostTextView()
-        panel.contentView = ghostTextView
+        label = NSTextField(labelWithAttributedString: NSAttributedString())
+        label.isBezeled = false
+        label.drawsBackground = false
+        label.isEditable = false
+        label.isSelectable = false
+        label.lineBreakMode = .byClipping
+        label.cell?.usesSingleLineMode = true
+        panel.contentView = label
     }
 
     func show(
         _ suggestion: String,
-        at accessibilityRect: CGRect,
+        at caretRect: CGRect,
         typography: EditorTypography,
         foregroundColor: CGColor?
     ) {
-        guard !suggestion.isEmpty, accessibilityRect != .zero else {
+        guard !suggestion.isEmpty, caretRect != .zero else {
             hide()
             return
         }
@@ -42,55 +48,74 @@ final class SuggestionOverlay {
         } ?? .systemFont(ofSize: pointSize)
         let sourceColor = foregroundColor.flatMap(NSColor.init(cgColor:))
             ?? .labelColor
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: sourceColor.withAlphaComponent(0.34),
-        ]
         let attributedSuggestion = NSAttributedString(
             string: suggestion,
+            attributes: [
+                .font: font,
+                .foregroundColor: sourceColor.withAlphaComponent(0.34),
+            ]
+        )
+        let size = fittedSize(
+            for: attributedSuggestion,
+            minimumHeight: caretRect.height
+        )
+        let origin = CGPoint(
+            x: caretRect.maxX,
+            y: caretRect.minY - (size.height - caretRect.height) / 2
+        )
+
+        label.attributedStringValue = attributedSuggestion
+        panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        label.frame = NSRect(origin: .zero, size: size)
+        panel.orderFrontRegardless()
+    }
+
+    func consume(matchedText: String, remainingSuggestion: String) {
+        guard
+            !remainingSuggestion.isEmpty,
+            label.attributedStringValue.length > 0
+        else {
+            hide()
+            return
+        }
+
+        let attributes = label.attributedStringValue.attributes(
+            at: 0,
+            effectiveRange: nil
+        )
+        let matchedWidth = NSAttributedString(
+            string: matchedText,
+            attributes: attributes
+        ).size().width
+        let remaining = NSAttributedString(
+            string: remainingSuggestion,
             attributes: attributes
         )
-        let textSize = attributedSuggestion.size()
-        let lineHeight = ceil(font.ascender - font.descender + font.leading)
-        let size = CGSize(
-            width: min(max(ceil(textSize.width) + 1, 1), 720),
-            height: max(ceil(textSize.height), lineHeight, accessibilityRect.height)
+        let size = fittedSize(
+            for: remaining,
+            minimumHeight: panel.frame.height
         )
+        var frame = panel.frame
+        frame.origin.x += matchedWidth
+        frame.size = size
 
-        let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? 0
-        let caretBottom = primaryScreenHeight - accessibilityRect.maxY
-        let origin = CGPoint(
-            x: accessibilityRect.maxX,
-            y: caretBottom - (size.height - accessibilityRect.height) / 2
-        )
-
-        ghostTextView.attributedText = attributedSuggestion
-        panel.setFrame(NSRect(origin: origin, size: size), display: true)
-        ghostTextView.frame = NSRect(origin: .zero, size: size)
-        panel.orderFrontRegardless()
+        label.attributedStringValue = remaining
+        panel.setFrame(frame, display: true)
+        label.frame = NSRect(origin: .zero, size: size)
     }
 
     func hide() {
         panel.orderOut(nil)
     }
-}
 
-@MainActor
-private final class GhostTextView: NSView {
-    var attributedText = NSAttributedString() {
-        didSet {
-            needsDisplay = true
-        }
-    }
-
-    override var isFlipped: Bool {
-        true
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        let textHeight = attributedText.size().height
-        let y = max(0, (bounds.height - textHeight) / 2)
-        attributedText.draw(at: CGPoint(x: 0, y: y))
+    private func fittedSize(
+        for text: NSAttributedString,
+        minimumHeight: CGFloat
+    ) -> CGSize {
+        let measured = text.size()
+        return CGSize(
+            width: min(max(ceil(measured.width) + 1, 1), 720),
+            height: max(ceil(measured.height), minimumHeight)
+        )
     }
 }

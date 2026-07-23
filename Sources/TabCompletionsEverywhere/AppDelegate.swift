@@ -11,8 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let coordinator = CompletionCoordinator()
         self.coordinator = coordinator
-        coordinator.start()
         installStatusItem(for: coordinator)
+        coordinator.start()
     }
 
     private func installStatusItem(for coordinator: CompletionCoordinator) {
@@ -24,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         let status = NSMenuItem(
-            title: "Ready — type “thank” anywhere",
+            title: "Checking permissions…",
             action: nil,
             keyEquivalent: ""
         )
@@ -42,13 +42,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let permissions = NSMenuItem(
-            title: "Request Permissions",
-            action: #selector(CompletionCoordinator.requestPermissions),
+        let fixPermissions = NSMenuItem(
+            title: "Fix Missing Permission…",
+            action: #selector(CompletionCoordinator.openNextMissingPermission),
             keyEquivalent: ""
         )
-        permissions.target = coordinator
-        menu.addItem(permissions)
+        fixPermissions.target = coordinator
+        menu.addItem(fixPermissions)
+
+        let accessibilitySettings = NSMenuItem(
+            title: "Open Accessibility Settings…",
+            action: #selector(CompletionCoordinator.openAccessibilitySettings),
+            keyEquivalent: ""
+        )
+        accessibilitySettings.target = coordinator
+        menu.addItem(accessibilitySettings)
+
+        let inputMonitoringSettings = NSMenuItem(
+            title: "Open Input Monitoring Settings…",
+            action: #selector(CompletionCoordinator.openInputMonitoringSettings),
+            keyEquivalent: ""
+        )
+        inputMonitoringSettings.target = coordinator
+        menu.addItem(inputMonitoringSettings)
+
+        coordinator.observePermissionState { [weak status, weak fixPermissions] state in
+            status?.title = state.menuTitle
+            let ready = state.nextSettingsPane == nil
+            fixPermissions?.title = ready
+                ? "Permissions Granted"
+                : "Fix Missing Permission…"
+            fixPermissions?.isEnabled = !ready
+        }
 
         menu.addItem(.separator())
         menu.addItem(

@@ -64,3 +64,6 @@ This directly targets the likely KeyType failure mode: repeatedly launching work
 3. Add MLX generation and memory-pressure controls.
 4. Add persistent ACP clients for Codex and Claude rather than spawning a CLI process per completion.
 5. Learn per-app editor quirks and add a compatibility matrix.
+
+The proposed privacy-local learning architecture is documented in
+[`docs/LOCAL_VOCABULARY.md`](docs/LOCAL_VOCABULARY.md).
