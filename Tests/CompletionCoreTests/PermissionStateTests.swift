@@ -18,4 +18,15 @@ final class PermissionStateTests: XCTestCase {
             "Accessibility ✓"
         )
     }
+
+    func testReportsOptionalScreenRecordingIndependently() {
+        let state = PermissionState(
+            accessibilityGranted: true,
+            screenRecordingGranted: false
+        )
+
+        XCTAssertNil(state.nextSettingsPane)
+        XCTAssertTrue(state.isGranted(.accessibility))
+        XCTAssertFalse(state.isGranted(.screenRecording))
+    }
 }

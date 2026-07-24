@@ -67,3 +67,27 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - Issue #1 remains open. Deferred scope includes setup/permission UI, launch at
   login, provider/model configuration, Keychain credentials, OCR privacy
   controls, shortcuts, diagnostics, and general settings beyond app policy.
+
+## Follow-up slice: setup and runtime diagnostics
+
+### Acceptance criteria
+
+- [ ] Settings reports Accessibility and Screen Recording independently.
+- [ ] Missing permissions have working request/open-System-Settings actions.
+- [ ] Settings shows the current completion runtime status without relying on
+      the menu-bar menu.
+- [ ] Permission and model status changes update live while Settings is open.
+
+### TODOs
+
+- [x] Extend the permission model and coordinator with optional Screen
+      Recording status and actions.
+- [ ] Add an observable runtime-status bridge shared by the menu and Settings.
+- [ ] Add Setup and Models & Providers status pages to the settings sidebar.
+- [ ] Run focused and full validation, then record the remaining issue scope.
+
+### Notes
+
+- Screen Recording is reported independently and remains optional while OCR is
+  disabled; `nextSettingsPane` continues to represent only required setup.
+- `swift test --filter PermissionStateTests` passes (3 tests).

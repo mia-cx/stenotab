@@ -128,12 +128,26 @@ final class CompletionCoordinator: NSObject {
         openSettings(.accessibility)
     }
 
+    @objc func openScreenRecordingSettings() {
+        openSettings(.screenRecording)
+    }
+
+    func requestScreenRecordingPermission() {
+        if !CGPreflightScreenCaptureAccess() {
+            _ = CGRequestScreenCaptureAccess()
+        }
+        publishPermissionState(force: true)
+    }
+
     private func requestInitialPermissionPrompts() {
         accessibility.requestTrustPrompt()
     }
 
     private var currentPermissionState: PermissionState {
-        PermissionState(accessibilityGranted: AXIsProcessTrusted())
+        PermissionState(
+            accessibilityGranted: AXIsProcessTrusted(),
+            screenRecordingGranted: CGPreflightScreenCaptureAccess()
+        )
     }
 
     private func publishPermissionState(force: Bool = false) {
@@ -149,6 +163,8 @@ final class CompletionCoordinator: NSObject {
         case .accessibility:
             accessibility.requestTrustPrompt()
             anchor = "Privacy_Accessibility"
+        case .screenRecording:
+            anchor = "Privacy_ScreenCapture"
         }
 
         guard let url = URL(
