@@ -39,7 +39,7 @@ fi
     --app-icon StenoTab \
     --compile "$resources_dir" \
     --output-partial-info-plist "$asset_info_plist" \
-    --minimum-deployment-target 14.0 \
+    --minimum-deployment-target 26.0 \
     --platform macosx \
     --target-device mac \
     --output-format human-readable-text
@@ -65,6 +65,16 @@ echo "Built $app_dir"
 if [[ "${STENOTAB_NO_OPEN:-0}" == "1" ]]; then
     echo "Skipping launch because STENOTAB_NO_OPEN=1"
 else
+    if pgrep -x StenoTab >/dev/null; then
+        echo "Stopping the previous StenoTab process"
+        osascript -e 'tell application id "cx.mia.stenotab" to quit'
+        for _ in {1..50}; do
+            if ! pgrep -x StenoTab >/dev/null; then
+                break
+            fi
+            sleep 0.1
+        done
+    fi
     echo "Launching app"
     open "$app_dir"
 fi

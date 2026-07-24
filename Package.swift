@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "StenoTab",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v26)
     ],
     products: [
         .library(name: "CompletionCore", targets: ["CompletionCore"]),
