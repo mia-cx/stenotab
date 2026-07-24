@@ -95,7 +95,11 @@ final class AccessibilityReader {
 
         var pid: pid_t = 0
         AXUIElementGetPid(focused, &pid)
-        let caretRect = caretBounds(of: focused, range: range)
+        let caretRect = caretBounds(
+            of: focused,
+            range: range,
+            precedingCharacter: prefix.last
+        )
             ?? estimatedCaretBounds(of: focused, prefix: prefix)
             ?? .zero
         let appearance = textAppearance(
@@ -356,7 +360,11 @@ final class AccessibilityReader {
         return range
     }
 
-    private func caretBounds(of element: AXUIElement, range: CFRange) -> CGRect? {
+    private func caretBounds(
+        of element: AXUIElement,
+        range: CFRange,
+        precedingCharacter: Character?
+    ) -> CGRect? {
         var caretRange = CFRange(location: range.location, length: 0)
         if
             let rangeValue = AXValueCreate(.cfRange, &caretRange),
@@ -368,7 +376,32 @@ final class AccessibilityReader {
             let bounds = rect(from: raw),
             OverlayGeometry.isUsableCaretRect(bounds)
         {
-            return cocoaRect(fromAccessibilityRect: bounds)
+            let previousBounds: CGRect?
+            if range.location > 0 {
+                var previousRange = CFRange(
+                    location: range.location - 1,
+                    length: 1
+                )
+                previousBounds = AXValueCreate(.cfRange, &previousRange)
+                    .flatMap {
+                        copyParameterizedAttribute(
+                            kAXBoundsForRangeParameterizedAttribute,
+                            parameter: $0,
+                            from: element
+                        )
+                    }
+                    .flatMap(rect(from:))
+            } else {
+                previousBounds = nil
+            }
+            let reconciled = OverlayGeometry.reconcileCaretRect(
+                bounds,
+                previousCharacterRect: previousBounds,
+                precedingCharacterIsLineBreak:
+                    precedingCharacter == "\n"
+                    || precedingCharacter == "\r"
+            )
+            return cocoaRect(fromAccessibilityRect: reconciled)
         }
 
         guard

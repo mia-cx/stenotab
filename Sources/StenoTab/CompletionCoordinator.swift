@@ -13,6 +13,8 @@ final class CompletionCoordinator: NSObject {
     private let accessibility = AccessibilityReader()
     private let overlay = SuggestionOverlay()
     private let provider: any CompletionProvider
+    private let promptConfiguration: @MainActor () -> PromptConfiguration
+    private let onSuggestionAccepted: @MainActor (String) -> Void
     private var inputMonitor: GlobalInputMonitor?
     private var reconciliationTimer: Timer?
     private var debounceTask: Task<Void, Never>?
@@ -51,8 +53,16 @@ final class CompletionCoordinator: NSObject {
         }
     )
 
-    init(provider: any CompletionProvider = ProviderFactory.make()) {
+    init(
+        provider: any CompletionProvider = ProviderFactory.make(),
+        promptConfiguration: @escaping @MainActor () -> PromptConfiguration = {
+            .defaults
+        },
+        onSuggestionAccepted: @escaping @MainActor (String) -> Void = { _ in }
+    ) {
         self.provider = provider
+        self.promptConfiguration = promptConfiguration
+        self.onSuggestionAccepted = onSuggestionAccepted
         super.init()
     }
 
@@ -315,6 +325,7 @@ final class CompletionCoordinator: NSObject {
         let fragment = detectPartialWord
             ? incompleteWordFragment(in: prefix)
             : nil
+        let configuration = promptConfiguration()
         return CompletionRequest(
             id: id,
             prefix: prefix,
@@ -322,8 +333,12 @@ final class CompletionCoordinator: NSObject {
             context: CompletionContext(
                 applicationName: snapshot?.applicationName,
                 website: nil,
-                inputKind: snapshot?.inputKind
+                inputKind: snapshot?.inputKind,
+                clipboardContent: clipboardContent(
+                    configuration: configuration
+                )
             ),
+            promptConfiguration: configuration,
             partialWordFragment: fragment,
             partialWordCandidates: fragment.map {
                 completionCandidates(for: $0)
@@ -331,21 +346,20 @@ final class CompletionCoordinator: NSObject {
         )
     }
 
+    private func clipboardContent(
+        configuration: PromptConfiguration
+    ) -> String? {
+        guard configuration.context.includeClipboard else { return nil }
+        guard let value = NSPasteboard.general.string(forType: .string) else {
+            return nil
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(2_000))
+    }
+
     private func incompleteWordFragment(in prefix: String) -> String? {
-        guard let fragment = PartialWordCompletion.fragment(in: prefix) else {
-            return nil
-        }
-        let misspelled = NSSpellChecker.shared.checkSpelling(
-            of: fragment,
-            startingAt: 0
-        )
-        guard
-            misspelled.location != NSNotFound,
-            misspelled.length > 0
-        else {
-            return nil
-        }
-        return fragment
+        PartialWordCompletion.fragment(in: prefix)
     }
 
     private func completionCandidates(for fragment: String) -> [String] {
@@ -403,7 +417,8 @@ final class CompletionCoordinator: NSObject {
                     caretHeight: snapshot.caretRect.height,
                     isWebBacked: snapshot.isWebBacked
                 )
-            )
+            ),
+            useNativeTextLayoutMetrics: !snapshot.isWebBacked
         )
     }
 
@@ -474,6 +489,7 @@ final class CompletionCoordinator: NSObject {
         let snapshotBeforeAcceptance = accessibility.snapshot() ?? lastSnapshot
         inputMonitor?.paste(acceptance.accepted)
         buffer.apply(.insert(acceptance.accepted))
+        onSuggestionAccepted(acceptance.accepted)
         if acceptance.remaining.isEmpty {
             suggestionConsumption = nil
             clearSuggestion()
@@ -491,7 +507,8 @@ final class CompletionCoordinator: NSObject {
             )
             scheduleCaretReanchor(
                 expectedPrefix: buffer.prefix,
-                expectedSuggestion: acceptance.remaining
+                expectedSuggestion: acceptance.remaining,
+                previousSnapshot: snapshotBeforeAcceptance
             )
             startRefillIfNeeded(
                 remainingSuggestion: acceptance.remaining
@@ -615,14 +632,16 @@ final class CompletionCoordinator: NSObject {
         } else {
             scheduleCaretReanchor(
                 expectedPrefix: key.prefix,
-                expectedSuggestion: text
+                expectedSuggestion: text,
+                previousSnapshot: lastSnapshot
             )
         }
     }
 
     private func scheduleCaretReanchor(
         expectedPrefix: String,
-        expectedSuggestion: String
+        expectedSuggestion: String,
+        previousSnapshot: EditorSnapshot?
     ) {
         caretReanchorTask?.cancel()
         guard let editorIdentifier = lastSnapshot?.editorIdentifier else {
@@ -630,7 +649,7 @@ final class CompletionCoordinator: NSObject {
         }
 
         caretReanchorTask = Task { [weak self] in
-            for delay in [12, 24, 48, 80] {
+            for delay in [12, 24, 48, 80, 120, 180, 260, 400, 500] {
                 try? await Task.sleep(for: .milliseconds(delay))
                 guard !Task.isCancelled, let self else { return }
                 guard
@@ -642,7 +661,14 @@ final class CompletionCoordinator: NSObject {
                 guard
                     let snapshot = self.accessibility.snapshot(),
                     snapshot.prefix == expectedPrefix,
-                    snapshot.editorIdentifier == editorIdentifier
+                    snapshot.editorIdentifier == editorIdentifier,
+                    CaretReanchorPolicy.isReady(
+                        previousPrefix: previousSnapshot?.prefix ?? "",
+                        expectedPrefix: expectedPrefix,
+                        observedPrefix: snapshot.prefix,
+                        previousCaretRect: previousSnapshot?.caretRect,
+                        observedCaretRect: snapshot.caretRect
+                    )
                 else {
                     continue
                 }

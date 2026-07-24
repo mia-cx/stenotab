@@ -42,12 +42,73 @@ public enum OverlayGeometry {
             && rect.height >= 1
     }
 
+    public static func reconcileCaretRect(
+        _ reportedCaretRect: CGRect,
+        previousCharacterRect: CGRect?,
+        precedingCharacterIsLineBreak: Bool
+    ) -> CGRect {
+        guard
+            !precedingCharacterIsLineBreak,
+            let previousCharacterRect,
+            isUsableCaretRect(reportedCaretRect),
+            isUsableCaretRect(previousCharacterRect)
+        else {
+            return reportedCaretRect
+        }
+
+        let lineHeight = max(
+            reportedCaretRect.height,
+            previousCharacterRect.height
+        )
+        let sharesEndpoint = abs(
+            reportedCaretRect.minX - previousCharacterRect.maxX
+        ) <= max(1, lineHeight * 0.04)
+        let hasMatchingHeight = abs(
+            reportedCaretRect.height - previousCharacterRect.height
+        ) <= max(1, lineHeight * 0.08)
+        let verticalOffset = abs(
+            reportedCaretRect.minY - previousCharacterRect.minY
+        )
+        let isExactlyOneLineAway =
+            (lineHeight * 0.75 ... lineHeight * 1.25)
+                .contains(verticalOffset)
+
+        guard sharesEndpoint, hasMatchingHeight, isExactlyOneLineAway else {
+            return reportedCaretRect
+        }
+        return CGRect(
+            x: reportedCaretRect.minX,
+            y: previousCharacterRect.minY,
+            width: reportedCaretRect.width,
+            height: previousCharacterRect.height
+        )
+    }
+
     public static func baselineOffset(
         containerHeight: CGFloat,
         ascent: CGFloat,
         descent: CGFloat,
-        leading: CGFloat
+        leading: CGFloat,
+        nativeLineHeight: CGFloat? = nil,
+        nativeBaselineOffsetFromTop: CGFloat? = nil
     ) -> CGFloat {
+        if
+            let nativeLineHeight,
+            let nativeBaselineOffsetFromTop,
+            nativeLineHeight.isFinite,
+            nativeLineHeight > 0,
+            nativeBaselineOffsetFromTop.isFinite,
+            (0 ... nativeLineHeight).contains(nativeBaselineOffsetFromTop)
+        {
+            let verticalInset = max(
+                0,
+                containerHeight - nativeLineHeight
+            ) / 2
+            return verticalInset
+                + nativeLineHeight
+                - nativeBaselineOffsetFromTop
+        }
+
         let lineHeight = ascent + descent + leading
         let verticalInset = max(0, containerHeight - lineHeight) / 2
         return verticalInset + descent + leading / 2
@@ -58,11 +119,14 @@ public enum OverlayGeometry {
         ascent: CGFloat,
         descent: CGFloat,
         leading: CGFloat,
+        nativeLineHeight: CGFloat? = nil,
+        nativeBaselineOffsetFromTop: CGFloat? = nil,
         backingScaleFactor: CGFloat
     ) -> PreparedOverlayLinePlacement {
         let height = max(
             ceil(ascent + descent + leading),
-            caretRect.height
+            caretRect.height,
+            nativeLineHeight ?? 0
         )
         let origin = pixelAlignedOrigin(
             CGPoint(
@@ -78,7 +142,10 @@ public enum OverlayGeometry {
                 containerHeight: height,
                 ascent: ascent,
                 descent: descent,
-                leading: leading
+                leading: leading,
+                nativeLineHeight: nativeLineHeight,
+                nativeBaselineOffsetFromTop:
+                    nativeBaselineOffsetFromTop
             )
         )
     }

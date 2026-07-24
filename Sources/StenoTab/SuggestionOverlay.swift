@@ -8,10 +8,13 @@ final class SuggestionOverlay {
         let attributes: [NSAttributedString.Key: Any]
         let linePlacement: PreparedOverlayLinePlacement
         let leadingWhitespaceCompensation: CGFloat
+        let nativeLineHeight: CGFloat?
+        let nativeBaselineOffsetFromTop: CGFloat?
     }
 
     private let panel: NSPanel
     private let textView: GhostTextView
+    private let nativeLayoutManager = NSLayoutManager()
     private var preparedPresentation: PreparedPresentation?
 
     init() {
@@ -38,7 +41,8 @@ final class SuggestionOverlay {
         at caretRect: CGRect,
         typography: EditorTypography,
         foregroundColor: CGColor?,
-        leadingWhitespaceCompensation: CGFloat
+        leadingWhitespaceCompensation: CGFloat,
+        useNativeTextLayoutMetrics: Bool
     ) {
         guard OverlayGeometry.isUsableCaretRect(caretRect) else {
             preparedPresentation = nil
@@ -58,6 +62,12 @@ final class SuggestionOverlay {
         )
         let backingScaleFactor = screen(containing: caretRect)?
             .backingScaleFactor ?? 2
+        let nativeLineHeight = useNativeTextLayoutMetrics
+            ? nativeLayoutManager.defaultLineHeight(for: font)
+            : nil
+        let nativeBaselineOffsetFromTop = useNativeTextLayoutMetrics
+            ? nativeLayoutManager.defaultBaselineOffset(for: font)
+            : nil
         preparedPresentation = PreparedPresentation(
             attributes: [
                 .font: font,
@@ -68,9 +78,14 @@ final class SuggestionOverlay {
                 ascent: CTFontGetAscent(coreTextFont),
                 descent: CTFontGetDescent(coreTextFont),
                 leading: CTFontGetLeading(coreTextFont),
+                nativeLineHeight: nativeLineHeight,
+                nativeBaselineOffsetFromTop:
+                    nativeBaselineOffsetFromTop,
                 backingScaleFactor: backingScaleFactor
             ),
-            leadingWhitespaceCompensation: leadingWhitespaceCompensation
+            leadingWhitespaceCompensation: leadingWhitespaceCompensation,
+            nativeLineHeight: nativeLineHeight,
+            nativeBaselineOffsetFromTop: nativeBaselineOffsetFromTop
         )
     }
 
@@ -144,7 +159,10 @@ final class SuggestionOverlay {
         )
         let layout = layout(
             for: remaining,
-            minimumHeight: panel.frame.height
+            minimumHeight: panel.frame.height,
+            nativeLineHeight: preparedPresentation?.nativeLineHeight,
+            nativeBaselineOffsetFromTop:
+                preparedPresentation?.nativeBaselineOffsetFromTop
         )
         var frame = panel.frame
         frame.origin.x += lineWidth(of: previous) - lineWidth(of: remaining)
@@ -170,7 +188,9 @@ final class SuggestionOverlay {
 
     private func layout(
         for text: NSAttributedString,
-        minimumHeight: CGFloat
+        minimumHeight: CGFloat,
+        nativeLineHeight: CGFloat?,
+        nativeBaselineOffsetFromTop: CGFloat?
     ) -> (size: CGSize, baselineOffset: CGFloat) {
         let line = CTLineCreateWithAttributedString(text)
         var ascent: CGFloat = 0
@@ -186,7 +206,8 @@ final class SuggestionOverlay {
         )
         let height = max(
             ceil(ascent + descent + leading),
-            minimumHeight
+            minimumHeight,
+            nativeLineHeight ?? 0
         )
         return (
             CGSize(
@@ -197,7 +218,10 @@ final class SuggestionOverlay {
                 containerHeight: height,
                 ascent: ascent,
                 descent: descent,
-                leading: leading
+                leading: leading,
+                nativeLineHeight: nativeLineHeight,
+                nativeBaselineOffsetFromTop:
+                    nativeBaselineOffsetFromTop
             )
         )
     }
