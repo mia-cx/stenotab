@@ -1,8 +1,12 @@
-# Tab Completions Everywhere
+# StenoTab
 
 > Experimental macOS prototype. The name, UX, and model integrations are intentionally unfinished.
 
-Low-latency, system-wide text completion for macOS. Type in an editable field, see translucent inline ghost text at the caret, and press Tab to accept it. The renderer uses the editor's Accessibility-exposed font, size, and foreground colour when available.
+Low-latency, system-wide text completion for macOS. Type in an editable field,
+see translucent inline ghost text at the caret, press Tab to accept the next
+word, or press Option+Tab to accept the entire suggestion. The renderer uses
+the editor's Accessibility-exposed font, size, and foreground colour when
+available.
 
 ## Try it
 
@@ -18,66 +22,69 @@ editable field to exercise the built-in zero-dependency demo provider.
 
 The app lives in the menu bar. Quit or disable completions there.
 
+## Tests
+
+The behavior suite uses XCTest and can run from Xcode, including Xcode beta.
+From the shell, `swift test` uses the currently selected developer toolchain.
+If `xcode-select -p` reports `/Library/Developer/CommandLineTools`, either run
+the package's tests in Xcode or select an Xcode installation whose command-line
+components are available.
+
 ## Use an OpenAI-compatible model
 
-The default provider is deliberately deterministic so the interaction loop can be tested without downloading a model. Set these variables before launching to use any server implementing `POST /v1/chat/completions`, including a local llama.cpp or MLX-backed server:
+The default provider is deliberately deterministic so the interaction loop can be tested without downloading a model. Set these variables before launching to use any server implementing `POST /v1/chat/completions`:
 
 ```sh
-export TAB_COMPLETION_BASE_URL=http://127.0.0.1:8080
-export TAB_COMPLETION_MODEL=your-model-name
-export TAB_COMPLETION_API_KEY=optional
+export STENOTAB_BASE_URL=http://127.0.0.1:8080
+export STENOTAB_MODEL=your-model-name
+export STENOTAB_API_KEY=optional
 ./Scripts/build-and-run.sh
 ```
 
 Only the API provider sends text outside the Mac. Secure text fields are rejected. The prototype sends up to 1,500 characters before the cursor and 300 after it.
 
-## Use a local MLX model
+## Use the local llama.cpp model
 
-TCE includes local Gemma profiles for Apple silicon. Model weights remain in
-the standard Hugging Face cache (`~/.cache/huggingface`); TCE never copies them
-into its bundle or Application Support.
+StenoTab's recommended local backend is Gemma 4 E2B Base Q4_K_M on llama.cpp.
+Model weights remain in the standard Hugging Face cache
+(`~/.cache/huggingface`); StenoTab never copies them into its bundle or
+Application Support.
 
 ```sh
-# See the profiles without downloading anything.
+# Requirements for the current development build.
+brew install hf llama.cpp
+
+# See the configured local profile without downloading anything.
 ./Scripts/local-model.zsh list
 
-# Configure TCE and start the recommended 16 GB profile.
-./Scripts/local-model.zsh configure gemma-4-e2b-it
-./Scripts/local-model.zsh serve gemma-4-e2b-it
+# Download into the shared Hugging Face cache and configure StenoTab.
+./Scripts/local-model.zsh configure gemma-4-e2b-base
 
-# In another terminal, measure real streaming TTFT and decode speed.
-./Scripts/local-model.zsh benchmark gemma-4-e2b-it
+# Restart StenoTab. It launches, monitors, and shuts down llama-server.
+# Once the menu says the local model is ready, benchmark it if desired.
+./Scripts/local-model.zsh benchmark gemma-4-e2b-base
+
+# Inspect or render the reusable OCR/clipboard/user-voice fixture suite.
+./Scripts/benchmark-local-model.py --list-cases
 ```
 
-Restart TCE after changing the configured profile. The first `serve` downloads
-only files missing from the shared Hugging Face cache.
+On a 10-core M4 MacBook Air with 16 GB unified memory, direct llama.cpp
+measured 80 ms median and 100 ms p95 cached-input TTFT across the autocomplete
+fixtures. A warmed fixed-length probe measured 69 ms TTFT and 50.5 tok/s.
+These are development snapshots, not hardware-independent promises.
 
-| Profile | Intended Mac | Role |
-| --- | --- | --- |
-| `gemma-3-270m-base` | 8 GB+ | Experimental speed floor; quality is inconsistent |
-| `gemma-3-1b-base` | 8 GB+ | Fast raw continuation |
-| `gemma-3-1b-it` | 8 GB+ | Promptable text-only alternative |
-| `gemma-4-e2b-base` | 16 GB+ | Non-IT base model for raw continuation |
-| `gemma-4-e2b-it` | 16 GB+ | Recommended; exact-prefix assistant prefill |
+StenoTab uses the Base model for continuation because an IT model interprets an
+unfinished model turn as assistant text and can slip into phrases such as
+“I can help.” A separate short lexical prompt handles words the macOS spell
+checker identifies as unfinished; ordinary complete words stay on the
+contextual continuation path.
 
-On a 10-core M4 MacBook Air with 16 GB unified memory, the current measured
-MLX baselines are:
-
-| Model | Prefill | Decode | Peak model memory |
-| --- | ---: | ---: | ---: |
-| Gemma 3 270M base 4-bit | 7,054 tok/s | 345 tok/s | 0.37 GB |
-| Gemma 3 1B base 4-bit | 1,568 tok/s | 133 tok/s | 0.95 GB |
-| Gemma 3 1B IT 4-bit | 1,520 tok/s | 129 tok/s | 0.95 GB |
-| Gemma 4 E2B IT 4-bit | 1,645 tok/s | 59 tok/s | 2.87 GB |
-
-The real HTTP benchmark for Gemma 4 E2B IT measured a 220 ms warm median TTFT,
-271 ms median total latency, and 50 tok/s mean streamed decode rate. Its first
-cold request measured approximately 702 ms TTFT.
-
-The E2B IT profile uses Gemma's chat template with the text already typed as an
-unfinished model response. This makes the model continue the exact final
-character, including completing a partially typed word, instead of answering a
-separate autocomplete instruction.
+At launch, StenoTab checks the configured endpoint's `/v1/models`. It reuses an
+existing server only when that server advertises the selected model, including
+multi-model llama.cpp router servers. Otherwise StenoTab starts its own
+localhost-only server on its dedicated default port, `18473`, or the next
+available port. `STENOTAB_LOCAL_PORT` overrides that default. On quit,
+StenoTab terminates only a server process it launched itself.
 
 `max_tokens` primarily limits generation and KV-cache growth. It does not avoid
 loading the model weights.
@@ -107,7 +114,7 @@ This directly targets the likely KeyType failure mode: repeatedly launching work
 ## Prototype boundaries
 
 - The built-in provider proves the global interaction loop, not completion quality.
-- OpenAI-compatible HTTP works now. Native llama.cpp/MLX loading and persistent ACP sessions for Codex/Claude belong behind the same provider boundary but are not implemented yet.
+- OpenAI-compatible HTTP and StenoTab-managed llama.cpp work now. Persistent ACP sessions for Codex/Claude belong behind the same provider boundary but are not implemented yet.
 - Tab acceptance uses a short-lived pasteboard swap because that works in more apps than direct AX replacement.
 - Some custom editors expose incomplete Accessibility text or caret information.
 - The app is ad-hoc signed and not notarized.
@@ -116,16 +123,19 @@ This directly targets the likely KeyType failure mode: repeatedly launching work
 ## Project layout
 
 - `CompletionCore`: shadow text buffer and latest-request-only scheduler.
-- `TabCompletionsEverywhere`: menu-bar app, event tap, Accessibility reader, provider, overlay, and acceptance.
-- `CompletionCoreTests`: focused behavior tests. They require the XCTest runtime included with full Xcode.
+- `StenoTab`: menu-bar app, event tap, Accessibility reader, provider, overlay, and acceptance.
+- `CompletionCoreTests`: focused XCTest behavior tests.
 
 ## Next slices
 
 1. Add latency instrumentation with buffered, off-hot-path persistence.
-2. Add a persistent llama.cpp engine with prompt-state reuse and interruptible decoding.
-3. Add MLX generation and memory-pressure controls.
+2. Add interruptible decoding and explicit memory-pressure controls to the managed llama.cpp runtime.
+3. Bundle and sign llama.cpp for release builds instead of relying on Homebrew.
 4. Add persistent ACP clients for Codex and Claude rather than spawning a CLI process per completion.
 5. Learn per-app editor quirks and add a compatibility matrix.
 
 The proposed privacy-local learning architecture is documented in
 [`docs/LOCAL_VOCABULARY.md`](docs/LOCAL_VOCABULARY.md).
+
+The exploratory StenoTalk and cross-platform direction is documented in
+[`docs/CROSS_PLATFORM_ARCHITECTURE.md`](docs/CROSS_PLATFORM_ARCHITECTURE.md).
