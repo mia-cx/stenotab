@@ -76,6 +76,27 @@ final class ProviderSettingsTests: XCTestCase {
         )
     }
 
+    func testModelsEndpointRespectsExistingV1Path() {
+        XCTAssertEqual(
+            RemoteProviderConfiguration(
+                displayName: "Versioned",
+                baseURL: "https://example.com/v1",
+                model: "model",
+                apiStyle: .chatCompletions
+            ).modelsURL?.absoluteString,
+            "https://example.com/v1/models"
+        )
+        XCTAssertEqual(
+            RemoteProviderConfiguration(
+                displayName: "Root",
+                baseURL: "https://example.com",
+                model: "model",
+                apiStyle: .chatCompletions
+            ).modelsURL?.absoluteString,
+            "https://example.com/v1/models"
+        )
+    }
+
     func testRemoteSelectionResolvesByStableIdentifier() {
         let remote = RemoteProviderConfiguration(
             id: "personal",

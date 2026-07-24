@@ -14,12 +14,14 @@ final class SettingsWindowController: NSWindowController {
     init(
         promptStore: PromptSettingsStore,
         applicationPolicyStore: ApplicationPolicyStore,
+        providerSettingsStore: ProviderSettingsStore,
         runtimeStatusStore: RuntimeStatusStore,
         actions: SettingsActions
     ) {
         let rootView = SettingsRootView(
             promptStore: promptStore,
             applicationPolicyStore: applicationPolicyStore,
+            providerSettingsStore: providerSettingsStore,
             runtimeStatusStore: runtimeStatusStore,
             actions: actions
         )
@@ -60,6 +62,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
 private struct SettingsRootView: View {
     @ObservedObject var promptStore: PromptSettingsStore
     @ObservedObject var applicationPolicyStore: ApplicationPolicyStore
+    @ObservedObject var providerSettingsStore: ProviderSettingsStore
     @ObservedObject var runtimeStatusStore: RuntimeStatusStore
     let actions: SettingsActions
     @State private var selection: SettingsPage? = .setup
@@ -85,7 +88,10 @@ private struct SettingsRootView: View {
                     actions: actions
                 )
             case .modelsProviders:
-                ModelsProvidersView(store: runtimeStatusStore)
+                ModelsProvidersView(
+                    runtimeStore: runtimeStatusStore,
+                    providerStore: providerSettingsStore
+                )
             case .promptLab:
                 PromptLabView(store: promptStore)
             case .appSettings:
@@ -212,13 +218,43 @@ private struct RuntimeStatusRow: View {
 }
 
 private struct ModelsProvidersView: View {
-    @ObservedObject var store: RuntimeStatusStore
+    @ObservedObject var runtimeStore: RuntimeStatusStore
+    @ObservedObject var providerStore: ProviderSettingsStore
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 SettingsSection(title: "Active Runtime") {
-                    RuntimeStatusRow(status: store.modelStatus)
+                    RuntimeStatusRow(status: runtimeStore.modelStatus)
+                    Divider()
+                    Picker(
+                        "Active provider",
+                        selection: Binding(
+                            get: {
+                                providerStore.configuration.selection
+                            },
+                            set: {
+                                providerStore.setSelection($0)
+                            }
+                        )
+                    ) {
+                        Text("Built-in Demo")
+                            .tag(ProviderSelection.builtInDemo)
+                        Text("Local llama.cpp")
+                            .tag(ProviderSelection.local)
+                        ForEach(
+                            providerStore.configuration.remoteProviders
+                        ) { provider in
+                            Text(provider.displayName)
+                                .tag(
+                                    ProviderSelection.remote(
+                                        providerID: provider.id
+                                    )
+                                )
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 420)
                 }
 
                 SettingsSection(title: "Supported Local Models") {
@@ -254,12 +290,40 @@ private struct ModelsProvidersView: View {
                 }
 
                 SettingsSection(title: "Remote Providers") {
-                    Text(
-                        "OpenAI-compatible endpoint configuration and Keychain "
-                            + "credentials are the next provider slice."
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    if providerStore.configuration.remoteProviders.isEmpty {
+                        Text(
+                            "Add an OpenAI-compatible endpoint. API keys are "
+                                + "stored separately in your login Keychain."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+
+                    ForEach(
+                        Array(
+                            providerStore.configuration.remoteProviders
+                                .enumerated()
+                        ),
+                        id: \.element.id
+                    ) { index, provider in
+                        if index > 0 {
+                            Divider()
+                        }
+                        RemoteProviderEditor(
+                            provider: provider,
+                            store: providerStore
+                        )
+                    }
+
+                    Divider()
+                    HStack {
+                        Spacer()
+                        Button {
+                            addRemoteProvider()
+                        } label: {
+                            Label("Add Provider", systemImage: "plus")
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 28)
@@ -268,6 +332,206 @@ private struct ModelsProvidersView: View {
             .frame(maxWidth: 900, alignment: .leading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private func addRemoteProvider() {
+        let provider = RemoteProviderConfiguration(
+            displayName: "New Provider",
+            baseURL: "http://127.0.0.1:8080/v1",
+            model: "",
+            apiStyle: .chatCompletions
+        )
+        do {
+            try providerStore.upsert(provider, apiKey: nil)
+            providerStore.setSelection(
+                .remote(providerID: provider.id)
+            )
+        } catch {
+            // An empty credential only removes a nonexistent Keychain item.
+            // There is no useful recovery UI for that exceptional path here.
+        }
+    }
+}
+
+private struct RemoteProviderEditor: View {
+    let provider: RemoteProviderConfiguration
+    @ObservedObject var store: ProviderSettingsStore
+    @State private var draft: RemoteProviderConfiguration
+    @State private var apiKey = ""
+    @State private var didLoadCredential = false
+    @State private var saveError: String?
+    @State private var confirmsRemoval = false
+
+    init(
+        provider: RemoteProviderConfiguration,
+        store: ProviderSettingsStore
+    ) {
+        self.provider = provider
+        self.store = store
+        _draft = State(initialValue: provider)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                TextField("Display name", text: $draft.displayName)
+                    .font(.headline)
+                Spacer()
+                connectionStatus
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                GridRow {
+                    Text("Base URL")
+                        .foregroundStyle(.secondary)
+                    TextField(
+                        "https://example.com/v1",
+                        text: $draft.baseURL
+                    )
+                }
+                GridRow {
+                    Text("Model")
+                        .foregroundStyle(.secondary)
+                    TextField("model-name", text: $draft.model)
+                }
+                GridRow {
+                    Text("API style")
+                        .foregroundStyle(.secondary)
+                    Picker("API style", selection: $draft.apiStyle) {
+                        ForEach(CompletionAPIStyle.allCases, id: \.self) {
+                            style in
+                            Text(style.displayName).tag(style)
+                        }
+                    }
+                    .labelsHidden()
+                }
+                GridRow {
+                    Text("API key")
+                        .foregroundStyle(.secondary)
+                    SecureField("Optional", text: $apiKey)
+                }
+                GridRow {
+                    Text("Maximum length")
+                        .foregroundStyle(.secondary)
+                    Stepper(
+                        "\(draft.maximumWords) words",
+                        value: $draft.maximumWords,
+                        in: 1...32
+                    )
+                }
+            }
+            .textFieldStyle(.roundedBorder)
+
+            if let saveError {
+                Text(saveError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Button("Remove", role: .destructive) {
+                    confirmsRemoval = true
+                }
+                Spacer()
+                Button("Save") {
+                    save()
+                }
+                .disabled(!isValid)
+                Button("Save & Test") {
+                    saveAndTest()
+                }
+                .disabled(!isValid)
+            }
+        }
+        .padding(.vertical, 7)
+        .task(id: provider.id) {
+            guard !didLoadCredential else { return }
+            didLoadCredential = true
+            do {
+                apiKey = try store.credential(for: provider.id) ?? ""
+            } catch {
+                saveError = error.localizedDescription
+            }
+        }
+        .confirmationDialog(
+            "Remove \(provider.displayName)?",
+            isPresented: $confirmsRemoval,
+            titleVisibility: .visible
+        ) {
+            Button("Remove Provider", role: .destructive) {
+                do {
+                    try store.removeRemoteProvider(id: provider.id)
+                } catch {
+                    saveError = error.localizedDescription
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "This also deletes the provider's API key from Keychain."
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var connectionStatus: some View {
+        switch store.connectionTests[provider.id] {
+        case .testing:
+            ProgressView()
+                .controlSize(.small)
+        case .succeeded:
+            Label("Connected", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+        case let .failed(message):
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .lineLimit(2)
+                .frame(maxWidth: 280, alignment: .trailing)
+        case nil:
+            EmptyView()
+        }
+    }
+
+    private var isValid: Bool {
+        draft.validatedBaseURL != nil
+            && !draft.displayName.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty
+            && !draft.model.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty
+    }
+
+    private func save() {
+        do {
+            try store.upsert(draft, apiKey: apiKey)
+            saveError = nil
+        } catch {
+            saveError = error.localizedDescription
+        }
+    }
+
+    private func saveAndTest() {
+        save()
+        guard saveError == nil else { return }
+        Task {
+            await store.testRemoteProvider(id: draft.id)
+        }
+    }
+}
+
+private extension CompletionAPIStyle {
+    var displayName: String {
+        switch self {
+        case .textCompletions:
+            "Text Completions"
+        case .chatCompletions:
+            "Chat Completions"
+        case .gemmaChatPrefill:
+            "Gemma Chat Prefill"
+        }
     }
 }
 

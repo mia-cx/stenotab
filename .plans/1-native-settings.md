@@ -120,7 +120,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - [x] Add a secret-free provider settings schema with validation and tests.
 - [x] Add a Keychain-backed credential vault.
 - [x] Add a live provider controller that applies persisted selections.
-- [ ] Add provider editing, selection, and connection testing to Settings.
+- [x] Add provider editing, selection, and connection testing to Settings.
 - [ ] Run the full suite and signed production build.
 
 ### Notes
@@ -139,3 +139,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
   existing switching provider without relaunching.
 - Changing provider cancels and releases any StenoTab-owned llama-server before
   applying the next runtime.
+- Models & Providers can select demo/local/remote runtimes, add and edit remote
+  endpoint/model/API style/length, save the API key to Keychain, test `/models`,
+  and remove both provider metadata and its credential with confirmation.
+- `swift test --filter ProviderSettingsTests` passes (5 tests).

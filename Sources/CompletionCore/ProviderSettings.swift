@@ -1,6 +1,6 @@
 import Foundation
 
-public enum ProviderSelection: Codable, Equatable, Sendable {
+public enum ProviderSelection: Codable, Equatable, Hashable, Sendable {
     case builtInDemo
     case local
     case remote(providerID: String)
@@ -41,6 +41,16 @@ public struct RemoteProviderConfiguration:
             return nil
         }
         return components.url
+    }
+
+    public var modelsURL: URL? {
+        guard let baseURL = validatedBaseURL else { return nil }
+        let path = baseURL.path.trimmingCharacters(
+            in: CharacterSet(charactersIn: "/")
+        )
+        return path == "v1"
+            ? baseURL.appending(path: "models")
+            : baseURL.appending(path: "v1/models")
     }
 }
 

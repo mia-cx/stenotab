@@ -315,6 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             settingsWindowController = SettingsWindowController(
                 promptStore: promptSettings,
                 applicationPolicyStore: applicationPolicy,
+                providerSettingsStore: providerSettings,
                 runtimeStatusStore: runtimeStatus,
                 actions: SettingsActions(
                     requestAccessibilityPermission: {

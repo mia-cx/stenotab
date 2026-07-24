@@ -1,6 +1,8 @@
 import Foundation
 
-public enum CompletionAPIStyle: String, Codable, Sendable {
+public enum CompletionAPIStyle:
+    String, CaseIterable, Codable, Hashable, Sendable
+{
     case textCompletions
     case chatCompletions
     case gemmaChatPrefill
