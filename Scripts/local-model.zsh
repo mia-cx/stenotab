@@ -2,35 +2,18 @@
 set -euo pipefail
 
 action="${1:-list}"
-profile_id="${2:-gemma-4-e2b-it}"
-port="${TAB_COMPLETION_LOCAL_PORT:-8080}"
+profile_id="${2:-gemma-4-e2b-base}"
+port="${STENOTAB_LOCAL_PORT:-18473}"
+script_dir="${0:A:h}"
 
 profile() {
     case "$1" in
-        gemma-3-270m-base)
-            repo="mlx-community/gemma-3-270m-4bit"
-            api_style="textCompletions"
-            label="Gemma 3 270M Base · Experimental"
-            ;;
-        gemma-3-1b-base)
-            repo="mlx-community/gemma-3-1b-pt-4bit"
-            api_style="textCompletions"
-            label="Gemma 3 1B Base · Fast · 8 GB"
-            ;;
-        gemma-3-1b-it)
-            repo="mlx-community/gemma-3-1b-it-4bit"
-            api_style="chatCompletions"
-            label="Gemma 3 1B IT · Promptable · 8 GB"
-            ;;
         gemma-4-e2b-base)
-            repo="mlx-community/gemma-4-e2b-4bit"
+            repo="mradermacher/gemma-4-E2B-GGUF"
+            model_file="gemma-4-E2B.Q4_K_M.gguf"
+            model_id="stenotab/gemma-4-e2b-base"
             api_style="textCompletions"
-            label="Gemma 4 E2B Base · Quality Continuation · 16 GB"
-            ;;
-        gemma-4-e2b-it)
-            repo="mlx-community/gemma-4-e2b-it-4bit"
-            api_style="gemmaChatPrefill"
-            label="Gemma 4 E2B IT · Assistant Prefill · 16 GB"
+            label="Gemma 4 E2B Base Q4_K_M · Recommended · 16 GB"
             ;;
         *)
             print -u2 "Unknown profile: $1"
@@ -40,80 +23,60 @@ profile() {
 }
 
 list_profiles() {
-    for candidate in \
-        gemma-3-270m-base \
-        gemma-3-1b-base \
-        gemma-3-1b-it \
-        gemma-4-e2b-base \
-        gemma-4-e2b-it
-    do
-        profile "$candidate"
-        print "$candidate\t$label\t$repo"
-    done
+    profile gemma-4-e2b-base
+    print "gemma-4-e2b-base\t$label\t$repo\t$model_file"
+}
+
+download_model() {
+    profile "$profile_id"
+    if ! command -v hf >/dev/null 2>&1; then
+        print -u2 "The Hugging Face CLI was not found."
+        print -u2 "Install it with: brew install hf"
+        exit 1
+    fi
+    print "Downloading $label into the shared Hugging Face cache."
+    hf download "$repo" "$model_file"
 }
 
 write_configuration() {
     profile "$profile_id"
-    config_dir="${HOME}/Library/Application Support/Tab Completions Everywhere"
+    config_dir="${HOME}/Library/Application Support/StenoTab"
     config_path="$config_dir/local-model.json"
     mkdir -p "$config_dir"
     printf '%s\n' \
         "{\"profileID\":\"$profile_id\",\"baseURL\":\"http://127.0.0.1:$port/v1\",\"maximumWords\":8}" \
         > "$config_path"
-    print "Configured TCE to use $label"
+    print "Configured StenoTab to use $label"
     print "Configuration: $config_path"
     print "Weights: shared Hugging Face cache (no app-owned copy)"
-}
-
-serve() {
-    profile "$profile_id"
-    if ! command -v mlx_lm.server >/dev/null 2>&1; then
-        print -u2 "mlx_lm.server was not found. Install it with: brew install mlx-lm"
+    if ! command -v llama-server >/dev/null 2>&1; then
+        print -u2 "llama-server was not found."
+        print -u2 "Install it with: brew install llama.cpp"
         exit 1
     fi
-
-    arguments=(
-        --model "$repo"
-        --host 127.0.0.1
-        --port "$port"
-        --max-tokens 16
-        --temp 0
-        --prompt-cache-size 8
-    )
-    if [[ "$api_style" != "textCompletions" ]]; then
-        arguments+=(--chat-template-args '{"enable_thinking":false}')
-    fi
-
-    print "Starting $label"
-    print "Repository: $repo"
-    print "Hugging Face will reuse its standard cache."
-    exec mlx_lm.server "${arguments[@]}"
+    print "Restart StenoTab. The app will launch and own llama-server."
 }
 
 case "$action" in
     list)
         list_profiles
         ;;
+    download)
+        download_model
+        ;;
     configure)
+        download_model
         write_configuration
-        ;;
-    serve)
-        serve
-        ;;
-    use)
-        write_configuration
-        serve
         ;;
     benchmark)
         profile "$profile_id"
-        script_dir="${0:A:h}"
         exec /usr/bin/python3 "$script_dir/benchmark-local-model.py" \
             --url "http://127.0.0.1:$port/v1" \
-            --model "$repo" \
+            --model "$model_id" \
             --api-style "$api_style"
         ;;
     *)
-        print -u2 "Usage: $0 {list|configure|serve|use|benchmark} [profile]"
+        print -u2 "Usage: $0 {list|download|configure|benchmark} [profile]"
         exit 2
         ;;
 esac

@@ -51,4 +51,41 @@ final class CompletionSanitizerTests: XCTestCase {
             "ping."
         )
     }
+
+    func testRejectsInternalPromptScaffolding() {
+        for leaked in [
+            "[Completion instructions]",
+            "[Context]",
+            "[Text before cursor]",
+            "Completion instructions:",
+        ] {
+            XCTAssertEqual(
+                CompletionSanitizer.sanitize(
+                    leaked,
+                    after: "a",
+                    maximumWords: 8,
+                    inferLeadingSpace: false
+                ),
+                ""
+            )
+        }
+    }
+
+    func testRejectsMarkupAndCodeFenceLeakage() {
+        for leaked in [
+            "<code>\\n</code> or <code>\\r</code>",
+            "<div>generated corpus markup</div>",
+            "```html",
+        ] {
+            XCTAssertEqual(
+                CompletionSanitizer.sanitize(
+                    leaked,
+                    after: "Do",
+                    maximumWords: 8,
+                    inferLeadingSpace: false
+                ),
+                ""
+            )
+        }
+    }
 }

@@ -1,4 +1,9 @@
 public enum SuggestionAcceptance {
+    public enum Scope: Sendable, Equatable {
+        case nextWord
+        case entireSuggestion
+    }
+
     public struct Slice: Sendable, Equatable {
         public let accepted: String
         public let remaining: String
@@ -32,5 +37,17 @@ public enum SuggestionAcceptance {
             accepted: String(suggestion[..<splitIndex]),
             remaining: String(suggestion[splitIndex...])
         )
+    }
+
+    public static func slice(
+        in suggestion: String,
+        scope: Scope
+    ) -> Slice {
+        switch scope {
+        case .nextWord:
+            nextWord(in: suggestion)
+        case .entireSuggestion:
+            Slice(accepted: suggestion, remaining: "")
+        }
     }
 }

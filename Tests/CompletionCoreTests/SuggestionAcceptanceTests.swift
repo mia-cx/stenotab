@@ -26,4 +26,14 @@ final class SuggestionAcceptanceTests: XCTestCase {
             .init(accepted: "ping.", remaining: "")
         )
     }
+
+    func testEntireSuggestionScopeAcceptsAllRemainingText() {
+        XCTAssertEqual(
+            SuggestionAcceptance.slice(
+                in: " you very much",
+                scope: .entireSuggestion
+            ),
+            .init(accepted: " you very much", remaining: "")
+        )
+    }
 }

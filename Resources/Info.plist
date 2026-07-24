@@ -5,15 +5,19 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Tab Completions Everywhere</string>
+	<string>StenoTab</string>
     <key>CFBundleExecutable</key>
-    <string>TabCompletionsEverywhere</string>
-    <key>CFBundleIdentifier</key>
-    <string>cx.mia.tab-completions-everywhere</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
+	<string>StenoTab</string>
+	<key>CFBundleIdentifier</key>
+	<string>cx.mia.stenotab</string>
+	<key>CFBundleIconFile</key>
+	<string>StenoTab</string>
+	<key>CFBundleIconName</key>
+	<string>StenoTab</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
     <key>CFBundleName</key>
-    <string>Tab Completions Everywhere</string>
+	<string>StenoTab</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

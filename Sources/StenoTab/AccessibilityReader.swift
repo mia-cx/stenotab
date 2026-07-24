@@ -12,6 +12,8 @@ struct EditorSnapshot {
     let processID: pid_t
     let isWebBacked: Bool
     let editorIdentifier: String
+    let applicationName: String?
+    let inputKind: String?
 }
 
 @MainActor
@@ -112,8 +114,37 @@ final class AccessibilityReader {
             foregroundColor: appearance.foregroundColor,
             processID: pid,
             isWebBacked: appIsWebBacked,
-            editorIdentifier: elementIdentity(focused)
+            editorIdentifier: elementIdentity(focused),
+            applicationName: frontmostApp?.localizedName,
+            inputKind: inputKind(
+                role: role,
+                subrole: subrole,
+                isWebBacked: appIsWebBacked
+            )
         )
+    }
+
+    private func inputKind(
+        role: String?,
+        subrole: String?,
+        isWebBacked: Bool
+    ) -> String? {
+        if isWebBacked,
+           role == kAXTextAreaRole as String
+            || role == "AXEditableText"
+            || subrole == "AXEditableText" {
+            return "message or rich-text input"
+        }
+        if role == kAXTextAreaRole as String {
+            return "multi-line text area"
+        }
+        if role == kAXTextFieldRole as String {
+            return "text field"
+        }
+        if role == kAXComboBoxRole as String {
+            return "combo box"
+        }
+        return role ?? subrole
     }
 
     private static func isWebBacked(bundleIdentifier: String) -> Bool {

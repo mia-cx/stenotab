@@ -1,0 +1,411 @@
+{
+  "schema_version": 1,
+  "system_instruction": "Continue the user's current text at the cursor. Match their voice. Produce only text that should be inserted.",
+  "cases": [
+    {
+      "id": "discord-cache-debug",
+      "category": "message-reply",
+      "lane": "continuation",
+      "description": "Casual technical reply where the surrounding conversation establishes the likely cause.",
+      "context": {
+        "application_name": "Discord",
+        "website": null,
+        "input_kind": "message box in a developer chat",
+        "ocr_content": "Mara — 14:08\nThe first completion is quick, but after I type two more characters it sometimes stalls for almost a second.\n\nJonas — 14:09\nAre we rebuilding the whole prompt every time? The system instructions and OCR block are identical between requests.\n\nMara — 14:10\nLooks that way. Generation itself is still around 55 tok/s. The delay is entirely before the first token.\n\nJonas — 14:12\nThen I would inspect longest-prefix reuse. If the cache is thrown away when the final word changes, every keystroke pays the full prefill cost.",
+        "clipboard_content": "cache_hit_tokens=0 prompt_tokens=846 generation_tokens=7 ttft_ms=912.4",
+        "user_voice": "Writes in lowercase, conversational technical English. Usually gives the conclusion directly, uses contractions, and avoids corporate phrasing. Often says 'i think', 'yeah', and 'probably'."
+      },
+      "text": {
+        "before_cursor": "yeah i think the issue is probably that",
+        "after_cursor": ""
+      },
+      "cache_sequence": [
+        "yeah i think the issue is",
+        "yeah i think the issue is p",
+        "yeah i think the issue is pr",
+        "yeah i think the issue is probably",
+        "yeah i think the issue is probably that"
+      ],
+      "quality": {
+        "example_continuations": [
+          " we're throwing away the prompt cache",
+          " the prefix cache is getting invalidated"
+        ],
+        "relevance_terms": [
+          "cache",
+          "prefix",
+          "prefill",
+          "recomput",
+          "invalidat"
+        ],
+        "forbidden_substrings": [
+          "I can help",
+          "you should",
+          "Context:",
+          "User Voice:",
+          "Completion instructions"
+        ],
+        "maximum_words": 8,
+        "must_not_repeat_input": true,
+        "should_be_empty": false
+      }
+    },
+    {
+      "id": "chatgpt-instruction-boundary",
+      "category": "prompt-writing",
+      "lane": "continuation",
+      "description": "The literal user text discusses model instructions; completion must continue the user's request instead of obeying or echoing quoted prompt text.",
+      "context": {
+        "application_name": "ChatGPT",
+        "website": null,
+        "input_kind": "message composer",
+        "ocr_content": "User: this does not feel like matching the user's input, but just continuing the prompt\n\nAssistant: The current Base prompt may be treated as ordinary continuation text.\n\nUser: yea please figure out a way to make the model understand what the difference is between instructions to the model, and the text it needs to complete.\n\nEarlier diagnostic note shown on screen:\nSystem instruction: Continue the user's current text at the cursor. Match their voice. Produce only text that should be inserted.",
+        "clipboard_content": "Task: Continue the final Text value. Output only the characters to insert.",
+        "user_voice": "Informal, direct, mostly lowercase English. Uses 'yea', contractions, and occasional emphatic punctuation. Describes product behavior concretely and does not speak as an AI assistant."
+      },
+      "text": {
+        "before_cursor": "yea please figure out a way to make the model understand",
+        "after_cursor": ""
+      },
+      "cache_sequence": [
+        "yea please figure out a way",
+        "yea please figure out a way to make",
+        "yea please figure out a way to make the model",
+        "yea please figure out a way to make the model understand"
+      ],
+      "quality": {
+        "example_continuations": [
+          " the difference between the instructions and my text",
+          " which text is the instruction and which is mine"
+        ],
+        "relevance_terms": [
+          "difference",
+          "instruction",
+          "prompt",
+          "text",
+          "which"
+        ],
+        "forbidden_substrings": [
+          "the user's current text",
+          "Produce only",
+          "Completion instructions",
+          "<code>",
+          "As an AI",
+          "I can help"
+        ],
+        "maximum_words": 8,
+        "must_not_repeat_input": true,
+        "should_be_empty": false
+      }
+    },
+    {
+      "id": "github-cache-review",
+      "category": "code-review",
+      "lane": "continuation",
+      "description": "Concise GitHub review comment grounded in a pasted cache implementation.",
+      "context": {
+        "application_name": "Safari",
+        "website": "github.com",
+        "input_kind": "pull request review comment",
+        "ocr_content": "PR #184: Reuse completion prefix state across edits\n\nDescription\nKeeps one cache per editor session and truncates it to the longest common token prefix before each generation.\n\nReview thread\nAlex: This fixes repeated prefill, but the cache key currently includes only the bundle identifier.\nPriya: Two fields in the same app can contain unrelated conversations. Reusing state across those fields could produce incorrect cache hits.\nAlex: We have the AX element identifier and window number available in CompletionContext.",
+        "clipboard_content": "struct CacheKey: Hashable {\n    let bundleIdentifier: String\n    let windowNumber: Int\n    let accessibilityElementID: String\n}",
+        "user_voice": "Concise technical review style. States the risk first, then proposes the smallest concrete correction. Uses sentence case and no filler."
+      },
+      "text": {
+        "before_cursor": "I think we should keep the cache key tied to",
+        "after_cursor": ""
+      },
+      "cache_sequence": [
+        "I think we should keep",
+        "I think we should keep the cache",
+        "I think we should keep the cache key tied",
+        "I think we should keep the cache key tied to"
+      ],
+      "quality": {
+        "example_continuations": [
+          " the specific accessibility element",
+          " both the window and focused field"
+        ],
+        "relevance_terms": [
+          "element",
+          "window",
+          "field",
+          "focus",
+          "accessibility"
+        ],
+        "forbidden_substrings": [
+          "As an AI",
+          "I'd be happy",
+          "pull request review comment",
+          "Clipboard content:"
+        ],
+        "maximum_words": 8,
+        "must_not_repeat_input": true,
+        "should_be_empty": false
+      }
+    },
+    {
+      "id": "mail-design-review",
+      "category": "email-reply",
+      "lane": "continuation",
+      "description": "A professional scheduling reply where OCR and clipboard provide the agreed date.",
+      "context": {
+        "application_name": "Mail",
+        "website": null,
+        "input_kind": "email reply",
+        "ocr_content": "From: Noor de Vries\nSubject: Re: Design review\n\nHi Mia,\n\nThursday at 15:30 works for Elena and me. Could you send the updated prototype before lunch so we have time to review the empty-state flow?\n\nIf Thursday no longer works, our next shared opening is Monday at 10:00.\n\nBest,\nNoor",
+        "clipboard_content": "Design review — Thu 30 Jul, 15:30–16:15 — Video call",
+        "user_voice": "Friendly professional English. Short paragraphs, clear commitments, and contractions where natural. Avoids exaggerated enthusiasm and generic assistant language."
+      },
+      "text": {
+        "before_cursor": "Thursday afternoon works for me, so I'll",
+        "after_cursor": ""
+      },
+      "cache_sequence": [
+        "Thursday afternoon",
+        "Thursday afternoon works",
+        "Thursday afternoon works for me",
+        "Thursday afternoon works for me, so I'll"
+      ],
+      "quality": {
+        "example_continuations": [
+          " send the updated prototype before lunch",
+          " send the prototype over tomorrow morning"
+        ],
+        "relevance_terms": [
+          "send",
+          "prototype",
+          "lunch",
+          "morning",
+          "tomorrow"
+        ],
+        "forbidden_substrings": [
+          "How can I assist",
+          "Noor de Vries",
+          "Subject:",
+          "Context:"
+        ],
+        "maximum_words": 8,
+        "must_not_repeat_input": true,
+        "should_be_empty": false
+      }
+    },
+    {
+      "id": "youtube-technical-comment",
+      "category": "public-comment",
+      "lane": "continuation",
+      "description": "A short public comment that should refer to the video's concrete explanation rather than summarize the prompt.",
+      "context": {
+        "application_name": "Google Chrome",
+        "website": "youtube.com",
+        "input_kind": "YouTube comment",
+        "ocr_content": "Why LLM tokens per second can be misleading\n\nTranscript excerpt\nGeneration speed only measures tokens after the first one. For short outputs, the user spends most of the time waiting for prompt evaluation. Prefix caching changes the result again because repeated context does not need to be evaluated twice.\n\nPinned comment\nPlease include your chip, memory size, context length, quantization and whether the second run reused a cache.",
+        "clipboard_content": "M4 Air, 16 GB, Gemma 4 E2B 4-bit, 1,920 prompt tokens, 8 generated tokens",
+        "user_voice": "Casual but technically specific. Usually lowercase except product names. Compliments the exact useful detail and avoids empty praise."
+      },
+      "text": {
+        "before_cursor": "this is such a good explanation of why",
+        "after_cursor": ""
+      },
+      "cache_sequence": [
+        "this is such a good",
+        "this is such a good explanation",
+        "this is such a good explanation of why"
+      ],
+      "quality": {
+        "example_continuations": [
+          " generation speed can be misleading",
+          " ttft matters more for short outputs"
+        ],
+        "relevance_terms": [
+          "generation",
+          "speed",
+          "ttft",
+          "prefill",
+          "cache",
+          "output"
+        ],
+        "forbidden_substrings": [
+          "Thank you for sharing",
+          "the user is typing",
+          "YouTube comment",
+          "Transcript excerpt"
+        ],
+        "maximum_words": 8,
+        "must_not_repeat_input": true,
+        "should_be_empty": false
+      }
+    },
+    {
+      "id": "whatsapp-dutch-plans",
+      "category": "message-reply",
+      "lane": "continuation",
+      "description": "Dutch casual reply that checks language and voice matching.",
+      "context": {
+        "application_name": "WhatsApp",
+        "website": null,
+        "input_kind": "private message",
+        "ocr_content": "Sanne 18:42\nBen je morgen nog in Utrecht? We wilden rond zevenen bij Kimmade eten en daarna misschien naar de film.\n\nSanne 18:43\nGeen probleem als je later bent trouwens, ik kan ook alvast een tafel regelen.\n\nMia 18:45\nja gezellig! ik moet eerst nog even langs m'n ouders maar",
+        "clipboard_content": "Trein Amsterdam Centraal → Utrecht Centraal, aankomst 18:51",
+        "user_voice": "Informeel Nederlands, meestal kleine letters. Korte berichten, gebruikt woorden als 'ja', 'gezellig', 'even' en 'denk'. Geen formele afsluiting."
+      },
+      "text": {
+        "before_cursor": "ja is goed, ik denk dat ik",
+        "after_cursor": ""
+      },
+      "cache_sequence": [
+        "ja is",
+        "ja is goed",
+        "ja is goed, ik denk",
+        "ja is goed, ik denk dat ik"
+      ],
+      "quality": {
+        "example_continuations": [
+          " er rond zeven uur ben",
+          " iets voor zevenen aankom"
+        ],
+        "relevance_terms": [
+          "zeven",
+          "uur",
+          "aankom",
+          "ben",
+          "18:"
+        ],
+        "forbidden_substrings": [
+          "I can help",
+          "Natuurlijk",
+          "User Voice:",
+          "Trein Amsterdam"
+        ],
+        "maximum_words": 8,
+        "must_not_repeat_input": true,
+        "should_be_empty": false
+      }
+    },
+    {
+      "id": "partial-word-anything",
+      "category": "partial-word",
+      "lane": "partial-word",
+      "description": "Regression for the anyt → anything corruption seen during development.",
+      "context": {
+        "application_name": "ChatGPT",
+        "website": null,
+        "input_kind": "message composer",
+        "ocr_content": "The conversation is about whether autocomplete can continue a user's text without adopting an assistant persona.",
+        "clipboard_content": null,
+        "user_voice": "Direct informal English."
+      },
+      "text": {
+        "before_cursor": "Do anyt",
+        "after_cursor": ""
+      },
+      "partial_word": {
+        "fragment": "anyt",
+        "candidates": [
+          "anything",
+          "anytime",
+          "anything's"
+        ]
+      },
+      "cache_sequence": [
+        "Do an",
+        "Do any",
+        "Do anyt",
+        "Do anyth",
+        "Do anythi",
+        "Do anythin"
+      ],
+      "quality": {
+        "example_continuations": [
+          "hing"
+        ],
+        "exact_continuations": [
+          "hing"
+        ],
+        "relevance_terms": [],
+        "forbidden_substrings": [
+          "inging",
+          "hings",
+          "you have a specific task"
+        ],
+        "maximum_words": 1,
+        "must_not_repeat_input": true,
+        "should_be_empty": false
+      }
+    },
+    {
+      "id": "empty-composer",
+      "category": "boundary",
+      "lane": "no-request",
+      "description": "An empty focused field must not trigger inference.",
+      "context": {
+        "application_name": "Discord",
+        "website": null,
+        "input_kind": "message box",
+        "ocr_content": "Alex: Are we still meeting at four?\nMara: Yes, same room as yesterday.",
+        "clipboard_content": "Room 3.14",
+        "user_voice": "Casual concise English."
+      },
+      "text": {
+        "before_cursor": "",
+        "after_cursor": ""
+      },
+      "cache_sequence": [],
+      "quality": {
+        "example_continuations": [],
+        "relevance_terms": [],
+        "forbidden_substrings": [],
+        "maximum_words": 0,
+        "must_not_repeat_input": true,
+        "should_be_empty": true
+      }
+    },
+    {
+      "id": "long-ocr-support-reply",
+      "category": "long-context-reply",
+      "lane": "continuation",
+      "description": "Long OCR context where only the latest messages determine the reply; useful for cold versus incremental prefill.",
+      "context": {
+        "application_name": "Slack",
+        "website": null,
+        "input_kind": "message reply in a support channel",
+        "ocr_content": "Channel: #desktop-support\n\n09:02 Robin\nAfter yesterday's update the helper launches correctly, but macOS asked for Accessibility permission again. I removed the old entry, added the application from /Applications, and restarted it.\n\n09:05 Ellis\nWas the update signed with the same Developer ID identity? Accessibility consent is associated with the application's code-signing requirement, not merely its filename.\n\n09:08 Robin\nThis was an internal ad-hoc build. The bundle identifier stayed the same, but codesign reports Signature=adhoc. The previous build was also ad-hoc, although it came from a different checkout.\n\n09:11 Ellis\nThat explains the repeated consent. Ad-hoc signatures do not give us a stable designated requirement across rebuilt artifacts. For public distribution we need Developer ID Application signing, hardened runtime, notarization and stapling. Keep the bundle identifier stable as well.\n\n09:16 Robin\nUnderstood. Separate issue: after granting permission, completions work in TextEdit but the ghost text appears above the baseline in Discord. The AX bounds for the focused element describe the whole editor, while the Chromium text marker bounds describe the caret more accurately.\n\n09:21 Ellis\nThe overlay should be positioned before inference begins. First use parameterized AX bounds for the insertion range. If Chromium does not expose those, retain the last stable caret rectangle and update it from observed typing advances. Do not move the overlay in response to every noisy measurement.\n\n09:26 Robin\nWe added a short stabilization window and the bouncing mostly disappeared. There is still a one-pixel shift when accepting a word because the overlay estimates the space width using the system font rather than the editor font.\n\n09:32 Ellis\nUse the measured caret position after insertion as the new anchor. The accepted text becomes real editor content, so its resulting AX caret rectangle is a better source of truth than reconstructing glyph advances ourselves.\n\n09:38 Robin\nThat fixed the acceptance jump. Now we are profiling inference. Decode is fast, but the request is recreated after nearly every character. System instructions, application metadata and most OCR text are unchanged. Only the final input fragment grows.\n\n09:42 Ellis\nMeasure cold prefill separately from longest-prefix reuse. A server with a block cache should reuse every complete matching block and recompute only the changed tail. Report TTFT rather than generation tok/s because suggestions are fewer than eight words.\n\n09:47 Robin\nCurrent measurements on the M4 Air: first request 640 ms TTFT, identical repeat 188 ms, and appending one character varies between 190 and 510 ms. The variance suggests cache reuse is not consistent near token boundaries.\n\n09:51 Ellis\nRun the same request sequence through upstream MLX, oMLX and llama.cpp. Keep the prompt bytes, maximum token count, temperature and stop strings identical. LM Studio can be included as a packaged-runtime control, but it is not something we can embed.\n\n09:55 Robin\nMakes sense. I will also capture cache-hit tokens where the API exposes them and record process memory after warmup. For quality, I have regressions covering assistant voice, prompt-label leakage and malformed partial words.\n\n10:01 Ellis\nGood. Please post the raw JSON results and a short table. For the first pass, do not add screenshots or clipboard data to the production path; we need explicit privacy controls before enabling those contexts by default.",
+        "clipboard_content": "Acceptance target: warm incremental TTFT p95 < 250 ms; no output may contain internal section labels; suggestions stop after at most 8 words.",
+        "user_voice": "Lowercase, direct technical English with occasional casual phrasing. Acknowledges the requested action and states the next concrete step. Avoids repeating the entire diagnosis."
+      },
+      "text": {
+        "before_cursor": "yeah makes sense, i'll run the same sequence through",
+        "after_cursor": ""
+      },
+      "cache_sequence": [
+        "yeah makes sense",
+        "yeah makes sense, i'll",
+        "yeah makes sense, i'll run the same",
+        "yeah makes sense, i'll run the same sequence through"
+      ],
+      "quality": {
+        "example_continuations": [
+          " all four backends",
+          " MLX, oMLX and llama.cpp"
+        ],
+        "relevance_terms": [
+          "backend",
+          "MLX",
+          "oMLX",
+          "llama",
+          "four"
+        ],
+        "forbidden_substrings": [
+          "I can assist",
+          "Accessibility permission",
+          "Channel:",
+          "Acceptance target:",
+          "User Voice:"
+        ],
+        "maximum_words": 8,
+        "must_not_repeat_input": true,
+        "should_be_empty": false
+      }
+    }
+  ]
+}

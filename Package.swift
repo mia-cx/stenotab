@@ -3,18 +3,18 @@
 import PackageDescription
 
 let package = Package(
-    name: "TabCompletionsEverywhere",
+    name: "StenoTab",
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .library(name: "CompletionCore", targets: ["CompletionCore"]),
-        .executable(name: "TabCompletionsEverywhere", targets: ["TabCompletionsEverywhere"])
+        .executable(name: "StenoTab", targets: ["StenoTab"])
     ],
     targets: [
         .target(name: "CompletionCore"),
         .executableTarget(
-            name: "TabCompletionsEverywhere",
+            name: "StenoTab",
             dependencies: ["CompletionCore"],
             linkerSettings: [
                 .linkedFramework("AppKit"),

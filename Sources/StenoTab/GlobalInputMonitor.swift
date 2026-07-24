@@ -4,7 +4,7 @@ import CompletionCore
 
 final class GlobalInputMonitor {
     typealias MutationHandler = (ShadowTextBuffer.Mutation) -> Void
-    typealias TabHandler = () -> Bool
+    typealias TabHandler = (SuggestionAcceptance.Scope) -> Bool
     typealias FocusHandler = () -> Void
 
     private static let syntheticMarker: Int64 = 0x5441_4243
@@ -150,12 +150,29 @@ final class GlobalInputMonitor {
         }
 
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        let flags = event.flags
         if monitor.isSelectingScreenshotRegion, keyCode == 53 {
             monitor.isSelectingScreenshotRegion = false
             return Unmanaged.passUnretained(event)
         }
         if keyCode == 48 {
-            if monitor.onTab() {
+            let action = KeyboardShortcutPolicy.tabAction(
+                command: flags.contains(.maskCommand),
+                shift: flags.contains(.maskShift),
+                control: flags.contains(.maskControl),
+                option: flags.contains(.maskAlternate)
+            )
+            let scope: SuggestionAcceptance.Scope?
+            switch action {
+            case .acceptNextWord:
+                scope = .nextWord
+            case .acceptEntireSuggestion:
+                scope = .entireSuggestion
+            case .passThrough:
+                scope = nil
+            }
+            if let scope, monitor.onTab(scope) {
+                monitor.reconcileFocusOnTabKeyUp = false
                 return nil
             }
             monitor.reconcileFocusOnTabKeyUp = true
@@ -171,7 +188,6 @@ final class GlobalInputMonitor {
             return Unmanaged.passUnretained(event)
         }
 
-        let flags = event.flags
         if !flags.intersection([.maskCommand, .maskControl, .maskAlternate]).isEmpty {
             if KeyboardShortcutPolicy.preservesSuggestion(
                 keyCode: keyCode,

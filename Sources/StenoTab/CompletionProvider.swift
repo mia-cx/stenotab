@@ -5,6 +5,9 @@ struct CompletionRequest: Sendable {
     let id: UInt64
     let prefix: String
     let suffix: String
+    let context: CompletionContext
+    let partialWordFragment: String?
+    let partialWordCandidates: [String]
 }
 
 struct CompletionResponse: Sendable {
@@ -14,6 +17,22 @@ struct CompletionResponse: Sendable {
 
 protocol CompletionProvider: Sendable {
     func complete(_ request: CompletionRequest) async -> CompletionResponse
+}
+
+actor SwitchingCompletionProvider: CompletionProvider {
+    private var provider: any CompletionProvider
+
+    init(_ provider: any CompletionProvider) {
+        self.provider = provider
+    }
+
+    func use(_ provider: any CompletionProvider) {
+        self.provider = provider
+    }
+
+    func complete(_ request: CompletionRequest) async -> CompletionResponse {
+        await provider.complete(request)
+    }
 }
 
 struct HeuristicCompletionProvider: CompletionProvider {
@@ -63,11 +82,24 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
 
         switch apiStyle {
         case .textCompletions:
+            let prompt: String
+            let maxTokens: Int
+            if request.partialWordFragment != nil {
+                prompt = CompletionPrompt.wordSuffix(prefix: request.prefix)
+                maxTokens = 6
+            } else {
+                prompt = CompletionPrompt.base(
+                    prefix: String(request.prefix.suffix(1_500)),
+                    suffix: String(request.suffix.prefix(300)),
+                    context: request.context
+                )
+                maxTokens = 16
+            }
             urlRequest.httpBody = try? JSONEncoder().encode(
                 TextCompletionBody(
                     model: model,
-                    prompt: String(request.prefix.suffix(1_500)),
-                    maxTokens: 16,
+                    prompt: prompt,
+                    maxTokens: maxTokens,
                     temperature: 0,
                     stop: ["\n"]
                 )
@@ -86,16 +118,21 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                 )
             )
         case .chatCompletions:
-            let prompt = """
-            Autocomplete at <CURSOR>. Return only the natural text to insert, \
-            at most \(maximumWords) words. Never repeat existing text.
-            CONTEXT:
-            \(request.prefix.suffix(1_500))<CURSOR>\(request.suffix.prefix(300))
-            """
+            let prompt = CompletionPrompt.chatUser(
+                prefix: String(request.prefix.suffix(1_500)),
+                suffix: String(request.suffix.prefix(300)),
+                context: request.context
+            )
             urlRequest.httpBody = try? JSONEncoder().encode(
                 ChatCompletionBody(
                     model: model,
-                    messages: [.init(role: "user", content: prompt)],
+                    messages: [
+                        .init(
+                            role: "system",
+                            content: CompletionPrompt.systemInstruction
+                        ),
+                        .init(role: "user", content: prompt),
+                    ],
                     maxTokens: 16,
                     temperature: 0,
                     stop: ["\n"]
@@ -112,9 +149,19 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
             let rawText = payload.choices.first.flatMap {
                 $0.text ?? $0.message?.content
             }
-            let text = rawText.map {
-                CompletionSanitizer.sanitize(
-                    $0,
+            let text = rawText.flatMap { raw -> String? in
+                if
+                    apiStyle == .textCompletions,
+                    let fragment = request.partialWordFragment
+                {
+                    return PartialWordCompletion.sanitize(
+                        raw,
+                        after: fragment,
+                        candidates: request.partialWordCandidates
+                    )
+                }
+                return CompletionSanitizer.sanitize(
+                    raw,
                     after: request.prefix,
                     maximumWords: maximumWords,
                     inferLeadingSpace: apiStyle == .chatCompletions
@@ -179,44 +226,55 @@ enum ProviderFactory {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> any CompletionProvider {
         if
-            let base = environment["TAB_COMPLETION_BASE_URL"],
+            let base = environment["STENOTAB_BASE_URL"],
             let url = URL(string: base),
-            let model = environment["TAB_COMPLETION_MODEL"]
+            let model = environment["STENOTAB_MODEL"]
         {
             return OpenAICompatibleCompletionProvider(
                 endpoint: url,
-                apiKey: environment["TAB_COMPLETION_API_KEY"],
+                apiKey: environment["STENOTAB_API_KEY"],
                 model: model,
                 apiStyle: CompletionAPIStyle(
-                    rawValue: environment["TAB_COMPLETION_API_STYLE"]
+                    rawValue: environment["STENOTAB_API_STYLE"]
                         ?? "chatCompletions"
                 ) ?? .chatCompletions,
                 maximumWords: Int(
-                    environment["TAB_COMPLETION_MAXIMUM_WORDS"] ?? ""
+                    environment["STENOTAB_MAXIMUM_WORDS"] ?? ""
                 ) ?? 8
             )
         }
 
-        if
-            let configuration = localConfiguration(),
-            let profile = LocalModelProfiles.profile(
-                id: configuration.profileID
-            ),
-            let url = URL(string: configuration.baseURL)
-        {
-            return OpenAICompatibleCompletionProvider(
-                endpoint: url,
-                apiKey: nil,
-                model: profile.repository,
-                apiStyle: profile.apiStyle,
-                maximumWords: configuration.maximumWords
-            )
+        if let configuration = localConfiguration(),
+           let provider = makeLocal(configuration: configuration) {
+            return provider
         }
 
         return HeuristicCompletionProvider()
     }
 
-    private static func localConfiguration()
+    static func makeLocal(
+        configuration: LocalCompletionConfiguration,
+        baseURL: URL? = nil,
+        modelID: String? = nil
+    ) -> (any CompletionProvider)? {
+        guard
+            let profile = LocalModelProfiles.profile(
+                id: configuration.profileID
+            ),
+            let url = baseURL ?? URL(string: configuration.baseURL)
+        else {
+            return nil
+        }
+        return OpenAICompatibleCompletionProvider(
+            endpoint: url,
+            apiKey: nil,
+            model: modelID ?? profile.serverModelID,
+            apiStyle: profile.apiStyle,
+            maximumWords: configuration.maximumWords
+        )
+    }
+
+    static func localConfiguration()
         -> LocalCompletionConfiguration?
     {
         guard
@@ -228,12 +286,15 @@ enum ProviderFactory {
             return nil
         }
         let url = applicationSupport
-            .appending(path: "Tab Completions Everywhere")
+            .appending(path: "StenoTab")
             .appending(path: "local-model.json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(
-            LocalCompletionConfiguration.self,
-            from: data
-        )
+        let decoder = JSONDecoder()
+        if let data = try? Data(contentsOf: url) {
+            return try? decoder.decode(
+                LocalCompletionConfiguration.self,
+                from: data
+            )
+        }
+        return nil
     }
 }

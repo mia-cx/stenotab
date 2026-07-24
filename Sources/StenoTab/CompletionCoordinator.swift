@@ -4,6 +4,12 @@ import CompletionCore
 
 @MainActor
 final class CompletionCoordinator: NSObject {
+    private struct RefillKey: Equatable {
+        let prefix: String
+        let suffix: String
+        let editorIdentifier: String
+    }
+
     private let accessibility = AccessibilityReader()
     private let overlay = SuggestionOverlay()
     private let provider: any CompletionProvider
@@ -26,6 +32,12 @@ final class CompletionCoordinator: NSObject {
     private var whitespaceCalibrationByEditor:
         [String: LeadingWhitespaceCalibration] = [:]
     private var whitespaceCalibrationTask: Task<Void, Never>?
+    private var caretReanchorTask: Task<Void, Never>?
+    private var refillTask: Task<Void, Never>?
+    private var refillKey: RefillKey?
+    private var awaitedRefillKey: RefillKey?
+    private var prefetchedRefill: (key: RefillKey, text: String)?
+    private var refillRequestID: UInt64 = 0
     private var consecutiveSnapshotFailures = 0
 
     private lazy var requestPump = LatestRequestPump<CompletionRequest, CompletionResponse>(
@@ -39,8 +51,8 @@ final class CompletionCoordinator: NSObject {
         }
     )
 
-    override init() {
-        provider = ProviderFactory.make()
+    init(provider: any CompletionProvider = ProviderFactory.make()) {
+        self.provider = provider
         super.init()
     }
 
@@ -53,8 +65,8 @@ final class CompletionCoordinator: NSObject {
             onMutation: { [weak self] mutation in
                 self?.handle(mutation)
             },
-            onTab: { [weak self] in
-                self?.acceptSuggestion() ?? false
+            onTab: { [weak self] scope in
+                self?.acceptSuggestion(scope: scope) ?? false
             },
             onFocus: { [weak self] in
                 self?.reconcile()
@@ -242,10 +254,11 @@ final class CompletionCoordinator: NSObject {
         debounceTask?.cancel()
         newestRequestID &+= 1
         preparedRequestSnapshot = nil
-        let request = CompletionRequest(
+        let request = makeRequest(
             id: newestRequestID,
             prefix: buffer.prefix,
-            suffix: buffer.suffix
+            suffix: buffer.suffix,
+            snapshot: lastSnapshot
         )
 
         debounceTask = Task { [weak self] in
@@ -290,6 +303,68 @@ final class CompletionCoordinator: NSObject {
 
         preparedRequestSnapshot = (request.id, snapshot)
         return true
+    }
+
+    private func makeRequest(
+        id: UInt64,
+        prefix: String,
+        suffix: String,
+        snapshot: EditorSnapshot?,
+        detectPartialWord: Bool = true
+    ) -> CompletionRequest {
+        let fragment = detectPartialWord
+            ? incompleteWordFragment(in: prefix)
+            : nil
+        return CompletionRequest(
+            id: id,
+            prefix: prefix,
+            suffix: suffix,
+            context: CompletionContext(
+                applicationName: snapshot?.applicationName,
+                website: nil,
+                inputKind: snapshot?.inputKind
+            ),
+            partialWordFragment: fragment,
+            partialWordCandidates: fragment.map {
+                completionCandidates(for: $0)
+            } ?? []
+        )
+    }
+
+    private func incompleteWordFragment(in prefix: String) -> String? {
+        guard let fragment = PartialWordCompletion.fragment(in: prefix) else {
+            return nil
+        }
+        let misspelled = NSSpellChecker.shared.checkSpelling(
+            of: fragment,
+            startingAt: 0
+        )
+        guard
+            misspelled.location != NSNotFound,
+            misspelled.length > 0
+        else {
+            return nil
+        }
+        return fragment
+    }
+
+    private func completionCandidates(for fragment: String) -> [String] {
+        let range = NSRange(
+            location: 0,
+            length: (fragment as NSString).length
+        )
+        let completions = NSSpellChecker.shared.completions(
+            forPartialWordRange: range,
+            in: fragment,
+            language: nil,
+            inSpellDocumentWithTag: 0
+        ) ?? []
+        return Array(
+            completions.lazy.filter {
+                $0.count > fragment.count
+                    && $0.lowercased().hasPrefix(fragment.lowercased())
+            }.prefix(24)
+        )
     }
 
     private func receive(_ response: CompletionResponse) {
@@ -386,16 +461,25 @@ final class CompletionCoordinator: NSObject {
         typographyCalibrationByProcess[current.processID] = calibration
     }
 
-    private func acceptSuggestion() -> Bool {
+    private func acceptSuggestion(
+        scope: SuggestionAcceptance.Scope
+    ) -> Bool {
         guard enabled, let suggestion, !suggestion.isEmpty else { return false }
-        let acceptance = SuggestionAcceptance.nextWord(in: suggestion)
+        caretReanchorTask?.cancel()
+        let acceptance = SuggestionAcceptance.slice(
+            in: suggestion,
+            scope: scope
+        )
         guard !acceptance.accepted.isEmpty else { return false }
         let snapshotBeforeAcceptance = accessibility.snapshot() ?? lastSnapshot
         inputMonitor?.paste(acceptance.accepted)
         buffer.apply(.insert(acceptance.accepted))
         if acceptance.remaining.isEmpty {
-            suggestionConsumption = .waitingForWhitespace()
-            clearSuggestion(resetConsumption: false)
+            suggestionConsumption = nil
+            clearSuggestion()
+            if !promoteOrAwaitRefill(for: buffer.prefix) {
+                scheduleCompletion()
+            }
         } else {
             self.suggestion = acceptance.remaining
             suggestionConsumption = SuggestionConsumption(
@@ -405,12 +489,182 @@ final class CompletionCoordinator: NSObject {
                 matchedText: acceptance.accepted,
                 remainingSuggestion: acceptance.remaining
             )
+            scheduleCaretReanchor(
+                expectedPrefix: buffer.prefix,
+                expectedSuggestion: acceptance.remaining
+            )
+            startRefillIfNeeded(
+                remainingSuggestion: acceptance.remaining
+            )
         }
         scheduleWhitespaceCalibration(
             suggestion: acceptance.accepted,
             snapshotBeforeAcceptance: snapshotBeforeAcceptance
         )
         return true
+    }
+
+    private func startRefillIfNeeded(remainingSuggestion: String) {
+        guard
+            SuggestionRefillPolicy.shouldPrefetch(
+                remainingSuggestion: remainingSuggestion
+            ),
+            let snapshot = lastSnapshot
+        else {
+            return
+        }
+
+        let key = RefillKey(
+            prefix: buffer.prefix + remainingSuggestion,
+            suffix: buffer.suffix,
+            editorIdentifier: snapshot.editorIdentifier
+        )
+        guard refillKey != key else { return }
+
+        cancelRefill()
+        refillRequestID &+= 1
+        let request = makeRequest(
+            id: refillRequestID,
+            prefix: key.prefix,
+            suffix: key.suffix,
+            snapshot: snapshot,
+            detectPartialWord: false
+        )
+        refillKey = key
+        refillTask = Task { [weak self, provider] in
+            let response = await provider.complete(request)
+            guard !Task.isCancelled, let self else { return }
+            self.receiveRefill(response, for: key)
+        }
+    }
+
+    private func receiveRefill(
+        _ response: CompletionResponse,
+        for key: RefillKey
+    ) {
+        guard refillKey == key else { return }
+        refillTask = nil
+
+        guard let text = response.text, !text.isEmpty else {
+            let shouldSchedule = awaitedRefillKey == key
+                && buffer.prefix == key.prefix
+            refillKey = nil
+            awaitedRefillKey = nil
+            prefetchedRefill = nil
+            if shouldSchedule {
+                scheduleCompletion()
+            }
+            return
+        }
+
+        prefetchedRefill = (key, text)
+        if
+            awaitedRefillKey == key,
+            buffer.prefix == key.prefix,
+            lastSnapshot?.editorIdentifier == key.editorIdentifier
+        {
+            presentRefill(text, for: key)
+        }
+    }
+
+    private func promoteOrAwaitRefill(for prefix: String) -> Bool {
+        guard
+            let key = refillKey,
+            key.prefix == prefix,
+            key.suffix == buffer.suffix,
+            key.editorIdentifier == lastSnapshot?.editorIdentifier
+        else {
+            cancelRefill()
+            return false
+        }
+
+        awaitedRefillKey = key
+        if let prefetchedRefill, prefetchedRefill.key == key {
+            presentRefill(prefetchedRefill.text, for: key)
+        }
+        return true
+    }
+
+    private func presentRefill(_ text: String, for key: RefillKey) {
+        guard
+            buffer.prefix == key.prefix,
+            buffer.suffix == key.suffix,
+            lastSnapshot?.editorIdentifier == key.editorIdentifier
+        else {
+            return
+        }
+
+        refillTask?.cancel()
+        refillTask = nil
+        refillKey = nil
+        awaitedRefillKey = nil
+        prefetchedRefill = nil
+        suggestion = text
+        suggestionConsumption = SuggestionConsumption(suggestion: text)
+
+        if
+            let snapshot = accessibility.snapshot(),
+            snapshot.prefix == key.prefix,
+            snapshot.suffix == key.suffix,
+            snapshot.editorIdentifier == key.editorIdentifier
+        {
+            updateTypographyScale(from: lastSnapshot, to: snapshot)
+            lastSnapshot = snapshot
+            prepareOverlay(for: snapshot)
+            overlay.show(text)
+        } else {
+            scheduleCaretReanchor(
+                expectedPrefix: key.prefix,
+                expectedSuggestion: text
+            )
+        }
+    }
+
+    private func scheduleCaretReanchor(
+        expectedPrefix: String,
+        expectedSuggestion: String
+    ) {
+        caretReanchorTask?.cancel()
+        guard let editorIdentifier = lastSnapshot?.editorIdentifier else {
+            return
+        }
+
+        caretReanchorTask = Task { [weak self] in
+            for delay in [12, 24, 48, 80] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard !Task.isCancelled, let self else { return }
+                guard
+                    self.buffer.prefix == expectedPrefix,
+                    self.suggestion == expectedSuggestion
+                else {
+                    return
+                }
+                guard
+                    let snapshot = self.accessibility.snapshot(),
+                    snapshot.prefix == expectedPrefix,
+                    snapshot.editorIdentifier == editorIdentifier
+                else {
+                    continue
+                }
+
+                self.updateTypographyScale(
+                    from: self.lastSnapshot,
+                    to: snapshot
+                )
+                self.lastSnapshot = snapshot
+                self.prepareOverlay(for: snapshot)
+                self.overlay.show(expectedSuggestion)
+                return
+            }
+        }
+    }
+
+    private func cancelRefill() {
+        refillTask?.cancel()
+        refillTask = nil
+        refillKey = nil
+        awaitedRefillKey = nil
+        prefetchedRefill = nil
     }
 
     private func scheduleWhitespaceCalibration(
@@ -495,6 +749,7 @@ final class CompletionCoordinator: NSObject {
 
     private func clearSuggestion(resetConsumption: Bool = true) {
         debounceTask?.cancel()
+        caretReanchorTask?.cancel()
         suggestion = nil
         if resetConsumption {
             suggestionConsumption = nil
@@ -504,6 +759,8 @@ final class CompletionCoordinator: NSObject {
 
     private func invalidatePendingCompletion() {
         debounceTask?.cancel()
+        caretReanchorTask?.cancel()
+        cancelRefill()
         preparedRequestSnapshot = nil
         newestRequestID &+= 1
     }

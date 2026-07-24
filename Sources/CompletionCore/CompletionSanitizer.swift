@@ -8,6 +8,30 @@ public enum CompletionSanitizer {
         guard maximumWords > 0 else { return "" }
 
         var candidate = rawCompletion
+        let visibleStart = candidate.drop(while: \.isWhitespace)
+            .lowercased()
+        if visibleStart.hasPrefix("[")
+            || [
+                "completion instructions:",
+                "context:",
+                "ocr content from snapshot:",
+                "clipboard content:",
+                "user voice:",
+                "text before cursor:",
+                "text after cursor:",
+                "application:",
+                "kind of input:",
+                "text to continue:",
+                "task:",
+                "text:",
+                "insertion:",
+            ].contains(where: visibleStart.hasPrefix) {
+            return ""
+        }
+        if visibleStart.hasPrefix("<")
+            || visibleStart.hasPrefix("```") {
+            return ""
+        }
         for marker in [
             "\n",
             "<end_of_turn>",
