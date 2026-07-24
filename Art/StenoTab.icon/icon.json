@@ -28,12 +28,24 @@
               "value" : "overlay"
             }
           ],
-          "fill" : "none",
+          "fill-specializations" : [
+            {
+              "value" : "system-dark"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "system-light"
+            },
+            {
+              "appearance" : "tinted",
+              "value" : "system-light"
+            }
+          ],
           "glass" : false,
           "hidden" : false,
           "image-name-specializations" : [
             {
-              "value" : "logo.svg"
+              "value" : "logo-colored.svg"
             },
             {
               "appearance" : "dark",
@@ -44,7 +56,7 @@
               "value" : "logo-white.svg"
             }
           ],
-          "name" : "logo-white",
+          "name" : "logo-colored",
           "opacity-specializations" : [
             {
               "value" : 1
@@ -69,7 +81,7 @@
         {
           "blend-mode" : "normal",
           "fill" : "none",
-          "glass" : true,
+          "glass" : false,
           "hidden-specializations" : [
             {
               "value" : false

@@ -15,7 +15,7 @@ asset_info_plist="$project_dir/.build/StenoTabAssetInfo.plist"
 mkdir -p "$contents_dir/MacOS" "$resources_dir"
 cp "$project_dir/Resources/Info.plist" "$contents_dir/Info.plist"
 cp "$binary_dir/StenoTab" "$contents_dir/MacOS/StenoTab"
-cp "$project_dir/Art/logo-white.svg" \
+cp "$project_dir/Art/menubar.svg" \
     "$resources_dir/StenoTabMenuBar.svg"
 
 actool_path="${STENOTAB_ACTOOL_PATH:-/Applications/Xcode-beta.app/Contents/Developer/usr/bin/actool}"
@@ -37,12 +37,21 @@ fi
     --target-device mac \
     --output-format human-readable-text
 
-signing_identity="${STENOTAB_SIGNING_IDENTITY:--}"
+signing_identity="${STENOTAB_SIGNING_IDENTITY:-}"
+if [[ -z "$signing_identity" ]]; then
+    signing_identity="$(
+        security find-identity -v -p codesigning |
+            awk -F'"' '/"Apple Development:/ { print $2; exit }'
+    )"
+fi
+signing_identity="${signing_identity:--}"
 codesign --force --deep --sign "$signing_identity" "$app_dir"
 
 if [[ "$signing_identity" == "-" ]]; then
     echo "Warning: ad-hoc signing changes the privacy identity after every rebuild."
     echo "Set STENOTAB_SIGNING_IDENTITY to a stable Apple Development identity to preserve permissions."
+else
+    echo "Signed with $signing_identity"
 fi
 
 echo "Built $app_dir"
