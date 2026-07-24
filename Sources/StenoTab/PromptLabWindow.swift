@@ -257,6 +257,109 @@ private struct ModelsProvidersView: View {
                     .frame(maxWidth: 420)
                 }
 
+                SettingsSection(title: "Local Runtime Configuration") {
+                    Grid(
+                        alignment: .leading,
+                        horizontalSpacing: 12,
+                        verticalSpacing: 8
+                    ) {
+                        GridRow {
+                            Text("Model")
+                                .foregroundStyle(.secondary)
+                            Picker(
+                                "Model",
+                                selection: localProfileID
+                            ) {
+                                ForEach(LocalModelProfiles.all) { profile in
+                                    Text(profile.displayName)
+                                        .tag(profile.id)
+                                }
+                            }
+                            .labelsHidden()
+                        }
+                        GridRow {
+                            Text("Server URL")
+                                .foregroundStyle(.secondary)
+                            TextField(
+                                "http://127.0.0.1:18473/v1",
+                                text: localBaseURL
+                            )
+                            .textFieldStyle(.roundedBorder)
+                        }
+                        GridRow {
+                            Text("Maximum length")
+                                .foregroundStyle(.secondary)
+                            Stepper(
+                                "\(localConfiguration.maximumWords) words",
+                                value: localMaximumWords,
+                                in: 1...32
+                            )
+                        }
+                    }
+
+                    Divider()
+                    if let profile = selectedLocalProfile {
+                        HStack(alignment: .center, spacing: 12) {
+                            Image(
+                                systemName: localModelURL == nil
+                                    ? "arrow.down.circle"
+                                    : "checkmark.circle.fill"
+                            )
+                            .foregroundStyle(
+                                localModelURL == nil
+                                    ? Color.secondary
+                                    : Color.green
+                            )
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(
+                                    localModelURL == nil
+                                        ? "Model not downloaded"
+                                        : "Available in shared Hugging Face cache"
+                                )
+                                .font(.headline)
+                                Text(
+                                    localModelURL?.path
+                                        ?? HuggingFaceModelCache.defaultRoot()
+                                            .path
+                                )
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .lineLimit(2)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            if let localModelURL {
+                                Button("Reveal") {
+                                    NSWorkspace.shared
+                                        .activateFileViewerSelecting([
+                                            localModelURL
+                                        ])
+                                }
+                            } else {
+                                Button("Open Model Page") {
+                                    guard let url = URL(
+                                        string:
+                                            "https://huggingface.co/"
+                                            + profile.repository
+                                    ) else {
+                                        return
+                                    }
+                                    NSWorkspace.shared.open(url)
+                                }
+                            }
+                        }
+                    }
+
+                    Divider()
+                    HStack {
+                        Spacer()
+                        Button("Use Local Runtime") {
+                            providerStore.setSelection(.local)
+                        }
+                    }
+                }
+
                 SettingsSection(title: "Supported Local Models") {
                     ForEach(LocalModelProfiles.all) { profile in
                         VStack(alignment: .leading, spacing: 6) {
@@ -332,6 +435,65 @@ private struct ModelsProvidersView: View {
             .frame(maxWidth: 900, alignment: .leading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var localConfiguration: LocalCompletionConfiguration {
+        providerStore.configuration.localConfiguration
+    }
+
+    private var selectedLocalProfile: LocalModelProfile? {
+        LocalModelProfiles.profile(id: localConfiguration.profileID)
+    }
+
+    private var localModelURL: URL? {
+        selectedLocalProfile.flatMap {
+            HuggingFaceModelCache.modelURL(for: $0)
+        }
+    }
+
+    private var localProfileID: Binding<String> {
+        Binding(
+            get: { localConfiguration.profileID },
+            set: {
+                providerStore.setLocalConfiguration(
+                    LocalCompletionConfiguration(
+                        profileID: $0,
+                        baseURL: localConfiguration.baseURL,
+                        maximumWords: localConfiguration.maximumWords
+                    )
+                )
+            }
+        )
+    }
+
+    private var localBaseURL: Binding<String> {
+        Binding(
+            get: { localConfiguration.baseURL },
+            set: {
+                providerStore.setLocalConfiguration(
+                    LocalCompletionConfiguration(
+                        profileID: localConfiguration.profileID,
+                        baseURL: $0,
+                        maximumWords: localConfiguration.maximumWords
+                    )
+                )
+            }
+        )
+    }
+
+    private var localMaximumWords: Binding<Int> {
+        Binding(
+            get: { localConfiguration.maximumWords },
+            set: {
+                providerStore.setLocalConfiguration(
+                    LocalCompletionConfiguration(
+                        profileID: localConfiguration.profileID,
+                        baseURL: localConfiguration.baseURL,
+                        maximumWords: $0
+                    )
+                )
+            }
+        )
     }
 
     private func addRemoteProvider() {

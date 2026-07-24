@@ -148,3 +148,30 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
   ID `VJKBGC9AMK`.
 - This slice does not yet download missing local models or bundle/install
   `llama-server`; it configures and starts an already available local setup.
+
+## Follow-up slice: local model management
+
+### Acceptance criteria
+
+- [ ] Settings edits local profile, server URL, and completion length.
+- [ ] Cache state uses the standard Hugging Face cache root and can be revealed.
+- [ ] Missing supported models can be downloaded into a valid Hugging Face
+      snapshot/blob/ref layout with visible progress.
+- [ ] Selecting a downloaded local model starts or reuses llama.cpp immediately.
+- [ ] Download failures leave no model that appears complete.
+
+### TODOs
+
+- [x] Add local model configuration and shared-cache inspection controls.
+- [ ] Add a Hugging Face cache download planner with layout tests.
+- [ ] Add resumable download execution and progress to the provider store/UI.
+- [ ] Run full tests and a signed production build.
+
+### Notes
+
+- Local settings now edit the selected profile, dedicated server URL, and
+  completion length; choosing local applies immediately through the provider
+  controller.
+- The UI resolves the same standard Hugging Face cache path used at runtime,
+  reveals downloaded files in Finder, and links missing profiles to their model
+  page until in-app download lands.
