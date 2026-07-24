@@ -108,12 +108,12 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 
 ### Acceptance criteria
 
-- [ ] Provider selection and non-secret configuration persist locally.
-- [ ] API keys are stored only in Keychain and are never encoded with settings.
-- [ ] Local, demo, and OpenAI-compatible providers can be selected without
+- [x] Provider selection and non-secret configuration persist locally.
+- [x] API keys are stored only in Keychain and are never encoded with settings.
+- [x] Local, demo, and OpenAI-compatible providers can be selected without
       relaunching StenoTab.
-- [ ] A remote endpoint can be validated from Settings with useful status.
-- [ ] Settings can add, edit, select, and remove remote providers.
+- [x] A remote endpoint can be validated from Settings with useful status.
+- [x] Settings can add, edit, select, and remove remote providers.
 
 ### TODOs
 
@@ -121,7 +121,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - [x] Add a Keychain-backed credential vault.
 - [x] Add a live provider controller that applies persisted selections.
 - [x] Add provider editing, selection, and connection testing to Settings.
-- [ ] Run the full suite and signed production build.
+- [x] Run the full suite and signed production build.
 
 ### Notes
 
@@ -143,3 +143,8 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
   endpoint/model/API style/length, save the API key to Keychain, test `/models`,
   and remove both provider metadata and its credential with confirmation.
 - `swift test --filter ProviderSettingsTests` passes (5 tests).
+- Full `swift test` passes (96 tests).
+- Production app build succeeds with stable Apple Development signing and Team
+  ID `VJKBGC9AMK`.
+- This slice does not yet download missing local models or bundle/install
+  `llama-server`; it configures and starts an already available local setup.
