@@ -1,6 +1,11 @@
 public enum CompletionRequestPolicy {
+    public static let minimumCharacterCount = 3
+
     public static func shouldRequest(prefix: String) -> Bool {
-        prefix.contains { !$0.isWhitespace }
+        prefix.lazy
+            .filter { !$0.isWhitespace }
+            .prefix(minimumCharacterCount)
+            .count == minimumCharacterCount
     }
 }
 

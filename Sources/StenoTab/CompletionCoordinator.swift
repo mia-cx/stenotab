@@ -282,6 +282,16 @@ final class CompletionCoordinator: NSObject {
         }
         updateTypographyScale(from: previousSnapshot, to: snapshot)
         lastSnapshot = snapshot
+        if !CompletionRequestPolicy.shouldRequest(prefix: snapshot.prefix) {
+            _ = buffer.reconcile(
+                prefix: snapshot.prefix,
+                suffix: snapshot.suffix
+            )
+            invalidatePendingCompletion()
+            clearSuggestion()
+            prepareOverlay(for: snapshot)
+            return
+        }
         prepareOverlay(for: snapshot)
 
         if focusChanged || buffer.needsReconciliation ||
@@ -467,6 +477,7 @@ final class CompletionCoordinator: NSObject {
         guard
             enabled,
             policyAllowsCurrentApplication(),
+            CompletionRequestPolicy.shouldRequest(prefix: buffer.prefix),
             response.requestID == newestRequestID,
             let text = response.text,
             let preparedRequestSnapshot,

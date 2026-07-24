@@ -2,9 +2,13 @@ import CompletionCore
 import XCTest
 
 final class CompletionRefreshPolicyTests: XCTestCase {
-    func testDoesNotRequestCompletionForAnEmptyInput() {
+    func testRequiresThreeNonWhitespaceCharacters() {
         XCTAssertFalse(CompletionRequestPolicy.shouldRequest(prefix: ""))
         XCTAssertFalse(CompletionRequestPolicy.shouldRequest(prefix: " \n\t"))
+        XCTAssertFalse(CompletionRequestPolicy.shouldRequest(prefix: "a"))
+        XCTAssertFalse(CompletionRequestPolicy.shouldRequest(prefix: "hi "))
+        XCTAssertTrue(CompletionRequestPolicy.shouldRequest(prefix: "hey"))
+        XCTAssertTrue(CompletionRequestPolicy.shouldRequest(prefix: "a b c"))
         XCTAssertTrue(CompletionRequestPolicy.shouldRequest(prefix: "thank"))
     }
 
