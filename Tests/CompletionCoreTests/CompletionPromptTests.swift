@@ -2,6 +2,15 @@ import CompletionCore
 import XCTest
 
 final class CompletionPromptTests: XCTestCase {
+    func testUnavailableContextSourcesDefaultOff() {
+        let defaults = PromptConfiguration.defaults
+
+        XCTAssertFalse(defaults.context.includeCurrentWebsite)
+        XCTAssertFalse(defaults.context.includeOCR)
+        XCTAssertFalse(defaults.voice.includeInputHistory)
+        XCTAssertFalse(defaults.voice.includePeriodicAssessments)
+    }
+
     func testDefaultChatPromptKeepsContextSeparateFromLiteralUserText() {
         let context = CompletionContext(
             applicationName: "Discord",
@@ -34,6 +43,7 @@ final class CompletionPromptTests: XCTestCase {
 
     func testBasePromptUsesFirstPersonContinuationFraming() {
         var configuration = PromptConfiguration.defaults
+        configuration.context.includeCurrentWebsite = true
         configuration.context.includeClipboard = true
         configuration.voice.customVoice = "Use concise sentences."
         let context = CompletionContext(

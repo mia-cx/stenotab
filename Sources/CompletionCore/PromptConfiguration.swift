@@ -10,7 +10,7 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
 
         public init(
             includeCurrentApplication: Bool = true,
-            includeCurrentWebsite: Bool = true,
+            includeCurrentWebsite: Bool = false,
             includeInputKind: Bool = true,
             includeOCR: Bool = false,
             includeClipboard: Bool = false
