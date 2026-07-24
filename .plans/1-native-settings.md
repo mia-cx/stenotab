@@ -163,7 +163,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 ### TODOs
 
 - [x] Add local model configuration and shared-cache inspection controls.
-- [ ] Add a Hugging Face cache download planner with layout tests.
+- [x] Add a Hugging Face cache download planner with layout tests.
 - [ ] Add resumable download execution and progress to the provider store/UI.
 - [ ] Run full tests and a signed production build.
 
@@ -175,3 +175,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - The UI resolves the same standard Hugging Face cache path used at runtime,
   reveals downloaded files in Finder, and links missing profiles to their model
   page until in-app download lands.
+- The download planner produces the standard repository `blobs/`,
+  `snapshots/<revision>/`, and `refs/main` paths and rejects traversal in
+  server-supplied revision/ETag identifiers.
+- `swift test --filter HuggingFaceDownloadPlanTests` passes (2 tests).

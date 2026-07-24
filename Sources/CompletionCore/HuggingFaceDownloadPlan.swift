@@ -1,0 +1,94 @@
+import Foundation
+
+public struct HuggingFaceDownloadPlan: Equatable, Sendable {
+    public struct Installation: Equatable, Sendable {
+        public let revision: String
+        public let blobIdentifier: String
+        public let blobURL: URL
+        public let snapshotFileURL: URL
+        public let mainReferenceURL: URL
+        public let snapshotSymlinkDestination: String
+    }
+
+    public let sourceURL: URL
+    public let repositoryRoot: URL
+    public let incompleteURL: URL
+    public let modelFile: String
+
+    public init?(
+        profile: LocalModelProfile,
+        cacheRoot: URL = HuggingFaceModelCache.defaultRoot()
+    ) {
+        guard
+            let modelFile = profile.modelFile,
+            !modelFile.isEmpty,
+            !profile.repository.isEmpty,
+            let encodedRepository = profile.repository.addingPercentEncoding(
+                withAllowedCharacters: .urlPathAllowed
+            ),
+            let encodedFile = modelFile.addingPercentEncoding(
+                withAllowedCharacters: .urlPathAllowed
+            ),
+            let sourceURL = URL(
+                string:
+                    "https://huggingface.co/\(encodedRepository)"
+                    + "/resolve/main/\(encodedFile)?download=true"
+            )
+        else {
+            return nil
+        }
+
+        let repositoryDirectory = "models--"
+            + profile.repository.replacingOccurrences(of: "/", with: "--")
+        let repositoryRoot = cacheRoot.appending(
+            path: repositoryDirectory,
+            directoryHint: .isDirectory
+        )
+        self.sourceURL = sourceURL
+        self.repositoryRoot = repositoryRoot
+        self.incompleteURL = repositoryRoot
+            .appending(path: "downloads", directoryHint: .isDirectory)
+            .appending(path: "\(modelFile).incomplete")
+        self.modelFile = modelFile
+    }
+
+    public func installation(
+        revision: String,
+        blobIdentifier: String
+    ) -> Installation? {
+        guard
+            Self.isSafeCacheComponent(revision),
+            Self.isSafeCacheComponent(blobIdentifier)
+        else {
+            return nil
+        }
+        return Installation(
+            revision: revision,
+            blobIdentifier: blobIdentifier,
+            blobURL: repositoryRoot
+                .appending(path: "blobs", directoryHint: .isDirectory)
+                .appending(path: blobIdentifier),
+            snapshotFileURL: repositoryRoot
+                .appending(
+                    path: "snapshots/\(revision)",
+                    directoryHint: .isDirectory
+                )
+                .appending(path: modelFile),
+            mainReferenceURL: repositoryRoot.appending(path: "refs/main"),
+            snapshotSymlinkDestination:
+                "../../blobs/\(blobIdentifier)"
+        )
+    }
+
+    private static func isSafeCacheComponent(_ value: String) -> Bool {
+        guard !value.isEmpty, value != ".", value != ".." else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy {
+            CharacterSet.alphanumerics.contains($0)
+                || $0 == "-"
+                || $0 == "_"
+                || $0 == "."
+        } && !value.contains("..")
+    }
+}
