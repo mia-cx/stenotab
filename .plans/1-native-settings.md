@@ -150,6 +150,25 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - Production app build succeeds with stable Apple Development signing and Team
   ID `VJKBGC9AMK`.
 
+## Follow-up slice: context and privacy controls
+
+### Acceptance criteria
+
+- [x] Settings has a dedicated Context & Privacy destination.
+- [x] Clipboard context remains opt-in and immediately updates the live prompt
+      configuration.
+- [x] Unimplemented screenshot/OCR and website sources are visibly unavailable
+      rather than presenting controls that silently do nothing.
+- [x] The page explains local processing, ephemeral request context, and secure
+      field exclusion.
+
+### Notes
+
+- Clipboard requests remain bounded to 2,000 characters by prompt composition
+  and are not written into StenoTab history.
+- The currently exposed provider is Local, so enabled context remains on the
+  Mac. Remote-provider disclosure can be added before that UI is re-exposed.
+
 ## Follow-up slice: focused local model setup
 
 ### Acceptance criteria

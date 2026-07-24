@@ -56,6 +56,7 @@ final class SettingsWindowController: NSWindowController {
 private enum SettingsPage: String, CaseIterable, Identifiable {
     case setup
     case models
+    case contextPrivacy
     case promptLab
     case appSettings
 
@@ -78,6 +79,8 @@ private struct SettingsRootView: View {
                     .tag(SettingsPage.setup)
                 Label("Models", systemImage: "shippingbox")
                     .tag(SettingsPage.models)
+                Label("Context & Privacy", systemImage: "hand.raised")
+                    .tag(SettingsPage.contextPrivacy)
                 Label("Prompt Lab", systemImage: "text.badge.sparkles")
                     .tag(SettingsPage.promptLab)
                 Label("App Settings", systemImage: "app.badge.checkmark")
@@ -97,6 +100,8 @@ private struct SettingsRootView: View {
                     runtimeStore: runtimeStatusStore,
                     providerStore: providerSettingsStore
                 )
+            case .contextPrivacy:
+                ContextPrivacyView(store: promptStore)
             case .promptLab:
                 PromptLabView(store: promptStore)
             case .appSettings:
@@ -160,6 +165,166 @@ private struct SetupSettingsView: View {
             .frame(maxWidth: 900, alignment: .leading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct ContextPrivacyView: View {
+    @ObservedObject var store: PromptSettingsStore
+
+    private var configuration: Binding<PromptConfiguration> {
+        $store.configuration
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                SettingsSection(title: "Context Sources") {
+                    ContextPrivacyToggleRow(
+                        title: "Current application",
+                        detail:
+                            "Include the name of the app containing the "
+                            + "focused editor.",
+                        isOn:
+                            configuration.context.includeCurrentApplication
+                    )
+                    Divider()
+                    ContextPrivacyToggleRow(
+                        title: "Input kind",
+                        detail:
+                            "Include whether the focused editor looks like a "
+                            + "message box, text area, or text field.",
+                        isOn: configuration.context.includeInputKind
+                    )
+                    Divider()
+                    ContextPrivacyToggleRow(
+                        title: "Clipboard contents",
+                        detail:
+                            "Read up to 2,000 characters of text from the "
+                            + "clipboard when requesting a completion. Off by "
+                            + "default and never retained by StenoTab.",
+                        isOn: configuration.context.includeClipboard
+                    )
+                    Divider()
+                    ContextPrivacyToggleRow(
+                        title: "Snapshots / OCR",
+                        detail:
+                            "Screenshot capture and local OCR are not "
+                            + "connected yet, so StenoTab cannot enable this "
+                            + "source.",
+                        badge: "Coming soon",
+                        isOn: .constant(false),
+                        isEnabled: false
+                    )
+                    Divider()
+                    ContextPrivacyToggleRow(
+                        title: "Current website",
+                        detail:
+                            "Browser website detection is not connected yet.",
+                        badge: "Coming soon",
+                        isOn: .constant(false),
+                        isEnabled: false
+                    )
+                }
+
+                SettingsSection(title: "Processing & Retention") {
+                    PrivacyExplanationRow(
+                        icon: "desktopcomputer",
+                        title: "Processed locally",
+                        detail:
+                            "The currently exposed Local provider runs through "
+                            + "llama.cpp on this Mac. Enabled context does not "
+                            + "leave the Mac."
+                    )
+                    Divider()
+                    PrivacyExplanationRow(
+                        icon: "clock.arrow.circlepath",
+                        title: "Ephemeral completion context",
+                        detail:
+                            "Input and clipboard context are assembled in "
+                            + "memory for the current request. StenoTab does "
+                            + "not add them to typing history or persist them."
+                    )
+                    Divider()
+                    PrivacyExplanationRow(
+                        icon: "lock.shield",
+                        title: "Secure fields stay excluded",
+                        detail:
+                            "Password and other secure text fields remain "
+                            + "excluded regardless of these settings."
+                    )
+                }
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 22)
+            .padding(.bottom, 36)
+            .frame(maxWidth: 900, alignment: .leading)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct ContextPrivacyToggleRow: View {
+    let title: String
+    let detail: String
+    var badge: String?
+    @Binding var isOn: Bool
+    var isEnabled = true
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Text(title)
+                        .font(.headline)
+                    if let badge {
+                        Text(badge)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule()
+                                    .fill(Color.secondary.opacity(0.14))
+                            )
+                    }
+                }
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Toggle(title, isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .disabled(!isEnabled)
+                .frame(width: 54, alignment: .trailing)
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+private struct PrivacyExplanationRow: View {
+    let icon: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 3)
     }
 }
 
