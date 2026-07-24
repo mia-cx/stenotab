@@ -255,8 +255,13 @@ final class ProviderSettingsStore: ObservableObject {
                 }
                 guard let self else { return }
                 modelDownloadTask = nil
+                let installedProfile = HuggingFaceModelCache.cachedProfile(
+                    repository: profile.repository,
+                    modelFile: profile.modelFile ?? modelURL.lastPathComponent,
+                    metadata: GGUFModelMetadata.read(from: modelURL)
+                )
                 refreshCachedLocalProfiles()
-                selectLocalProfile(profile)
+                selectLocalProfile(installedProfile)
                 localModelDownloadStatus = .ready(modelURL)
             } catch is CancellationError {
                 guard let self else { return }

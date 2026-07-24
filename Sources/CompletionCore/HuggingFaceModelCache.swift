@@ -86,7 +86,7 @@ public enum HuggingFaceModelCache {
             return []
         }
 
-        var profilesByID: [String: LocalModelProfile] = [:]
+        var profilesByArtifact: [String: LocalModelProfile] = [:]
         for repositoryRoot in repositories {
             guard
                 let repository = repositoryID(
@@ -136,14 +136,15 @@ public enum HuggingFaceModelCache {
                     }
                     let profile = cachedProfile(
                         repository: repository,
-                        modelFile: modelFile
+                        modelFile: modelFile,
+                        metadata: GGUFModelMetadata.read(from: modelURL)
                     )
-                    profilesByID[profile.id] = profile
+                    profilesByArtifact[artifactIdentity(for: profile)] = profile
                 }
             }
         }
 
-        return profilesByID.values.sorted {
+        return profilesByArtifact.values.sorted {
             if $0.repository != $1.repository {
                 return $0.repository.localizedStandardCompare($1.repository)
                     == .orderedAscending
@@ -156,11 +157,16 @@ public enum HuggingFaceModelCache {
 
     public static func cachedProfile(
         repository: String,
-        modelFile: String
+        modelFile: String,
+        metadata: GGUFModelMetadata? = nil
     ) -> LocalModelProfile {
         LocalModelProfile(
             id: "hf:\(repository):\(modelFile)",
-            displayName: "\(repository) · \(modelFile)",
+            displayName: displayName(
+                repository: repository,
+                modelFile: modelFile,
+                metadata: metadata
+            ),
             repository: repository,
             modelFile: modelFile,
             apiStyle: .textCompletions,
@@ -168,6 +174,96 @@ public enum HuggingFaceModelCache {
             supportsImages: false,
             qualityNote: "Discovered in the shared Hugging Face cache."
         )
+    }
+
+    public static func artifactIdentity(
+        for profile: LocalModelProfile
+    ) -> String {
+        let repository = profile.repository
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let modelFile = (profile.modelFile ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\", with: "/")
+            .lowercased()
+        return "\(repository)\u{0}\(modelFile)"
+    }
+
+    private static func displayName(
+        repository: String,
+        modelFile: String,
+        metadata: GGUFModelMetadata?
+    ) -> String {
+        let name = metadata?.name
+            .flatMap(nonempty)
+            .map(normalizeModelName)
+            ?? inferredModelName(repository: repository, modelFile: modelFile)
+        let size = metadata?.sizeLabel.flatMap(nonempty)
+        let quantization = inferredQuantization(from: modelFile)
+
+        var components = [name]
+        for component in [size, quantization].compactMap({ $0 }) {
+            if !components.contains(where: {
+                $0.localizedCaseInsensitiveContains(component)
+            }) {
+                components.append(component)
+            }
+        }
+        return components.joined(separator: " · ")
+    }
+
+    private static func nonempty(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func normalizeModelName(_ value: String) -> String {
+        value
+            .replacingOccurrences(
+                of: #"\bIt\b"#,
+                with: "IT",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"\bGguf\b"#,
+                with: "GGUF",
+                options: .regularExpression
+            )
+    }
+
+    private static func inferredModelName(
+        repository: String,
+        modelFile: String
+    ) -> String {
+        var value = URL(filePath: modelFile).deletingPathExtension()
+            .lastPathComponent
+        if let quantization = inferredQuantization(from: modelFile),
+           value.hasSuffix(".\(quantization)") {
+            value.removeLast(quantization.count + 1)
+        }
+        if value.isEmpty {
+            value = repository.split(separator: "/").last.map(String.init)
+                ?? repository
+        }
+        return normalizeModelName(
+            value
+                .replacingOccurrences(of: "-", with: " ")
+                .replacingOccurrences(of: "_", with: " ")
+                .capitalized
+        )
+    }
+
+    private static func inferredQuantization(from modelFile: String) -> String? {
+        let stem = URL(filePath: modelFile).deletingPathExtension()
+            .lastPathComponent
+        return stem.split(separator: ".").last
+            .map(String.init)
+            .flatMap {
+                $0.range(
+                    of: #"^(?:[IQF]\d|BF16)(?:_[A-Z0-9]+)*$"#,
+                    options: [.regularExpression, .caseInsensitive]
+                ) == nil ? nil : $0.uppercased()
+            }
     }
 
     private static func repositoryID(

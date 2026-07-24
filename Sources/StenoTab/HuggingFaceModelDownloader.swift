@@ -211,15 +211,9 @@ actor HuggingFaceModelDownloader {
         else {
             throw DownloadError.noSingleFileGGUF
         }
-        return LocalModelProfile(
-            id: "hf:\(repository):\(modelFile)",
-            displayName: "\(repository) · \(modelFile)",
+        return HuggingFaceModelCache.cachedProfile(
             repository: repository,
-            modelFile: modelFile,
-            apiStyle: .textCompletions,
-            minimumUnifiedMemoryGB: 0,
-            supportsImages: false,
-            qualityNote: "Custom model from Hugging Face."
+            modelFile: modelFile
         )
     }
 

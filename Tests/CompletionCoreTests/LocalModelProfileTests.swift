@@ -173,6 +173,65 @@ final class LocalModelProfileTests: XCTestCase {
         )
     }
 
+    func testCachedProfileUsesGGUFMetadataForFriendlyDisplayName() {
+        let profile = HuggingFaceModelCache.cachedProfile(
+            repository: "mradermacher/gemma-4-E2B-it-GGUF",
+            modelFile: "gemma-4-E2B-it.Q4_K_M.gguf",
+            metadata: GGUFModelMetadata(
+                name: "Gemma 4 E2B It",
+                sizeLabel: "4.6B"
+            )
+        )
+
+        XCTAssertEqual(
+            profile.displayName,
+            "Gemma 4 E2B IT · 4.6B · Q4_K_M"
+        )
+    }
+
+    func testArtifactIdentityNormalizesCaseAndPathSeparators() {
+        let first = HuggingFaceModelCache.cachedProfile(
+            repository: "Example/Model",
+            modelFile: "quantized/model.Q4_K_M.GGUF"
+        )
+        let second = HuggingFaceModelCache.cachedProfile(
+            repository: " example/model ",
+            modelFile: #"quantized\MODEL.q4_k_m.gguf"#
+        )
+
+        XCTAssertEqual(
+            HuggingFaceModelCache.artifactIdentity(for: first),
+            HuggingFaceModelCache.artifactIdentity(for: second)
+        )
+    }
+
+    func testGGUFMetadataReaderReadsNameAndSizeLabel() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "\(UUID().uuidString).gguf")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        var data = Data("GGUF".utf8)
+        appendLittleEndian(UInt32(3), to: &data)
+        appendLittleEndian(UInt64(0), to: &data)
+        appendLittleEndian(UInt64(2), to: &data)
+        appendGGUFStringMetadata(
+            key: "general.name",
+            value: "Gemma 4 E2B It",
+            to: &data
+        )
+        appendGGUFStringMetadata(
+            key: "general.size_label",
+            value: "4.6B",
+            to: &data
+        )
+        try data.write(to: url)
+
+        XCTAssertEqual(
+            GGUFModelMetadata.read(from: url),
+            GGUFModelMetadata(name: "Gemma 4 E2B It", sizeLabel: "4.6B")
+        )
+    }
+
     func testExistingServerIsReusableOnlyWhenItAdvertisesSelectedModel() throws {
         let profile = try XCTUnwrap(
             LocalModelProfiles.profile(id: "gemma-4-e2b-base")
@@ -204,4 +263,28 @@ final class LocalModelProfileTests: XCTestCase {
             "gemma-4-E2B.Q4_K_M.gguf"
         )
     }
+}
+
+private func appendLittleEndian<T: FixedWidthInteger>(
+    _ value: T,
+    to data: inout Data
+) {
+    var littleEndian = value.littleEndian
+    withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
+}
+
+private func appendGGUFString(_ value: String, to data: inout Data) {
+    let encoded = Data(value.utf8)
+    appendLittleEndian(UInt64(encoded.count), to: &data)
+    data.append(encoded)
+}
+
+private func appendGGUFStringMetadata(
+    key: String,
+    value: String,
+    to data: inout Data
+) {
+    appendGGUFString(key, to: &data)
+    appendLittleEndian(UInt32(8), to: &data)
+    appendGGUFString(value, to: &data)
 }

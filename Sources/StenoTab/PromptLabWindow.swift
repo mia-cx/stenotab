@@ -772,7 +772,7 @@ private struct ModelsView: View {
 
     private var cachedProfiles: [LocalModelProfile] {
         let recommendedKeys = Set(
-            LocalModelProfiles.all.map(profileCacheKey)
+            LocalModelProfiles.all.map(HuggingFaceModelCache.artifactIdentity)
         )
         var profilesByID = Dictionary(
             uniqueKeysWithValues: providerStore.cachedLocalProfiles.map {
@@ -780,11 +780,20 @@ private struct ModelsView: View {
             }
         )
         if let selectedLocalProfile,
-           !recommendedKeys.contains(profileCacheKey(selectedLocalProfile)) {
+           !recommendedKeys.contains(
+               HuggingFaceModelCache.artifactIdentity(
+                   for: selectedLocalProfile
+               )
+           ),
+           profilesByID[selectedLocalProfile.id] == nil {
             profilesByID[selectedLocalProfile.id] = selectedLocalProfile
         }
         return profilesByID.values
-            .filter { !recommendedKeys.contains(profileCacheKey($0)) }
+            .filter {
+                !recommendedKeys.contains(
+                    HuggingFaceModelCache.artifactIdentity(for: $0)
+                )
+            }
             .sorted {
                 $0.displayName.localizedStandardCompare($1.displayName)
                     == .orderedAscending
@@ -853,10 +862,6 @@ private struct ModelsView: View {
     private func selectableProfile(id: String) -> LocalModelProfile? {
         LocalModelProfiles.profile(id: id)
             ?? cachedProfiles.first { $0.id == id }
-    }
-
-    private func profileCacheKey(_ profile: LocalModelProfile) -> String {
-        "\(profile.repository)\u{0}\(profile.modelFile ?? "")"
     }
 
     private func openHuggingFaceCache() {
