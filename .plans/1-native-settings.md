@@ -82,7 +82,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 
 - [x] Extend the permission model and coordinator with optional Screen
       Recording status and actions.
-- [ ] Add an observable runtime-status bridge shared by the menu and Settings.
+- [x] Add an observable runtime-status bridge shared by the menu and Settings.
 - [ ] Add Setup and Models & Providers status pages to the settings sidebar.
 - [ ] Run focused and full validation, then record the remaining issue scope.
 
@@ -91,3 +91,5 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - Screen Recording is reported independently and remains optional while OCR is
   disabled; `nextSettingsPane` continues to represent only required setup.
 - `swift test --filter PermissionStateTests` passes (3 tests).
+- Permission and model transitions now flow through `RuntimeStatusStore`; the
+  existing menu reads the same structured status that Settings will observe.

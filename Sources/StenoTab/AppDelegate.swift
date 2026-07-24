@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     private var localModelTask: Task<Void, Never>?
     private let promptSettings = PromptSettingsStore()
     private let applicationPolicy = ApplicationPolicyStore()
+    private let runtimeStatus = RuntimeStatusStore()
     private var settingsWindowController: SettingsWindowController?
     private var dailyAcceptanceCounter = DailyAcceptanceCounter(
         count: 0,
@@ -66,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         coordinator.start()
 
         if usesExplicitProvider {
-            modelStatusItem?.title = "Model: External API"
+            updateModelStatus(.externalAPI)
         } else {
             startConfiguredLocalModel(using: router)
         }
@@ -100,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         menu.addItem(status)
 
         let modelStatus = NSMenuItem(
-            title: "Model: Checking local runtime…",
+            title: runtimeStatus.modelStatus.menuTitle,
             action: nil,
             keyEquivalent: ""
         )
@@ -145,8 +146,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         accessibilitySettings.target = coordinator
         menu.addItem(accessibilitySettings)
 
-        coordinator.observePermissionState { [weak status, weak fixPermissions] state in
+        coordinator.observePermissionState {
+            [weak self, weak status, weak fixPermissions] state in
             status?.title = state.menuTitle
+            self?.runtimeStatus.update(permissionState: state)
             let ready = state.nextSettingsPane == nil
             fixPermissions?.title = ready
                 ? "Permissions Granted"
@@ -173,6 +176,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
 
         item.menu = menu
         statusItem = item
+    }
+
+    private func updateModelStatus(_ status: CompletionRuntimeStatus) {
+        runtimeStatus.update(modelStatus: status)
+        modelStatusItem?.title = status.menuTitle
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -410,11 +418,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                 id: configuration.profileID
             )
         else {
-            modelStatusItem?.title = "Model: Built-in demo"
+            updateModelStatus(.builtInDemo)
             return
         }
 
-        modelStatusItem?.title = "Model: Loading \(profile.displayName)…"
+        updateModelStatus(.loading(modelName: profile.displayName))
         let server = LocalLlamaServer(
             profile: profile,
             configuration: configuration
@@ -430,22 +438,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                         modelID: connection.modelID
                     )
                 else {
-                    self?.modelStatusItem?.title =
-                        "Model: Invalid configuration"
+                    self?.updateModelStatus(
+                        .unavailable(message: "Invalid configuration")
+                    )
                     return
                 }
                 await router.use(provider)
-                self?.modelStatusItem?.title = switch connection.ownership {
+                let detail = switch connection.ownership {
                 case .external:
-                    "Model: Reusing compatible llama-server"
+                    "Reusing a compatible llama-server at "
+                        + connection.baseURL.absoluteString
                 case .stenotab:
-                    "Model: Local llama.cpp ready"
+                    "StenoTab-owned llama.cpp server at "
+                        + connection.baseURL.absoluteString
                 }
+                self?.updateModelStatus(
+                    .ready(
+                        modelName: profile.displayName,
+                        detail: detail
+                    )
+                )
             } catch is CancellationError {
                 return
             } catch {
-                self?.modelStatusItem?.title =
-                    "Model unavailable: \(error.localizedDescription)"
+                self?.updateModelStatus(
+                    .unavailable(message: error.localizedDescription)
+                )
             }
         }
     }
