@@ -23,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     private let providerSettings = ProviderSettingsStore()
     private let runtimeStatus = RuntimeStatusStore()
     private let launchAtLoginSettings = LaunchAtLoginSettingsStore()
+    private let systemTextSuggestionSettings =
+        SystemTextSuggestionSettingsStore()
     private var settingsWindowController: SettingsWindowController?
     private var dailyAcceptanceCounter = DailyAcceptanceCounter(
         count: 0,
@@ -319,6 +321,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                 providerSettingsStore: providerSettings,
                 runtimeStatusStore: runtimeStatus,
                 launchAtLoginSettingsStore: launchAtLoginSettings,
+                systemTextSuggestionSettingsStore:
+                    systemTextSuggestionSettings,
                 actions: SettingsActions(
                     requestAccessibilityPermission: {
                         [weak coordinator] in

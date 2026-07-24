@@ -18,6 +18,8 @@ final class SettingsWindowController: NSWindowController {
         providerSettingsStore: ProviderSettingsStore,
         runtimeStatusStore: RuntimeStatusStore,
         launchAtLoginSettingsStore: LaunchAtLoginSettingsStore,
+        systemTextSuggestionSettingsStore:
+            SystemTextSuggestionSettingsStore,
         actions: SettingsActions
     ) {
         let rootView = SettingsRootView(
@@ -26,6 +28,8 @@ final class SettingsWindowController: NSWindowController {
             providerSettingsStore: providerSettingsStore,
             runtimeStatusStore: runtimeStatusStore,
             launchAtLoginSettingsStore: launchAtLoginSettingsStore,
+            systemTextSuggestionSettingsStore:
+                systemTextSuggestionSettingsStore,
             actions: actions
         )
         let hostingController = NSHostingController(rootView: rootView)
@@ -69,6 +73,8 @@ private struct SettingsRootView: View {
     @ObservedObject var providerSettingsStore: ProviderSettingsStore
     @ObservedObject var runtimeStatusStore: RuntimeStatusStore
     @ObservedObject var launchAtLoginSettingsStore: LaunchAtLoginSettingsStore
+    @ObservedObject var systemTextSuggestionSettingsStore:
+        SystemTextSuggestionSettingsStore
     let actions: SettingsActions
     @State private var selection: SettingsPage? = .setup
 
@@ -93,6 +99,8 @@ private struct SettingsRootView: View {
                 SetupSettingsView(
                     store: runtimeStatusStore,
                     launchAtLoginStore: launchAtLoginSettingsStore,
+                    systemTextSuggestionStore:
+                        systemTextSuggestionSettingsStore,
                     actions: actions
                 )
             case .models:
@@ -115,6 +123,8 @@ private struct SettingsRootView: View {
 private struct SetupSettingsView: View {
     @ObservedObject var store: RuntimeStatusStore
     @ObservedObject var launchAtLoginStore: LaunchAtLoginSettingsStore
+    @ObservedObject var systemTextSuggestionStore:
+        SystemTextSuggestionSettingsStore
     let actions: SettingsActions
 
     var body: some View {
@@ -147,15 +157,9 @@ private struct SetupSettingsView: View {
                         openSettings: actions.openScreenRecordingSettings
                     )
                     Divider()
-                    ManualSystemSettingRow(
-                        title: "macOS text suggestions",
-                        detail:
-                            "To avoid overlapping suggestions, open Keyboard "
-                            + "settings, click Edit beside Text Input, then "
-                            + "turn off Show inline predictive text and Show "
-                            + "suggested replies.",
-                        buttonTitle: "Open Keyboard Settings",
-                        action: actions.openKeyboardSettings
+                    SystemTextSuggestionsSettingsRow(
+                        store: systemTextSuggestionStore,
+                        openSettings: actions.openKeyboardSettings
                     )
                 }
             }
@@ -369,32 +373,72 @@ private struct LaunchAtLoginRow: View {
     }
 }
 
-private struct ManualSystemSettingRow: View {
-    let title: String
-    let detail: String
-    let buttonTitle: String
-    let action: @MainActor () -> Void
+private struct SystemTextSuggestionsSettingsRow: View {
+    @ObservedObject var store: SystemTextSuggestionSettingsStore
+    let openSettings: @MainActor () -> Void
+
+    private var isConfigured: Bool {
+        store.state.isConfiguredForStenoTab
+    }
+
+    private var statusText: String {
+        if isConfigured {
+            return "Disabled"
+        }
+        return "Still enabled: "
+            + store.state.enabledSettingNames.joined(separator: " and ")
+    }
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
-            Image(systemName: "keyboard")
-                .foregroundStyle(.secondary)
-                .font(.title3)
+            Image(
+                systemName: isConfigured
+                    ? "checkmark.circle.fill"
+                    : "exclamationmark.circle.fill"
+            )
+            .foregroundStyle(isConfigured ? .green : .secondary)
+            .font(.title3)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(title)
+                Text("macOS text suggestions")
                     .font(.headline)
-                Text(detail)
+                Text(
+                    "Turn off inline predictive text and suggested replies "
+                        + "so they do not overlap StenoTab completions."
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text(statusText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(isConfigured ? .green : .secondary)
+                if let errorMessage = store.errorMessage {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Button(buttonTitle) {
-                action()
+            if !isConfigured {
+                Button("Turn Off") {
+                    store.disableAll()
+                }
+            }
+            Button("Open Settings") {
+                openSettings()
             }
         }
         .padding(.vertical, 5)
+        .onAppear {
+            store.refresh()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification
+            )
+        ) { _ in
+            store.refresh()
+        }
     }
 }
 
