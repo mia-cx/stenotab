@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     private var localModelTask: Task<Void, Never>?
     private let promptSettings = PromptSettingsStore()
     private let applicationPolicy = ApplicationPolicyStore()
-    private var promptLabWindowController: PromptLabWindowController?
+    private var settingsWindowController: SettingsWindowController?
     private var dailyAcceptanceCounter = DailyAcceptanceCounter(
         count: 0,
         referenceDate: Date()
@@ -57,6 +57,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             }
         )
         self.coordinator = coordinator
+        applicationPolicy.onChange = { [weak coordinator] in
+            coordinator?.applicationPolicyDidChange()
+        }
         installStatusItem(for: coordinator)
         loadDailyAcceptanceCount()
         observeCalendarDayChanges()
@@ -186,7 +189,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         }
 
         applicationPolicy.togglePolicy(for: bundleIdentifier)
-        coordinator?.applicationPolicyDidChange()
         updateFocusedApplicationPolicyItem()
     }
 
@@ -295,23 +297,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     }
 
     @objc private func openSettingsWindow() {
-        if promptLabWindowController == nil {
-            promptLabWindowController = PromptLabWindowController(
-                store: promptSettings
+        if settingsWindowController == nil {
+            settingsWindowController = SettingsWindowController(
+                promptStore: promptSettings,
+                applicationPolicyStore: applicationPolicy
             )
-            promptLabWindowController?.window?.delegate = self
+            settingsWindowController?.window?.delegate = self
         }
 
         NSApp.setActivationPolicy(.regular)
-        promptLabWindowController?.showWindow(nil)
-        promptLabWindowController?.window?.makeKeyAndOrderFront(nil)
+        settingsWindowController?.showWindow(nil)
+        settingsWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func windowWillClose(_ notification: Notification) {
         guard
             let closingWindow = notification.object as? NSWindow,
-            closingWindow === promptLabWindowController?.window
+            closingWindow === settingsWindowController?.window
         else {
             return
         }

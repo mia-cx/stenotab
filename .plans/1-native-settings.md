@@ -33,7 +33,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - [x] Add a persistent application-policy store and app-observation boundary.
 - [x] Enforce app policy before completion/context work and test the gating rule.
 - [x] Add the focused-app menu toggle with live state.
-- [ ] Add a searchable App Settings page backed by the same live store.
+- [x] Add a searchable App Settings page backed by the same live store.
 - [ ] Run the full test suite and signed production build; document residual
       issue scope.
 
@@ -56,3 +56,8 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
   explicit enable/disable override, and tells the coordinator to cancel or
   resume work immediately.
 - `swift test --filter ApplicationPolicyTests` passes (7 tests).
+- Settings now has an App Settings destination with global-default control,
+  bundle/name search, native app icons, last-seen metadata, and per-app
+  inherit/enabled/disabled selection.
+- Store mutations notify the coordinator through one shared callback, so both
+  Settings and menu changes are immediately effective.

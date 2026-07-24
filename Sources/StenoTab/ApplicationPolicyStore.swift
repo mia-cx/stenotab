@@ -7,8 +7,11 @@ final class ApplicationPolicyStore: ObservableObject {
     @Published private(set) var state: ApplicationPolicyState {
         didSet {
             persist()
+            onChange?()
         }
     }
+
+    var onChange: (() -> Void)?
 
     private let defaults: UserDefaults
     private let storageKey = "application-policy.v1"

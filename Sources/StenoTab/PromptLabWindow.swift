@@ -3,9 +3,15 @@ import CompletionCore
 import SwiftUI
 
 @MainActor
-final class PromptLabWindowController: NSWindowController {
-    init(store: PromptSettingsStore) {
-        let rootView = SettingsRootView(store: store)
+final class SettingsWindowController: NSWindowController {
+    init(
+        promptStore: PromptSettingsStore,
+        applicationPolicyStore: ApplicationPolicyStore
+    ) {
+        let rootView = SettingsRootView(
+            promptStore: promptStore,
+            applicationPolicyStore: applicationPolicyStore
+        )
         let hostingController = NSHostingController(rootView: rootView)
         let window = NSWindow(contentViewController: hostingController)
         window.title = ""
@@ -33,12 +39,14 @@ final class PromptLabWindowController: NSWindowController {
 
 private enum SettingsPage: String, CaseIterable, Identifiable {
     case promptLab
+    case appSettings
 
     var id: String { rawValue }
 }
 
 private struct SettingsRootView: View {
-    @ObservedObject var store: PromptSettingsStore
+    @ObservedObject var promptStore: PromptSettingsStore
+    @ObservedObject var applicationPolicyStore: ApplicationPolicyStore
     @State private var selection: SettingsPage? = .promptLab
 
     var body: some View {
@@ -46,12 +54,178 @@ private struct SettingsRootView: View {
             List(selection: $selection) {
                 Label("Prompt Lab", systemImage: "text.badge.sparkles")
                     .tag(SettingsPage.promptLab)
+                Label("App Settings", systemImage: "app.badge.checkmark")
+                    .tag(SettingsPage.appSettings)
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 205, max: 240)
         } detail: {
-            PromptLabView(store: store)
+            switch selection ?? .promptLab {
+            case .promptLab:
+                PromptLabView(store: promptStore)
+            case .appSettings:
+                AppSettingsView(store: applicationPolicyStore)
+            }
         }
         .frame(minWidth: 820, minHeight: 620)
+    }
+}
+
+private struct AppSettingsView: View {
+    @ObservedObject var store: ApplicationPolicyStore
+    @State private var searchText = ""
+
+    private var filteredApplications: [SeenApplication] {
+        let query = searchText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !query.isEmpty else { return store.seenApplications }
+        return store.seenApplications.filter {
+            $0.displayName.localizedCaseInsensitiveContains(query)
+                || $0.bundleIdentifier.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            SettingsSection(title: "Completion Defaults") {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Enable completions by default")
+                            .font(.headline)
+                        Text(
+                            "Apps set to Use Global Default inherit this value."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Toggle(
+                        "Enable completions by default",
+                        isOn: Binding(
+                            get: {
+                                store.state.globalCompletionsEnabled
+                            },
+                            set: {
+                                store.setGlobalCompletionsEnabled($0)
+                            }
+                        )
+                    )
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .frame(width: 54, alignment: .trailing)
+                }
+                .padding(.vertical, 3)
+            }
+
+            SettingsSection(title: "Applications") {
+                TextField("Search applications", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+
+                if store.seenApplications.isEmpty {
+                    ContentUnavailableView(
+                        "No Applications Seen Yet",
+                        systemImage: "app.dashed",
+                        description: Text(
+                            "Applications appear after StenoTab encounters a "
+                                + "non-secure text field in them."
+                        )
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 260)
+                } else if filteredApplications.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
+                        .frame(maxWidth: .infinity, minHeight: 260)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(
+                                Array(filteredApplications.enumerated()),
+                                id: \.element.id
+                            ) { index, application in
+                                if index > 0 {
+                                    Divider()
+                                }
+                                ApplicationPolicyRow(
+                                    application: application,
+                                    policyOverride: Binding(
+                                        get: {
+                                            store.policyOverride(
+                                                for:
+                                                    application.bundleIdentifier
+                                            )
+                                        },
+                                        set: {
+                                            store.setPolicyOverride(
+                                                $0,
+                                                for:
+                                                    application.bundleIdentifier
+                                            )
+                                        }
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    .frame(maxHeight: .infinity)
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 22)
+        .padding(.bottom, 28)
+        .frame(maxWidth: 900, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct ApplicationPolicyRow: View {
+    let application: SeenApplication
+    @Binding var policyOverride: ApplicationPolicyOverride
+
+    private var icon: NSImage {
+        if let path = application.bundleURL?.path {
+            return NSWorkspace.shared.icon(forFile: path)
+        }
+        return NSWorkspace.shared.icon(
+            for: .applicationBundle
+        )
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(nsImage: icon)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 32, height: 32)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(application.displayName)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(application.bundleIdentifier)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text("Last seen \(application.lastSeenAt, style: .relative)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Picker("Completion policy", selection: $policyOverride) {
+                Text("Use Global Default")
+                    .tag(ApplicationPolicyOverride.inherit)
+                Text("Enabled")
+                    .tag(ApplicationPolicyOverride.enabled)
+                Text("Disabled")
+                    .tag(ApplicationPolicyOverride.disabled)
+            }
+            .labelsHidden()
+            .frame(width: 170)
+        }
+        .padding(.vertical, 10)
     }
 }
 
