@@ -72,11 +72,11 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 
 ### Acceptance criteria
 
-- [ ] Settings reports Accessibility and Screen Recording independently.
-- [ ] Missing permissions have working request/open-System-Settings actions.
-- [ ] Settings shows the current completion runtime status without relying on
+- [x] Settings reports Accessibility and Screen Recording independently.
+- [x] Missing permissions have working request/open-System-Settings actions.
+- [x] Settings shows the current completion runtime status without relying on
       the menu-bar menu.
-- [ ] Permission and model status changes update live while Settings is open.
+- [x] Permission and model status changes update live while Settings is open.
 
 ### TODOs
 
@@ -84,7 +84,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
       Recording status and actions.
 - [x] Add an observable runtime-status bridge shared by the menu and Settings.
 - [x] Add Setup and Models & Providers status pages to the settings sidebar.
-- [ ] Run focused and full validation, then record the remaining issue scope.
+- [x] Run focused and full validation, then record the remaining issue scope.
 
 ### Notes
 
@@ -97,3 +97,9 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - Models & Providers shows the active runtime plus honest metadata for supported
   local profiles; configuration controls remain deferred until their persistence
   and credential boundaries exist.
+- Full `swift test` passes (91 tests).
+- Production app build succeeds with the stable Apple Development signature and
+  Team ID `VJKBGC9AMK`.
+- Remaining issue scope is now primarily provider/model configuration and
+  download management, Keychain-backed secrets, launch-at-login/general
+  behavior, OCR capture/privacy, shortcuts, and diagnostics export.
