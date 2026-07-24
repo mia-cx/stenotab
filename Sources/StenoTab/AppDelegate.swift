@@ -17,8 +17,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     private var focusedApplicationPolicyItem: NSMenuItem?
     private var localServer: LocalLlamaServer?
     private var localModelTask: Task<Void, Never>?
+    private var providerRouter: SwitchingCompletionProvider?
     private let promptSettings = PromptSettingsStore()
     private let applicationPolicy = ApplicationPolicyStore()
+    private let providerSettings = ProviderSettingsStore()
     private let runtimeStatus = RuntimeStatusStore()
     private var settingsWindowController: SettingsWindowController?
     private var dailyAcceptanceCounter = DailyAcceptanceCounter(
@@ -39,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             ? ProviderFactory.make(environment: environment)
             : HeuristicCompletionProvider()
         let router = SwitchingCompletionProvider(initialProvider)
+        providerRouter = router
         let coordinator = CompletionCoordinator(
             provider: router,
             promptConfiguration: { [promptSettings] in
@@ -61,6 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         applicationPolicy.onChange = { [weak coordinator] in
             coordinator?.applicationPolicyDidChange()
         }
+        providerSettings.onChange = { [weak self] in
+            self?.applyProviderSettings()
+        }
         installStatusItem(for: coordinator)
         loadDailyAcceptanceCount()
         observeCalendarDayChanges()
@@ -69,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         if usesExplicitProvider {
             updateModelStatus(.externalAPI)
         } else {
-            startConfiguredLocalModel(using: router)
+            applyProviderSettings()
         }
     }
 
@@ -429,10 +435,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     }
 
     private func startConfiguredLocalModel(
-        using router: SwitchingCompletionProvider
+        using router: SwitchingCompletionProvider,
+        configuration: LocalCompletionConfiguration
     ) {
         guard
-            let configuration = ProviderFactory.localConfiguration(),
             let profile = LocalModelProfiles.profile(
                 id: configuration.profileID
             )
@@ -481,6 +487,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                 return
             } catch {
                 self?.updateModelStatus(
+                    .unavailable(message: error.localizedDescription)
+                )
+            }
+        }
+    }
+
+    private func applyProviderSettings() {
+        guard let router = providerRouter else { return }
+
+        localModelTask?.cancel()
+        localModelTask = nil
+        localServer?.stop()
+        localServer = nil
+
+        switch providerSettings.configuration.selection {
+        case .builtInDemo:
+            Task {
+                await router.use(HeuristicCompletionProvider())
+            }
+            updateModelStatus(.builtInDemo)
+        case .local:
+            startConfiguredLocalModel(
+                using: router,
+                configuration:
+                    providerSettings.configuration.localConfiguration
+            )
+        case let .remote(providerID):
+            guard
+                let configuration = providerSettings.configuration
+                    .remoteProvider(id: providerID),
+                let endpoint = configuration.validatedBaseURL
+            else {
+                updateModelStatus(
+                    .unavailable(message: "Invalid remote provider settings")
+                )
+                return
+            }
+            do {
+                let apiKey = try providerSettings.credential(
+                    for: providerID
+                )
+                let provider = OpenAICompatibleCompletionProvider(
+                    endpoint: endpoint,
+                    apiKey: apiKey,
+                    model: configuration.model,
+                    apiStyle: configuration.apiStyle,
+                    maximumWords: configuration.maximumWords
+                )
+                Task {
+                    await router.use(provider)
+                }
+                updateModelStatus(
+                    .ready(
+                        modelName: configuration.displayName,
+                        detail: endpoint.absoluteString
+                    )
+                )
+            } catch {
+                updateModelStatus(
                     .unavailable(message: error.localizedDescription)
                 )
             }

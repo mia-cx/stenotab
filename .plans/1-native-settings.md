@@ -119,7 +119,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 
 - [x] Add a secret-free provider settings schema with validation and tests.
 - [x] Add a Keychain-backed credential vault.
-- [ ] Add a live provider controller that applies persisted selections.
+- [x] Add a live provider controller that applies persisted selections.
 - [ ] Add provider editing, selection, and connection testing to Settings.
 - [ ] Run the full suite and signed production build.
 
@@ -134,3 +134,8 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
   service `cx.mia.stenotab.providers`, keyed by stable provider ID.
 - Keychain create/update/read/delete paths compile in the app target; no
   credential value is logged or copied into the Codable settings document.
+- `ProviderSettingsStore` persists non-secret state, migrates the existing
+  `local-model.json`, and applies demo/local/remote selections through the
+  existing switching provider without relaunching.
+- Changing provider cancels and releases any StenoTab-owned llama-server before
+  applying the next runtime.
