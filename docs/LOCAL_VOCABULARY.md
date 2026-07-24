@@ -1,5 +1,10 @@
 # Local vocabulary and retrieval design
 
+> This document covers the smaller derived vocabulary index. Complete
+> textarea/input snapshots, accepted-suggestion examples, rolling embedding
+> windows, and prompt injection are specified in
+> `LOCAL_HISTORY_RETRIEVAL.md`.
+
 ## Goal
 
 Make completions sound like the user without uploading a writing history, retraining a model, or adding database work to the keystroke path.
