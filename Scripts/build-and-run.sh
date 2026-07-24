@@ -11,12 +11,19 @@ app_dir="$project_dir/.build/StenoTab.app"
 contents_dir="$app_dir/Contents"
 resources_dir="$contents_dir/Resources"
 asset_info_plist="$project_dir/.build/StenoTabAssetInfo.plist"
+completion_core_bundle="$binary_dir/StenoTab_CompletionCore.bundle"
 
 mkdir -p "$contents_dir/MacOS" "$resources_dir"
 cp "$project_dir/Resources/Info.plist" "$contents_dir/Info.plist"
 cp "$binary_dir/StenoTab" "$contents_dir/MacOS/StenoTab"
 cp "$project_dir/Art/menubar.svg" \
     "$resources_dir/StenoTabMenuBar.svg"
+if [[ ! -d "$completion_core_bundle" ]]; then
+    echo "error: CompletionCore prompt resource bundle is missing" >&2
+    exit 1
+fi
+rm -rf "$resources_dir/StenoTab_CompletionCore.bundle"
+cp -R "$completion_core_bundle" "$resources_dir/"
 
 actool_path="${STENOTAB_ACTOOL_PATH:-/Applications/Xcode-beta.app/Contents/Developer/usr/bin/actool}"
 if [[ ! -x "$actool_path" ]]; then
