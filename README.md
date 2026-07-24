@@ -3,8 +3,9 @@
 **Bring your model. Press Tab.**
 
 StenoTab is an experimental, system-wide AI autocomplete app for macOS. It
-places translucent completion text at the caret in ordinary text fields,
-message boxes, and editors across native and Chromium-based apps.
+places translucent completion text at the caret in supported native editors
+and tested web-backed apps, currently including Chrome, Arc, Discord, Slack,
+ChatGPT, and Codex. Accessibility support varies by editor.
 
 Press **Tab** to accept the next word or **Option–Tab** to accept the entire
 suggestion. StenoTab is designed around short, low-latency continuations that
@@ -17,7 +18,8 @@ sound like the person typing—not an assistant answering them.
 
 ## What works today
 
-- System-wide inline ghost text in native macOS and Chromium/Electron editors.
+- System-wide inline ghost text in supported native macOS editors and tested
+  web-backed apps.
 - Accessibility-based focused-field detection, text context, caret geometry,
   typography estimation, and secure-field exclusion.
 - A low-latency shadow text buffer with a 45 ms debounce, latest-request-only
@@ -28,7 +30,7 @@ sound like the person typing—not an assistant answering them.
 - Suggestions reanchor after accepted text and across line wrapping.
 - Screenshot keyboard shortcuts do not dismiss an active suggestion.
 - A menu-bar app with a daily accepted-suggestion counter.
-- Setup, Models, Context & Privacy, Prompt Lab, and per-app Settings pages.
+- Setup, Models, Context & Privacy, Prompt Lab, and App Settings pages.
 - Per-app enable/disable overrides and a quick toggle for the focused app.
 - Launch at login.
 - Local GGUF inference through a StenoTab-managed `llama-server`.
@@ -64,6 +66,9 @@ assembles `.build/StenoTab.app`, signs it with the first available Apple
 Development identity, and launches it. Set `STENOTAB_NO_OPEN=1` to build
 without launching.
 
+To use Launch at Login, copy `StenoTab.app` to `/Applications`; registration is
+unavailable while running the app from `.build`.
+
 If no Apple Development identity is available, the script falls back to ad-hoc
 signing. Ad-hoc signatures change between builds and can cause macOS to forget
 Accessibility consent. A stable signing identity is strongly recommended:
@@ -81,8 +86,9 @@ Open **StenoTab → Settings** from the menu-bar item.
    fields, render at the caret, or insert accepted text without it.
 2. Screen Recording is optional today. It is reserved for the local
    screenshot/OCR context path, which is not connected yet.
-3. Disable macOS inline predictive text and suggested replies to avoid two
-   autocomplete systems painting in the same field.
+3. If Setup reports that macOS inline predictive text or suggested replies are
+   enabled, click **Turn Off**. The row turns green when both competing
+   suggestion features are disabled.
 4. In **Models**, download the recommended model or select a compatible GGUF
    already present in the Hugging Face cache.
 5. Type at least three non-whitespace characters in a non-secure editor and
@@ -109,14 +115,11 @@ The Models page can download a recommended model or a custom Hugging Face
 repository directly into the standard shared cache. StenoTab does not create a
 second private copy of model weights.
 
-At startup, StenoTab probes the configured `/v1/models` endpoint:
-
-- If a running server advertises the selected model, StenoTab reuses it.
-- If the endpoint is free, StenoTab starts its own localhost-only
-  `llama-server`.
-- If the port is occupied by an incompatible model, StenoTab searches the next
-  20 ports.
-- On quit, StenoTab stops only a server process it launched itself.
+At startup, StenoTab probes the configured `/v1/models` endpoint. It reuses a
+compatible server, searches the next 20 ports when the endpoint responds with
+an incompatible model, and otherwise attempts to start its managed server at
+the configured port. On quit, StenoTab stops only a server process it launched
+itself.
 
 The default endpoint is `http://127.0.0.1:18473/v1`. The managed server uses a
 4,096-token context, prompt caching, flash attention, and one parallel request.
@@ -133,6 +136,10 @@ The helper script remains useful for development:
 ./Scripts/local-model.zsh configure gemma-4-e2b-base
 ./Scripts/local-model.zsh benchmark gemma-4-e2b-base
 ```
+
+`configure` writes the legacy bootstrap configuration used only when no
+persisted Models settings exist. Existing installations should select the model
+in **Settings → Models**.
 
 ## Prompt and context model
 
@@ -162,11 +169,18 @@ sample with data for every planned component.
 ## Privacy
 
 - Secure and password fields are excluded.
-- Local-model completion requests stay on the Mac.
-- Clipboard context is opt-in, bounded, assembled in memory, and not retained.
+- With the default `127.0.0.1` Server URL, local-model completion requests stay
+  on the Mac. Changing that URL can send enabled context to another host.
+- Reading clipboard text for prompt context is opt-in, limited to 2,000
+  characters, assembled in memory, and not retained.
+- Separately, accepting a suggestion currently inserts text by temporarily
+  replacing the system pasteboard and simulating Command–V. Only prior
+  plain-text clipboard content is restored.
 - Current editor context is not yet written to a typing-history database.
-- Screenshot/OCR, website detection, and local-history retrieval are visibly
-  disabled because their runtime sources are not implemented.
+- Website and screenshot/OCR sources are disabled in Context & Privacy. Prompt
+  Lab exposes source-pending website, OCR, history, and voice-assessment
+  switches for prompt design, but those sources currently provide no runtime
+  data.
 - Remote OpenAI-compatible providers can send enabled context off-device; that
   path is intended for explicit developer configuration and is not the exposed
   default in this alpha.
@@ -240,6 +254,8 @@ Benchmark fixtures can be inspected with:
   locations; it is not bundled by the current build script.
 - Completion quality and prompt wording are still being tuned.
 - Accessibility quality varies between editors and frameworks.
+- Suggestion acceptance temporarily replaces the system pasteboard and restores
+  only prior plain-text content; rich or non-text clipboard data can be lost.
 - Website, OCR, history retrieval, and learned voice assessment are unfinished.
 - Persistent ACP sessions for installed Codex and Claude are planned, not
   implemented.
