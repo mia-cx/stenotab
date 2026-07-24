@@ -10,6 +10,16 @@ final class ProviderSettingsStore: ObservableObject {
         case failed(String)
     }
 
+    enum LocalModelDownloadStatus: Equatable {
+        case idle
+        case downloading(
+            receivedBytes: Int64,
+            totalBytes: Int64?
+        )
+        case ready(URL)
+        case failed(String)
+    }
+
     @Published private(set) var configuration: ProviderSettings {
         didSet {
             persist()
@@ -20,10 +30,14 @@ final class ProviderSettingsStore: ObservableObject {
     var onChange: (() -> Void)?
     @Published private(set) var connectionTests:
         [String: ConnectionTestStatus] = [:]
+    @Published private(set) var localModelDownloadStatus:
+        LocalModelDownloadStatus = .idle
 
     private let defaults: UserDefaults
     private let credentialVault: any ProviderCredentialVault
+    private let modelDownloader = HuggingFaceModelDownloader()
     private let storageKey = "provider-settings.v1"
+    private var modelDownloadTask: Task<Void, Never>?
 
     init(
         defaults: UserDefaults = .standard,
@@ -48,6 +62,7 @@ final class ProviderSettingsStore: ObservableObject {
         } else {
             configuration = ProviderSettings()
         }
+        refreshLocalModelDownloadStatus()
     }
 
     func setSelection(_ selection: ProviderSelection) {
@@ -132,6 +147,75 @@ final class ProviderSettingsStore: ObservableObject {
         } catch {
             connectionTests[id] = .failed(error.localizedDescription)
         }
+    }
+
+    func downloadSelectedLocalModel() {
+        guard
+            modelDownloadTask == nil,
+            let profile = LocalModelProfiles.profile(
+                id: configuration.localConfiguration.profileID
+            )
+        else {
+            return
+        }
+        if let modelURL = HuggingFaceModelCache.modelURL(for: profile) {
+            localModelDownloadStatus = .ready(modelURL)
+            setSelection(.local)
+            return
+        }
+
+        localModelDownloadStatus = .downloading(
+            receivedBytes: 0,
+            totalBytes: nil
+        )
+        modelDownloadTask = Task { [weak self, modelDownloader] in
+            do {
+                let modelURL = try await modelDownloader.download(
+                    profile: profile
+                ) { progress in
+                    await MainActor.run {
+                        self?.localModelDownloadStatus = .downloading(
+                            receivedBytes: progress.receivedBytes,
+                            totalBytes: progress.totalBytes
+                        )
+                    }
+                }
+                guard let self else { return }
+                localModelDownloadStatus = .ready(modelURL)
+                modelDownloadTask = nil
+                setSelection(.local)
+            } catch is CancellationError {
+                guard let self else { return }
+                localModelDownloadStatus = .idle
+                modelDownloadTask = nil
+            } catch {
+                guard let self else { return }
+                localModelDownloadStatus = .failed(
+                    error.localizedDescription
+                )
+                modelDownloadTask = nil
+            }
+        }
+    }
+
+    func cancelLocalModelDownload() {
+        modelDownloadTask?.cancel()
+    }
+
+    func refreshLocalModelDownloadStatus() {
+        guard
+            let profile = LocalModelProfiles.profile(
+                id: configuration.localConfiguration.profileID
+            ),
+            let modelURL = HuggingFaceModelCache.modelURL(for: profile)
+        else {
+            if case .downloading = localModelDownloadStatus {
+                return
+            }
+            localModelDownloadStatus = .idle
+            return
+        }
+        localModelDownloadStatus = .ready(modelURL)
     }
 
     private func persist() {

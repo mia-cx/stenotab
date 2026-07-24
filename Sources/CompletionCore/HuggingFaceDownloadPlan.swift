@@ -11,6 +11,7 @@ public struct HuggingFaceDownloadPlan: Equatable, Sendable {
     }
 
     public let sourceURL: URL
+    public let revisionMetadataURL: URL
     public let repositoryRoot: URL
     public let incompleteURL: URL
     public let modelFile: String
@@ -33,6 +34,11 @@ public struct HuggingFaceDownloadPlan: Equatable, Sendable {
                 string:
                     "https://huggingface.co/\(encodedRepository)"
                     + "/resolve/main/\(encodedFile)?download=true"
+            ),
+            let revisionMetadataURL = URL(
+                string:
+                    "https://huggingface.co/api/models/"
+                    + "\(encodedRepository)/revision/main"
             )
         else {
             return nil
@@ -45,6 +51,7 @@ public struct HuggingFaceDownloadPlan: Equatable, Sendable {
             directoryHint: .isDirectory
         )
         self.sourceURL = sourceURL
+        self.revisionMetadataURL = revisionMetadataURL
         self.repositoryRoot = repositoryRoot
         self.incompleteURL = repositoryRoot
             .appending(path: "downloads", directoryHint: .isDirectory)

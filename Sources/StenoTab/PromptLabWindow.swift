@@ -337,16 +337,35 @@ private struct ModelsProvidersView: View {
                                         ])
                                 }
                             } else {
-                                Button("Open Model Page") {
-                                    guard let url = URL(
-                                        string:
-                                            "https://huggingface.co/"
-                                            + profile.repository
-                                    ) else {
-                                        return
-                                    }
-                                    NSWorkspace.shared.open(url)
+                                localDownloadControls(profile: profile)
+                            }
+                        }
+                        if case let .failed(message) =
+                            providerStore.localModelDownloadStatus
+                        {
+                            Text(message)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .textSelection(.enabled)
+                        }
+                        if case let .downloading(received, total) =
+                            providerStore.localModelDownloadStatus
+                        {
+                            HStack(spacing: 10) {
+                                if let total, total > 0 {
+                                    ProgressView(
+                                        value: Double(received),
+                                        total: Double(total)
+                                    )
+                                } else {
+                                    ProgressView()
                                 }
+                                Text(downloadProgressText(
+                                    received: received,
+                                    total: total
+                                ))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -512,6 +531,49 @@ private struct ModelsProvidersView: View {
             // An empty credential only removes a nonexistent Keychain item.
             // There is no useful recovery UI for that exceptional path here.
         }
+    }
+
+    @ViewBuilder
+    private func localDownloadControls(
+        profile: LocalModelProfile
+    ) -> some View {
+        switch providerStore.localModelDownloadStatus {
+        case .downloading:
+            Button("Cancel") {
+                providerStore.cancelLocalModelDownload()
+            }
+        case .idle, .failed:
+            VStack(alignment: .trailing, spacing: 5) {
+                Button("Download") {
+                    providerStore.downloadSelectedLocalModel()
+                }
+                Button("Model Page") {
+                    guard let url = URL(
+                        string:
+                            "https://huggingface.co/"
+                            + profile.repository
+                    ) else {
+                        return
+                    }
+                    NSWorkspace.shared.open(url)
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+            }
+        case .ready:
+            EmptyView()
+        }
+    }
+
+    private func downloadProgressText(
+        received: Int64,
+        total: Int64?
+    ) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let receivedText = formatter.string(fromByteCount: received)
+        guard let total else { return receivedText }
+        return "\(receivedText) of \(formatter.string(fromByteCount: total))"
     }
 }
 

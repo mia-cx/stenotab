@@ -62,4 +62,66 @@ final class HuggingFaceDownloadPlanTests: XCTestCase {
             )
         )
     }
+
+    func testInstallerPublishesOnlyACompleteSnapshot() throws {
+        let root = FileManager.default.temporaryDirectory.appending(
+            path: UUID().uuidString,
+            directoryHint: .isDirectory
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let profile = try XCTUnwrap(
+            LocalModelProfiles.profile(id: "gemma-4-e2b-base")
+        )
+        let plan = try XCTUnwrap(
+            HuggingFaceDownloadPlan(profile: profile, cacheRoot: root)
+        )
+        let installation = try XCTUnwrap(
+            plan.installation(
+                revision: "abc123",
+                blobIdentifier: "blob123"
+            )
+        )
+        try FileManager.default.createDirectory(
+            at: plan.incompleteURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("gguf".utf8).write(to: plan.incompleteURL)
+
+        XCTAssertNil(
+            HuggingFaceModelCache.modelURL(
+                for: profile,
+                cacheRoot: root
+            )
+        )
+
+        let installedURL = try HuggingFaceCacheInstaller.install(
+            incompleteURL: plan.incompleteURL,
+            installation: installation
+        )
+
+        XCTAssertEqual(installedURL, installation.snapshotFileURL)
+        XCTAssertEqual(
+            HuggingFaceModelCache.modelURL(
+                for: profile,
+                cacheRoot: root
+            ),
+            installation.snapshotFileURL
+        )
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: installation.snapshotFileURL.path
+            ),
+            "../../blobs/blob123"
+        )
+        XCTAssertEqual(
+            try String(
+                contentsOf: installation.mainReferenceURL,
+                encoding: .utf8
+            ),
+            "abc123\n"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: plan.incompleteURL.path)
+        )
+    }
 }

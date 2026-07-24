@@ -164,7 +164,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 
 - [x] Add local model configuration and shared-cache inspection controls.
 - [x] Add a Hugging Face cache download planner with layout tests.
-- [ ] Add resumable download execution and progress to the provider store/UI.
+- [x] Add resumable download execution and progress to the provider store/UI.
 - [ ] Run full tests and a signed production build.
 
 ### Notes
