@@ -29,7 +29,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 
 ## TODOs
 
-- [ ] Add pure, Codable app-policy and seen-app domain models with tests.
+- [x] Add pure, Codable app-policy and seen-app domain models with tests.
 - [ ] Add a persistent application-policy store and app-observation boundary.
 - [ ] Enforce app policy before completion/context work and test the gating rule.
 - [ ] Add the focused-app menu toggle with live state.
@@ -44,3 +44,4 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - Base: local `main` at `68e27a9`, including the verified Prompt Lab slice.
 - Existing Prompt Lab settings remain in `UserDefaults`; provider secrets will
   require Keychain in a later slice.
+- `swift test --filter ApplicationPolicyTests` passes (5 tests).
