@@ -156,25 +156,25 @@ the overlay.
 
 The remaining architectural pressure points are:
 
-1. **Runtime state machine**  
+1. **Runtime state machine**
    `CompletionCoordinator` owns portable scheduling and suggestion lifecycle
    rules alongside macOS timers, permissions, and overlay calls. Move the
    behavior behind one engine boundary before adding more context sources.
    This is primarily an in-process dependency.
 
-2. **Provider contract**  
+2. **Provider contract**
    `CompletionRequest`, `CompletionResponse`, `CompletionProvider`, HTTP
    transport, and provider construction currently live in the macOS
    executable. The request/result contract belongs in the core; HTTP and
    process management are adapters. This is a ports-and-adapters dependency.
 
-3. **Geometry in the core**  
+3. **Geometry in the core**
    `CompletionCore` currently imports CoreGraphics for overlay geometry. Replace
    those public values with small product-owned point/rect/size types, or move
    rendering geometry into the macOS shell, before claiming the target is
    portable.
 
-4. **Context acquisition versus context policy**  
+4. **Context acquisition versus context policy**
    Accessibility, OCR, clipboard, and audio capture are platform operations.
    Deciding what context may be retained or sent to a provider is product
    policy. Normalize captured context before the policy layer sees it.
@@ -260,4 +260,3 @@ the shell may require compositor- and desktop-specific adapters.
 
 The migration trigger is a working second shell and demonstrated duplication,
 not the possibility that another platform may exist someday.
-
