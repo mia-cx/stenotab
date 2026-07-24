@@ -118,7 +118,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 ### TODOs
 
 - [x] Add a secret-free provider settings schema with validation and tests.
-- [ ] Add a Keychain-backed credential vault.
+- [x] Add a Keychain-backed credential vault.
 - [ ] Add a live provider controller that applies persisted selections.
 - [ ] Add provider editing, selection, and connection testing to Settings.
 - [ ] Run the full suite and signed production build.
@@ -130,3 +130,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - Remote URLs require HTTP(S) plus a host; completion length is bounded to
   1...32 words.
 - `swift test --filter ProviderSettingsTests` passes (4 tests).
+- Provider credentials use device-local generic-password Keychain items under
+  service `cx.mia.stenotab.providers`, keyed by stable provider ID.
+- Keychain create/update/read/delete paths compile in the app target; no
+  credential value is logged or copied into the Codable settings document.
