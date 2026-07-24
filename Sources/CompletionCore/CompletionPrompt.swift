@@ -29,14 +29,12 @@ public struct CompletionContext: Sendable, Equatable {
 }
 
 public enum CompletionPrompt {
-    private static let basePromptPrefix =
-        "I am typing the text at the end on my Mac. "
-        + "Additional context; some of it could be irrelevant:"
-    private static let baseWritingHeading = "My writing:"
+    private static let basePromptPrefix = PromptResources.basePreamble
+    private static let baseWritingHeading = PromptResources.baseWritingHeading
     private static let baseBeforeCursorHeading =
-        "My text so far, up to the part I am currently typing:"
+        PromptResources.baseBeforeCursorHeading
     private static let baseCurrentPartHeading =
-        "The part of my writing I am currently typing:"
+        PromptResources.baseCurrentPartHeading
 
     public static let systemInstruction =
         PromptConfiguration.defaultSystemInstruction

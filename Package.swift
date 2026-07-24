@@ -12,7 +12,12 @@ let package = Package(
         .executable(name: "StenoTab", targets: ["StenoTab"])
     ],
     targets: [
-        .target(name: "CompletionCore"),
+        .target(
+            name: "CompletionCore",
+            resources: [
+                .copy("Resources/Prompts")
+            ]
+        ),
         .executableTarget(
             name: "StenoTab",
             dependencies: ["CompletionCore"],

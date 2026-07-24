@@ -53,30 +53,34 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
         public var textHeading: String
 
         public init(
-            contextHeading: String = "Additional context about what I am writing:",
-            applicationPrefix: String = "- Application I am typing in:",
-            websitePrefix: String = "- Website I am typing on:",
-            inputKindPrefix: String = "- Kind of input I am typing in:",
-            ocrHeading: String = "Text visible on screen around where I am typing:",
-            clipboardHeading: String = "Clipboard contents:",
-            inputHistoryHeading: String = "Recent examples of my writing:",
-            assessmentHeading: String = "What I have noticed about my writing:",
-            customVoiceHeading: String = "My writing style:",
-            suffixHeading: String =
-                "What comes right after the part I am currently typing:",
-            textHeading: String = "Text to continue:"
+            contextHeading: String? = nil,
+            applicationPrefix: String? = nil,
+            websitePrefix: String? = nil,
+            inputKindPrefix: String? = nil,
+            ocrHeading: String? = nil,
+            clipboardHeading: String? = nil,
+            inputHistoryHeading: String? = nil,
+            assessmentHeading: String? = nil,
+            customVoiceHeading: String? = nil,
+            suffixHeading: String? = nil,
+            textHeading: String? = nil
         ) {
-            self.contextHeading = contextHeading
-            self.applicationPrefix = applicationPrefix
-            self.websitePrefix = websitePrefix
-            self.inputKindPrefix = inputKindPrefix
-            self.ocrHeading = ocrHeading
-            self.clipboardHeading = clipboardHeading
-            self.inputHistoryHeading = inputHistoryHeading
-            self.assessmentHeading = assessmentHeading
-            self.customVoiceHeading = customVoiceHeading
-            self.suffixHeading = suffixHeading
-            self.textHeading = textHeading
+            self.contextHeading = contextHeading ?? PromptResources.contextHeading
+            self.applicationPrefix =
+                applicationPrefix ?? PromptResources.applicationPrefix
+            self.websitePrefix = websitePrefix ?? PromptResources.websitePrefix
+            self.inputKindPrefix = inputKindPrefix ?? PromptResources.inputKindPrefix
+            self.ocrHeading = ocrHeading ?? PromptResources.ocrHeading
+            self.clipboardHeading =
+                clipboardHeading ?? PromptResources.clipboardHeading
+            self.inputHistoryHeading =
+                inputHistoryHeading ?? PromptResources.inputHistoryHeading
+            self.assessmentHeading =
+                assessmentHeading ?? PromptResources.assessmentHeading
+            self.customVoiceHeading =
+                customVoiceHeading ?? PromptResources.customVoiceHeading
+            self.suffixHeading = suffixHeading ?? PromptResources.suffixHeading
+            self.textHeading = textHeading ?? PromptResources.chatTextHeading
         }
     }
 
@@ -104,12 +108,10 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
     }
 
     public static let defaultSystemInstruction =
-        "Continue the user's current text at the cursor. Match their voice. "
-        + "Produce only text that should be inserted."
+        PromptResources.chatSystemInstruction
 
     public static let defaultCompletionInstruction =
-        "Continue the following text from the cursor. Match the user's voice. "
-        + "Produce only what should be inserted."
+        PromptResources.chatCompletionInstruction
 
     public static let defaults = PromptConfiguration()
 }

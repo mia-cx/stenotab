@@ -159,6 +159,77 @@ final class CompletionPromptTests: XCTestCase {
         XCTAssertFalse(prompt.contains("Continue the"))
     }
 
+    func testBundledMarkdownProvidesEveryPromptDefault() {
+        let configuration = PromptConfiguration.defaults
+
+        XCTAssertEqual(
+            configuration.systemInstruction,
+            "Continue the user's current text at the cursor. Match their voice. "
+                + "Produce only text that should be inserted."
+        )
+        XCTAssertEqual(
+            configuration.completionInstruction,
+            "Continue the following text from the cursor. Match the user's voice. "
+                + "Produce only what should be inserted."
+        )
+        XCTAssertEqual(
+            configuration.framing.applicationPrefix,
+            "- Application I am typing in:"
+        )
+        XCTAssertEqual(
+            configuration.framing.suffixHeading,
+            "What comes right after the part I am currently typing:"
+        )
+        XCTAssertFalse(configuration.framing.textHeading.hasSuffix("\n"))
+
+        let prompt = CompletionPrompt.base(
+            prefix: "hello",
+            suffix: "",
+            context: CompletionContext(),
+            configuration: configuration
+        )
+        XCTAssertTrue(prompt.hasPrefix(
+            "I am typing the text at the end on my Mac. "
+                + "Additional context; some of it could be irrelevant:"
+        ))
+        XCTAssertTrue(prompt.hasSuffix("My writing:\nhello"))
+    }
+
+    func testPromptOverridesFollowNewDefaultsForUntouchedComponents() throws {
+        let originalDefaults = PromptConfiguration.defaults
+        var customized = originalDefaults
+        customized.framing.clipboardHeading = "Copied reference:"
+
+        let overrides = PromptConfiguration.Overrides(
+            configuration: customized,
+            relativeTo: originalDefaults
+        )
+        let data = try JSONEncoder().encode(overrides)
+        let restored = try JSONDecoder().decode(
+            PromptConfiguration.Overrides.self,
+            from: data
+        )
+
+        var newerDefaults = originalDefaults
+        newerDefaults.framing.applicationPrefix = "I am working in:"
+        newerDefaults.systemInstruction = "A newer chat instruction."
+        let resolved = restored.applying(to: newerDefaults)
+
+        XCTAssertEqual(resolved.framing.clipboardHeading, "Copied reference:")
+        XCTAssertEqual(resolved.framing.applicationPrefix, "I am working in:")
+        XCTAssertEqual(resolved.systemInstruction, "A newer chat instruction.")
+    }
+
+    func testDefaultPromptConfigurationProducesNoStoredOverrides() {
+        let defaults = PromptConfiguration.defaults
+        let overrides = PromptConfiguration.Overrides(
+            configuration: defaults,
+            relativeTo: defaults
+        )
+
+        XCTAssertTrue(overrides.isEmpty)
+    }
+
     func testPromptConfigurationPersistsEveryUserEditableSetting() throws {
         var configuration = PromptConfiguration.defaults
         configuration.context.includeCurrentApplication = false

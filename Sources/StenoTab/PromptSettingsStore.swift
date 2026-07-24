@@ -11,25 +11,37 @@ final class PromptSettingsStore: ObservableObject {
     }
 
     private let defaults: UserDefaults
-    private let storageKey = "prompt-lab.configuration.v1"
+    private let storageKey = "prompt-lab.overrides.v2"
+    private let legacyStorageKey = "prompt-lab.configuration.v1"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        let bundledDefaults = PromptConfiguration.defaults
         if
             let data = defaults.data(forKey: storageKey),
+            let overrides = try? JSONDecoder().decode(
+                PromptConfiguration.Overrides.self,
+                from: data
+            )
+        {
+            configuration = overrides.applying(to: bundledDefaults)
+        } else if
+            let data = defaults.data(forKey: legacyStorageKey),
             let saved = try? JSONDecoder().decode(
                 PromptConfiguration.self,
                 from: data
             )
         {
-            let migrated = Self.migrateLegacyDefaultFraming(saved)
-            configuration = migrated
-            if migrated != saved,
-               let data = try? JSONEncoder().encode(migrated) {
-                defaults.set(data, forKey: storageKey)
-            }
+            configuration = Self.migrateLegacyDefaultFraming(saved)
+            Self.persist(
+                configuration,
+                relativeTo: bundledDefaults,
+                in: defaults,
+                forKey: storageKey
+            )
+            defaults.removeObject(forKey: legacyStorageKey)
         } else {
-            configuration = .defaults
+            configuration = bundledDefaults
         }
     }
 
@@ -38,10 +50,29 @@ final class PromptSettingsStore: ObservableObject {
     }
 
     private func persist() {
-        guard let data = try? JSONEncoder().encode(configuration) else {
-            return
+        Self.persist(
+            configuration,
+            relativeTo: .defaults,
+            in: defaults,
+            forKey: storageKey
+        )
+    }
+
+    private static func persist(
+        _ configuration: PromptConfiguration,
+        relativeTo bundledDefaults: PromptConfiguration,
+        in defaults: UserDefaults,
+        forKey storageKey: String
+    ) {
+        let overrides = PromptConfiguration.Overrides(
+            configuration: configuration,
+            relativeTo: bundledDefaults
+        )
+        if overrides.isEmpty {
+            defaults.removeObject(forKey: storageKey)
+        } else if let data = try? JSONEncoder().encode(overrides) {
+            defaults.set(data, forKey: storageKey)
         }
-        defaults.set(data, forKey: storageKey)
     }
 
     private static func migrateLegacyDefaultFraming(
