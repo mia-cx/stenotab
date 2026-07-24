@@ -79,7 +79,60 @@ public enum PartialWordCompletion {
         }) {
             return completion + candidate.dropFirst(rawSuffix.count)
         }
+        if rawSuffix.count >= 3,
+           let corrected = options.first(where: {
+               $0.count >= 3
+                   && isSingleEditOrTransposition(
+                       normalizedRaw,
+                       $0.lowercased()
+                   )
+           }) {
+            return corrected + candidate.dropFirst(rawSuffix.count)
+        }
 
         return nil
+    }
+
+    private static func isSingleEditOrTransposition(
+        _ left: String,
+        _ right: String
+    ) -> Bool {
+        let lhs = Array(left)
+        let rhs = Array(right)
+        let difference = lhs.count - rhs.count
+        guard abs(difference) <= 1 else { return false }
+
+        if difference == 0 {
+            let mismatches = lhs.indices.filter { lhs[$0] != rhs[$0] }
+            if mismatches.count == 1 {
+                return true
+            }
+            guard
+                mismatches.count == 2,
+                mismatches[1] == mismatches[0] + 1
+            else {
+                return false
+            }
+            return lhs[mismatches[0]] == rhs[mismatches[1]]
+                && lhs[mismatches[1]] == rhs[mismatches[0]]
+        }
+
+        let longer = difference > 0 ? lhs : rhs
+        let shorter = difference > 0 ? rhs : lhs
+        var longIndex = 0
+        var shortIndex = 0
+        var skipped = false
+        while longIndex < longer.count, shortIndex < shorter.count {
+            if longer[longIndex] == shorter[shortIndex] {
+                longIndex += 1
+                shortIndex += 1
+            } else if !skipped {
+                skipped = true
+                longIndex += 1
+            } else {
+                return false
+            }
+        }
+        return true
     }
 }

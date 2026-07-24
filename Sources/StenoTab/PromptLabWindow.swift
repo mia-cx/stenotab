@@ -1365,31 +1365,41 @@ private struct PromptLabView: View {
     }
 
     private var instructionSection: some View {
-        SettingsSection(title: "Completion Instruction") {
+        SettingsSection(title: "Completion Behavior") {
             VStack(alignment: .leading, spacing: 8) {
                 Text(
-                    "Tell the model how to continue the text. Keep this short "
-                        + "and describe only what should be inserted."
+                    "Local base models receive first-person context and continue "
+                        + "directly from the live text. No instruction is added."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                TextEditor(text: configuration.completionInstruction)
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-                    .frame(minHeight: 82)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color(nsColor: .textBackgroundColor))
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.secondary.opacity(0.22))
-                    }
             }
 
             if store.configuration.debugMode {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
+                    Text("Completion instruction (Chat API)")
+                        .font(.headline)
+                    Text(
+                        "Used only by providers with separate system and user "
+                            + "messages. It is not sent to local base models."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    TextEditor(text: configuration.completionInstruction)
+                        .font(.system(.body, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .frame(minHeight: 82)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color(nsColor: .textBackgroundColor))
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.secondary.opacity(0.22))
+                        }
+
                     Text("System instruction (Chat API)")
                         .font(.headline)
                     TextEditor(text: configuration.systemInstruction)

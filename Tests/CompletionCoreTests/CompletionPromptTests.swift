@@ -22,13 +22,17 @@ final class CompletionPromptTests: XCTestCase {
             "Continue the user's current text at the cursor. Match their voice. "
                 + "Produce only text that should be inserted."
         )
-        XCTAssertTrue(composed.userMessage.contains("Current application: Discord"))
-        XCTAssertTrue(composed.userMessage.contains("Kind of input: message box"))
+        XCTAssertTrue(
+            composed.userMessage.contains("Application I am typing in: Discord")
+        )
+        XCTAssertTrue(
+            composed.userMessage.contains("Kind of input I am typing in: message box")
+        )
         XCTAssertTrue(composed.userMessage.hasSuffix("Text to continue:\nDo anyt"))
         XCTAssertFalse(composed.userMessage.contains("private clipboard"))
     }
 
-    func testBasePromptIncludesEnabledContextAndSeparatesInsertion() {
+    func testBasePromptUsesFirstPersonContinuationFraming() {
         var configuration = PromptConfiguration.defaults
         configuration.context.includeClipboard = true
         configuration.voice.customVoice = "Use concise sentences."
@@ -46,27 +50,26 @@ final class CompletionPromptTests: XCTestCase {
             configuration: configuration
         )
 
-        XCTAssertTrue(
-            prompt.hasPrefix(
-                "Task: Continue the following text from the cursor."
-            )
-        )
-        XCTAssertTrue(prompt.contains("Current application: ChatGPT"))
-        XCTAssertTrue(prompt.contains("Current website: chatgpt.com"))
+        XCTAssertTrue(prompt.hasPrefix(
+            "I am typing the text at the end on my Mac. "
+                + "Additional context; some of it could be irrelevant:"
+        ))
+        XCTAssertTrue(prompt.contains("Application I am typing in: ChatGPT"))
+        XCTAssertTrue(prompt.contains("Website I am typing on: chatgpt.com"))
         XCTAssertTrue(prompt.contains("Relevant copied text"))
-        XCTAssertTrue(prompt.contains("Custom voice:\nUse concise sentences."))
-        XCTAssertTrue(prompt.contains("Insertion: tomorrow"))
-        XCTAssertTrue(prompt.contains("Text: hello \nInsertion:world"))
-        XCTAssertTrue(prompt.contains("Text: I am currently ty\nInsertion:ping"))
-        XCTAssertTrue(prompt.contains("Text: We can do anyt\nInsertion:hing"))
-        XCTAssertTrue(prompt.contains("Text after the cursor:\nafter the caret"))
-        XCTAssertTrue(prompt.hasSuffix("this sounds like me\nInsertion:"))
+        XCTAssertTrue(prompt.contains("My writing style:\nUse concise sentences."))
+        XCTAssertTrue(prompt.contains(
+            "What comes right after the part I am currently typing:\n"
+                + "after the caret"
+        ))
+        XCTAssertTrue(prompt.hasSuffix(
+            "The part of my writing I am currently typing:\n"
+                + "this sounds like me"
+        ))
         XCTAssertFalse(prompt.contains("Text to continue:"))
-        XCTAssertEqual(
-            prompt.components(separatedBy: configuration.completionInstruction)
-                .count - 1,
-            1
-        )
+        XCTAssertFalse(prompt.contains("Task:"))
+        XCTAssertFalse(prompt.contains("Insertion:"))
+        XCTAssertFalse(prompt.contains(configuration.completionInstruction))
     }
 
     func testEveryPromptComponentCanBeDisabledIndependently() {
@@ -126,7 +129,7 @@ final class CompletionPromptTests: XCTestCase {
             composed.textCompletionPrompt.contains("Working inside: Xcode")
         )
         XCTAssertTrue(
-            composed.textCompletionPrompt.hasSuffix("Text: ship it\nInsertion:")
+            composed.textCompletionPrompt.hasSuffix("My writing:\nship it")
         )
     }
 
@@ -139,8 +142,21 @@ final class CompletionPromptTests: XCTestCase {
         )
 
         XCTAssertTrue(
-            prompt.hasSuffix("Text: hello  \nInsertion:")
+            prompt.hasSuffix("My writing:\nhello  ")
         )
+    }
+
+    func testBasePromptEndsDirectlyOnLiteralInputWithoutACue() {
+        let prompt = CompletionPrompt.base(
+            prefix: "Do anyt",
+            suffix: "",
+            context: CompletionContext(),
+            configuration: .defaults
+        )
+
+        XCTAssertTrue(prompt.hasSuffix("My writing:\nDo anyt"))
+        XCTAssertFalse(prompt.contains("What comes next:"))
+        XCTAssertFalse(prompt.contains("Continue the"))
     }
 
     func testPromptConfigurationPersistsEveryUserEditableSetting() throws {

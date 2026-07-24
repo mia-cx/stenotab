@@ -84,4 +84,23 @@ final class PartialWordCompletionTests: XCTestCase {
             )
         )
     }
+
+    func testRepairsOneSmallBaseModelSpellingStumble() {
+        XCTAssertEqual(
+            PartialWordCompletion.sanitize(
+                "ihng",
+                after: "anyt",
+                candidates: ["anything", "anytime"]
+            ),
+            "hing"
+        )
+        XCTAssertEqual(
+            PartialWordCompletion.sanitize(
+                "ring",
+                after: "ty",
+                candidates: ["type", "types", "typing"]
+            ),
+            "ping"
+        )
+    }
 }

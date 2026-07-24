@@ -22,7 +22,12 @@ final class PromptSettingsStore: ObservableObject {
                 from: data
             )
         {
-            configuration = saved
+            let migrated = Self.migrateLegacyDefaultFraming(saved)
+            configuration = migrated
+            if migrated != saved,
+               let data = try? JSONEncoder().encode(migrated) {
+                defaults.set(data, forKey: storageKey)
+            }
         } else {
             configuration = .defaults
         }
@@ -37,5 +42,29 @@ final class PromptSettingsStore: ObservableObject {
             return
         }
         defaults.set(data, forKey: storageKey)
+    }
+
+    private static func migrateLegacyDefaultFraming(
+        _ saved: PromptConfiguration
+    ) -> PromptConfiguration {
+        var result = saved
+        let defaults = PromptConfiguration.defaults.framing
+        let replacements: [(WritableKeyPath<PromptConfiguration.Framing, String>, String)] = [
+            (\.contextHeading, "Context:"),
+            (\.applicationPrefix, "- Current application:"),
+            (\.websitePrefix, "- Current website:"),
+            (\.inputKindPrefix, "- Kind of input:"),
+            (\.ocrHeading, "OCR content from snapshot:"),
+            (\.clipboardHeading, "Clipboard content:"),
+            (\.inputHistoryHeading, "Relevant input history:"),
+            (\.assessmentHeading, "User voice assessment:"),
+            (\.customVoiceHeading, "Custom voice:"),
+            (\.suffixHeading, "Text after the cursor:"),
+        ]
+        for (keyPath, legacyDefault) in replacements
+        where result.framing[keyPath: keyPath] == legacyDefault {
+            result.framing[keyPath: keyPath] = defaults[keyPath: keyPath]
+        }
+        return result
     }
 }

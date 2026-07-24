@@ -29,6 +29,15 @@ public struct CompletionContext: Sendable, Equatable {
 }
 
 public enum CompletionPrompt {
+    private static let basePromptPrefix =
+        "I am typing the text at the end on my Mac. "
+        + "Additional context; some of it could be irrelevant:"
+    private static let baseWritingHeading = "My writing:"
+    private static let baseBeforeCursorHeading =
+        "My text so far, up to the part I am currently typing:"
+    private static let baseCurrentPartHeading =
+        "The part of my writing I am currently typing:"
+
     public static let systemInstruction =
         PromptConfiguration.defaultSystemInstruction
 
@@ -100,9 +109,9 @@ public enum CompletionPrompt {
         return sections.joined(separator: "\n\n")
     }
 
-    /// Base models do not assign higher priority to chat roles. Demonstrations
-    /// teach the Text-to-Insertion relationship in-context, while the stable
-    /// prefix remains friendly to prompt-cache reuse.
+    /// A base causal model is treated as the person doing the writing. The
+    /// prompt describes the writer's state in first person, then ends on the
+    /// literal text so ordinary next-token prediction produces the insertion.
     public static func base(
         prefix: String,
         suffix: String,
@@ -126,34 +135,22 @@ public enum CompletionPrompt {
         contextSections: [String],
         configuration: PromptConfiguration
     ) -> String {
-        let completionInstruction = normalizedInstruction(
-            configuration.completionInstruction
-        )
-        var sections = ["Task: \(completionInstruction)"]
+        var sections = [basePromptPrefix]
         sections.append(contentsOf: contextSections)
-        let examples = [
-            "Literal insertion examples:",
-            "Text: The package should arrive\nInsertion: tomorrow",
-            "Text: hello \nInsertion:world",
-            "Text: I am currently ty\nInsertion:ping",
-            "Text: We can do anyt\nInsertion:hing",
-            "Text: thank\nInsertion: you",
-            "Text: every\nInsertion:thing",
-            "Text: thank you \nInsertion:very much",
-            "Text: Would you mind\nInsertion: checking this?",
-        ].joined(separator: "\n\n")
-        sections.insert(examples, at: 1)
-        if !suffix.isEmpty {
+
+        if suffix.isEmpty {
+            sections.append("\(baseWritingHeading)\n\(prefix)")
+        } else {
+            sections.append(
+                "\(baseBeforeCursorHeading)\n\(prefix)"
+            )
             sections.append(
                 "\(configuration.framing.suffixHeading)\n\(suffix)"
             )
+            sections.append(
+                "\(baseCurrentPartHeading)\n\(currentPart(of: prefix))"
+            )
         }
-        sections.append(
-            """
-            Text: \(prefix)
-            Insertion:
-            """
-        )
         return sections.joined(separator: "\n\n")
     }
 
@@ -269,5 +266,11 @@ public enum CompletionPrompt {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func currentPart(of prefix: String) -> String {
+        let limit = 500
+        guard prefix.count > limit else { return prefix }
+        return String(prefix.suffix(limit))
     }
 }
