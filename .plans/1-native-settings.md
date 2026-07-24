@@ -13,18 +13,18 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 
 ## Acceptance criteria
 
-- [ ] App policy is keyed by bundle identifier, with global-default inheritance
+- [x] App policy is keyed by bundle identifier, with global-default inheritance
       and explicit enabled/disabled overrides.
-- [ ] Seen non-secure apps persist with display name, bundle identifier, icon
+- [x] Seen non-secure apps persist with display name, bundle identifier, icon
       location when available, and last-seen timestamp.
-- [ ] Secure fields are never added to the seen-app registry.
-- [ ] Disabled app policy is checked before completion scheduling, context
+- [x] Secure fields are never added to the seen-app registry.
+- [x] Disabled app policy is checked before completion scheduling, context
       collection, or inference.
-- [ ] The menu bar can enable or disable StenoTab for the focused app and updates
+- [x] The menu bar can enable or disable StenoTab for the focused app and updates
       its title/state as focus changes.
-- [ ] Settings contains a searchable App Settings page whose changes are
+- [x] Settings contains a searchable App Settings page whose changes are
       immediately effective.
-- [ ] Core policy, persistence payloads, and secure-field exclusion have
+- [x] Core policy, persistence payloads, and secure-field exclusion have
       automated tests.
 
 ## TODOs
@@ -34,7 +34,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - [x] Enforce app policy before completion/context work and test the gating rule.
 - [x] Add the focused-app menu toggle with live state.
 - [x] Add a searchable App Settings page backed by the same live store.
-- [ ] Run the full test suite and signed production build; document residual
+- [x] Run the full test suite and signed production build; document residual
       issue scope.
 
 ## Notes
@@ -61,3 +61,9 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
   inherit/enabled/disabled selection.
 - Store mutations notify the coordinator through one shared callback, so both
   Settings and menu changes are immediately effective.
+- Full `swift test` passes (90 tests).
+- Production `Scripts/build-and-run.sh` build succeeds and is signed by
+  `Apple Development: mia@mia.cx (KMCJ596S53)` with Team ID `VJKBGC9AMK`.
+- Issue #1 remains open. Deferred scope includes setup/permission UI, launch at
+  login, provider/model configuration, Keychain credentials, OCR privacy
+  controls, shortcuts, diagnostics, and general settings beyond app policy.
