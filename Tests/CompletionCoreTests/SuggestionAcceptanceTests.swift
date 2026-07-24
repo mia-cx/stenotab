@@ -20,6 +20,40 @@ final class SuggestionAcceptanceTests: XCTestCase {
         )
     }
 
+    func testCanLeaveAttachedPunctuationForTheNextAcceptance() {
+        XCTAssertEqual(
+            SuggestionAcceptance.nextWord(
+                in: " Thursday, if that works",
+                options: .init(includeTrailingPunctuation: false)
+            ),
+            .init(accepted: " Thursday", remaining: ", if that works")
+        )
+        XCTAssertEqual(
+            SuggestionAcceptance.nextWord(
+                in: "word-completion works",
+                options: .init(includeTrailingPunctuation: false)
+            ),
+            .init(accepted: "word-completion", remaining: " works")
+        )
+    }
+
+    func testCanIncludeOneGeneratedTrailingSpace() {
+        XCTAssertEqual(
+            SuggestionAcceptance.nextWord(
+                in: " you very much",
+                options: .init(includeTrailingSpace: true)
+            ),
+            .init(accepted: " you ", remaining: "very much")
+        )
+        XCTAssertEqual(
+            SuggestionAcceptance.nextWord(
+                in: "ping.",
+                options: .init(includeTrailingSpace: true)
+            ),
+            .init(accepted: "ping.", remaining: "")
+        )
+    }
+
     func testAcceptsTheWholeSuggestionWhenOnlyOneWordRemains() {
         XCTAssertEqual(
             SuggestionAcceptance.nextWord(in: "ping."),

@@ -233,3 +233,35 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - Full `swift test` passes (99 tests).
 - Production app build succeeds with stable Apple Development signing and Team
   ID `VJKBGC9AMK`.
+
+## Follow-up slice: general and acceptance behavior
+
+### Acceptance criteria
+
+- [ ] Global completion enablement has one persistent source of truth shared by
+      Settings, the menu-bar menu, and request gating.
+- [ ] Menu-bar icon visibility persists and changes immediately; reopening the
+      already-running app still provides a route back to Settings.
+- [ ] Tab continues to accept one word and Option-Tab accepts the full
+      suggestion.
+- [ ] The user can choose whether single-word acceptance includes generated
+      trailing space and attached punctuation.
+- [ ] Settings includes dedicated General and Shortcuts destinations using the
+      same live state as runtime behavior.
+
+### TODOs
+
+- [x] Add pure persisted general/acceptance settings and configurable
+      single-word slicing tests.
+- [ ] Wire one live settings store through global gating, menu visibility, and
+      suggestion acceptance.
+- [ ] Add General and Shortcuts settings pages.
+- [ ] Run focused/full tests and a signed production build.
+
+### Notes
+
+- Defaults preserve the existing behavior: Tab accepts one word, Option-Tab
+  accepts everything, attached punctuation is included, and trailing spaces
+  remain in the unaccepted suggestion.
+- `swift test --filter 'SuggestionAcceptanceTests|GeneralSettingsTests'`
+  passes (8 tests).
