@@ -103,3 +103,30 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - Remaining issue scope is now primarily provider/model configuration and
   download management, Keychain-backed secrets, launch-at-login/general
   behavior, OCR capture/privacy, shortcuts, and diagnostics export.
+
+## Follow-up slice: configurable providers
+
+### Acceptance criteria
+
+- [ ] Provider selection and non-secret configuration persist locally.
+- [ ] API keys are stored only in Keychain and are never encoded with settings.
+- [ ] Local, demo, and OpenAI-compatible providers can be selected without
+      relaunching StenoTab.
+- [ ] A remote endpoint can be validated from Settings with useful status.
+- [ ] Settings can add, edit, select, and remove remote providers.
+
+### TODOs
+
+- [x] Add a secret-free provider settings schema with validation and tests.
+- [ ] Add a Keychain-backed credential vault.
+- [ ] Add a live provider controller that applies persisted selections.
+- [ ] Add provider editing, selection, and connection testing to Settings.
+- [ ] Run the full suite and signed production build.
+
+### Notes
+
+- Provider settings support built-in demo, local llama.cpp, and stable-ID
+  OpenAI-compatible endpoints. The encoded schema has no credential field.
+- Remote URLs require HTTP(S) plus a host; completion length is bounded to
+  1...32 words.
+- `swift test --filter ProviderSettingsTests` passes (4 tests).
