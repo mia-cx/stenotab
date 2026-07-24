@@ -308,7 +308,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
                 promptStore: promptSettings,
-                applicationPolicyStore: applicationPolicy
+                applicationPolicyStore: applicationPolicy,
+                runtimeStatusStore: runtimeStatus,
+                actions: SettingsActions(
+                    requestAccessibilityPermission: {
+                        [weak coordinator] in
+                        coordinator?.requestAccessibilityPermission()
+                    },
+                    openAccessibilitySettings: {
+                        [weak coordinator] in
+                        coordinator?.openAccessibilitySettings()
+                    },
+                    requestScreenRecordingPermission: {
+                        [weak coordinator] in
+                        coordinator?.requestScreenRecordingPermission()
+                    },
+                    openScreenRecordingSettings: {
+                        [weak coordinator] in
+                        coordinator?.openScreenRecordingSettings()
+                    }
+                )
             )
             settingsWindowController?.window?.delegate = self
         }

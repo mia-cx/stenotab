@@ -128,6 +128,11 @@ final class CompletionCoordinator: NSObject {
         openSettings(.accessibility)
     }
 
+    func requestAccessibilityPermission() {
+        accessibility.requestTrustPrompt()
+        publishPermissionState(force: true)
+    }
+
     @objc func openScreenRecordingSettings() {
         openSettings(.screenRecording)
     }

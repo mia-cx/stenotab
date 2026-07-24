@@ -2,15 +2,26 @@ import AppKit
 import CompletionCore
 import SwiftUI
 
+struct SettingsActions {
+    let requestAccessibilityPermission: @MainActor () -> Void
+    let openAccessibilitySettings: @MainActor () -> Void
+    let requestScreenRecordingPermission: @MainActor () -> Void
+    let openScreenRecordingSettings: @MainActor () -> Void
+}
+
 @MainActor
 final class SettingsWindowController: NSWindowController {
     init(
         promptStore: PromptSettingsStore,
-        applicationPolicyStore: ApplicationPolicyStore
+        applicationPolicyStore: ApplicationPolicyStore,
+        runtimeStatusStore: RuntimeStatusStore,
+        actions: SettingsActions
     ) {
         let rootView = SettingsRootView(
             promptStore: promptStore,
-            applicationPolicyStore: applicationPolicyStore
+            applicationPolicyStore: applicationPolicyStore,
+            runtimeStatusStore: runtimeStatusStore,
+            actions: actions
         )
         let hostingController = NSHostingController(rootView: rootView)
         let window = NSWindow(contentViewController: hostingController)
@@ -38,6 +49,8 @@ final class SettingsWindowController: NSWindowController {
 }
 
 private enum SettingsPage: String, CaseIterable, Identifiable {
+    case setup
+    case modelsProviders
     case promptLab
     case appSettings
 
@@ -47,11 +60,17 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
 private struct SettingsRootView: View {
     @ObservedObject var promptStore: PromptSettingsStore
     @ObservedObject var applicationPolicyStore: ApplicationPolicyStore
-    @State private var selection: SettingsPage? = .promptLab
+    @ObservedObject var runtimeStatusStore: RuntimeStatusStore
+    let actions: SettingsActions
+    @State private var selection: SettingsPage? = .setup
 
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
+                Label("Setup", systemImage: "checkmark.shield")
+                    .tag(SettingsPage.setup)
+                Label("Models & Providers", systemImage: "cpu")
+                    .tag(SettingsPage.modelsProviders)
                 Label("Prompt Lab", systemImage: "text.badge.sparkles")
                     .tag(SettingsPage.promptLab)
                 Label("App Settings", systemImage: "app.badge.checkmark")
@@ -59,7 +78,14 @@ private struct SettingsRootView: View {
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 205, max: 240)
         } detail: {
-            switch selection ?? .promptLab {
+            switch selection ?? .setup {
+            case .setup:
+                SetupSettingsView(
+                    store: runtimeStatusStore,
+                    actions: actions
+                )
+            case .modelsProviders:
+                ModelsProvidersView(store: runtimeStatusStore)
             case .promptLab:
                 PromptLabView(store: promptStore)
             case .appSettings:
@@ -67,6 +93,181 @@ private struct SettingsRootView: View {
             }
         }
         .frame(minWidth: 820, minHeight: 620)
+    }
+}
+
+private struct SetupSettingsView: View {
+    @ObservedObject var store: RuntimeStatusStore
+    let actions: SettingsActions
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                SettingsSection(title: "Permissions") {
+                    PermissionSettingsRow(
+                        title: "Accessibility",
+                        detail:
+                            "Required to detect editable fields, read the "
+                            + "current cursor context, and insert accepted text.",
+                        isGranted:
+                            store.permissionState.accessibilityGranted,
+                        request: actions.requestAccessibilityPermission,
+                        openSettings: actions.openAccessibilitySettings
+                    )
+                    Divider()
+                    PermissionSettingsRow(
+                        title: "Screen Recording",
+                        detail:
+                            "Optional until screenshot/OCR context is enabled. "
+                            + "StenoTab does not capture the screen yet.",
+                        isGranted:
+                            store.permissionState.screenRecordingGranted,
+                        request: actions.requestScreenRecordingPermission,
+                        openSettings: actions.openScreenRecordingSettings
+                    )
+                }
+
+                SettingsSection(title: "Completion Runtime") {
+                    RuntimeStatusRow(status: store.modelStatus)
+                }
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 22)
+            .padding(.bottom, 36)
+            .frame(maxWidth: 900, alignment: .leading)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct PermissionSettingsRow: View {
+    let title: String
+    let detail: String
+    let isGranted: Bool
+    let request: @MainActor () -> Void
+    let openSettings: @MainActor () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            Image(
+                systemName: isGranted
+                    ? "checkmark.circle.fill"
+                    : "exclamationmark.circle.fill"
+            )
+            .foregroundStyle(isGranted ? .green : .secondary)
+            .font(.title3)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(isGranted ? "Granted" : "Not granted")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(isGranted ? .green : .secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !isGranted {
+                Button("Request") {
+                    request()
+                }
+            }
+            Button("Open Settings") {
+                openSettings()
+            }
+        }
+        .padding(.vertical, 5)
+    }
+}
+
+private struct RuntimeStatusRow: View {
+    let status: CompletionRuntimeStatus
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(
+                systemName: status.isReady
+                    ? "checkmark.circle.fill"
+                    : "clock.badge.exclamationmark"
+            )
+            .foregroundStyle(status.isReady ? .green : .secondary)
+            .font(.title3)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(status.title)
+                    .font(.headline)
+                if let detail = status.detail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 5)
+    }
+}
+
+private struct ModelsProvidersView: View {
+    @ObservedObject var store: RuntimeStatusStore
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                SettingsSection(title: "Active Runtime") {
+                    RuntimeStatusRow(status: store.modelStatus)
+                }
+
+                SettingsSection(title: "Supported Local Models") {
+                    ForEach(LocalModelProfiles.all) { profile in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text(profile.displayName)
+                                    .font(.headline)
+                                Spacer()
+                                Text("llama.cpp")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(profile.qualityNote)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            HStack(spacing: 14) {
+                                Label(
+                                    "\(profile.minimumUnifiedMemoryGB) GB unified memory",
+                                    systemImage: "memorychip"
+                                )
+                                Label(
+                                    profile.modelFile ?? profile.repository,
+                                    systemImage: "shippingbox"
+                                )
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                        }
+                        .padding(.vertical, 5)
+                    }
+                }
+
+                SettingsSection(title: "Remote Providers") {
+                    Text(
+                        "OpenAI-compatible endpoint configuration and Keychain "
+                            + "credentials are the next provider slice."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 22)
+            .padding(.bottom, 36)
+            .frame(maxWidth: 900, alignment: .leading)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
