@@ -92,6 +92,14 @@ public struct ApplicationPolicyState: Codable, Equatable, Sendable {
         return completionsAreEnabled(for: bundleIdentifier)
     }
 
+    public func toggledOverride(
+        for bundleIdentifier: String
+    ) -> ApplicationPolicyOverride {
+        completionsAreEnabled(for: bundleIdentifier)
+            ? .disabled
+            : .enabled
+    }
+
     public mutating func setPolicyOverride(
         _ policyOverride: ApplicationPolicyOverride,
         for bundleIdentifier: String

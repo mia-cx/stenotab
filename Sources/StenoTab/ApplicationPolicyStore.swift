@@ -52,6 +52,13 @@ final class ApplicationPolicyStore: ObservableObject {
         state.policyOverride(for: bundleIdentifier)
     }
 
+    func togglePolicy(for bundleIdentifier: String) {
+        setPolicyOverride(
+            state.toggledOverride(for: bundleIdentifier),
+            for: bundleIdentifier
+        )
+    }
+
     func setGlobalCompletionsEnabled(_ isEnabled: Bool) {
         guard state.globalCompletionsEnabled != isEnabled else { return }
         state.globalCompletionsEnabled = isEnabled

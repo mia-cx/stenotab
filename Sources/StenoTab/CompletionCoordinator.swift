@@ -170,6 +170,12 @@ final class CompletionCoordinator: NSObject {
         }
     }
 
+    func applicationPolicyDidChange() {
+        invalidatePendingCompletion()
+        clearSuggestion()
+        reconcile()
+    }
+
     private func handle(_ mutation: ShadowTextBuffer.Mutation) {
         guard enabled, policyAllowsCurrentApplication() else {
             invalidatePendingCompletion()

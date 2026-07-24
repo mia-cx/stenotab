@@ -50,6 +50,32 @@ final class ApplicationPolicyTests: XCTestCase {
         )
     }
 
+    func testFocusedAppToggleAlwaysProducesAnExplicitOverride() {
+        var enabledByDefault = ApplicationPolicyState(
+            globalCompletionsEnabled: true
+        )
+        XCTAssertEqual(
+            enabledByDefault.toggledOverride(for: "com.example.editor"),
+            .disabled
+        )
+        enabledByDefault.setPolicyOverride(
+            .disabled,
+            for: "com.example.editor"
+        )
+        XCTAssertEqual(
+            enabledByDefault.toggledOverride(for: "com.example.editor"),
+            .enabled
+        )
+
+        let disabledByDefault = ApplicationPolicyState(
+            globalCompletionsEnabled: false
+        )
+        XCTAssertEqual(
+            disabledByDefault.toggledOverride(for: "com.example.editor"),
+            .enabled
+        )
+    }
+
     func testSecureObservationsAreNeverRecorded() {
         var state = ApplicationPolicyState()
 

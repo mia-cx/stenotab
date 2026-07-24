@@ -3,7 +3,9 @@ import ApplicationServices
 import CompletionCore
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
+    NSWindowDelegate
+{
     private enum DailyCountDefaults {
         static let count = "dailyAcceptedSuggestionCount"
         static let referenceDate = "dailyAcceptedSuggestionReferenceDate"
@@ -12,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var coordinator: CompletionCoordinator?
     private var statusItem: NSStatusItem?
     private var modelStatusItem: NSMenuItem?
+    private var focusedApplicationPolicyItem: NSMenuItem?
     private var localServer: LocalLlamaServer?
     private var localModelTask: Task<Void, Never>?
     private let promptSettings = PromptSettingsStore()
@@ -84,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         let menu = NSMenu()
+        menu.delegate = self
         let status = NSMenuItem(
             title: "Checking permissions…",
             action: nil,
@@ -109,6 +113,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         enabled.target = coordinator
         enabled.state = .on
         menu.addItem(enabled)
+
+        let focusedApplicationPolicy = NSMenuItem(
+            title: "Application Policy Unavailable",
+            action: #selector(toggleFocusedApplicationPolicy),
+            keyEquivalent: ""
+        )
+        focusedApplicationPolicy.target = self
+        focusedApplicationPolicy.isEnabled = false
+        menu.addItem(focusedApplicationPolicy)
+        focusedApplicationPolicyItem = focusedApplicationPolicy
 
         menu.addItem(.separator())
 
@@ -156,6 +170,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         item.menu = menu
         statusItem = item
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        updateFocusedApplicationPolicyItem()
+    }
+
+    @objc private func toggleFocusedApplicationPolicy() {
+        guard
+            let application = NSWorkspace.shared.frontmostApplication,
+            let bundleIdentifier = application.bundleIdentifier,
+            bundleIdentifier != Bundle.main.bundleIdentifier
+        else {
+            return
+        }
+
+        applicationPolicy.togglePolicy(for: bundleIdentifier)
+        coordinator?.applicationPolicyDidChange()
+        updateFocusedApplicationPolicyItem()
+    }
+
+    private func updateFocusedApplicationPolicyItem() {
+        guard let item = focusedApplicationPolicyItem else { return }
+        guard
+            let application = NSWorkspace.shared.frontmostApplication,
+            let bundleIdentifier = application.bundleIdentifier,
+            bundleIdentifier != Bundle.main.bundleIdentifier
+        else {
+            item.title = "Application Policy Unavailable"
+            item.state = .off
+            item.isEnabled = false
+            item.representedObject = nil
+            return
+        }
+
+        let displayName = application.localizedName ?? bundleIdentifier
+        let isEnabled = applicationPolicy.completionsAreEnabled(
+            for: bundleIdentifier
+        )
+        item.title = isEnabled
+            ? "Disable StenoTab in \(displayName)"
+            : "Enable StenoTab in \(displayName)"
+        item.state = isEnabled ? .on : .off
+        item.isEnabled = true
+        item.representedObject = bundleIdentifier
     }
 
     private func loadDailyAcceptanceCount() {

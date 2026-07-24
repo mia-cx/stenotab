@@ -32,7 +32,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - [x] Add pure, Codable app-policy and seen-app domain models with tests.
 - [x] Add a persistent application-policy store and app-observation boundary.
 - [x] Enforce app policy before completion/context work and test the gating rule.
-- [ ] Add the focused-app menu toggle with live state.
+- [x] Add the focused-app menu toggle with live state.
 - [ ] Add a searchable App Settings page backed by the same live store.
 - [ ] Run the full test suite and signed production build; document residual
       issue scope.
@@ -52,3 +52,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
   editor snapshot, building clipboard context, dispatching a request, accepting
   a suggestion, or delivering a queued response.
 - `swift test --filter ApplicationPolicyTests` passes (6 tests).
+- The status menu recomputes the frontmost app whenever it opens, persists an
+  explicit enable/disable override, and tells the coordinator to cancel or
+  resume work immediately.
+- `swift test --filter ApplicationPolicyTests` passes (7 tests).
