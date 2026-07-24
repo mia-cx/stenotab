@@ -14,6 +14,8 @@ final class CompletionCoordinator: NSObject {
     private let overlay = SuggestionOverlay()
     private let provider: any CompletionProvider
     private let promptConfiguration: @MainActor () -> PromptConfiguration
+    private let onApplicationObserved:
+        @MainActor (ApplicationObservation) -> Void
     private let onSuggestionAccepted: @MainActor (String) -> Void
     private var inputMonitor: GlobalInputMonitor?
     private var reconciliationTimer: Timer?
@@ -58,10 +60,14 @@ final class CompletionCoordinator: NSObject {
         promptConfiguration: @escaping @MainActor () -> PromptConfiguration = {
             .defaults
         },
+        onApplicationObserved: @escaping @MainActor (
+            ApplicationObservation
+        ) -> Void = { _ in },
         onSuggestionAccepted: @escaping @MainActor (String) -> Void = { _ in }
     ) {
         self.provider = provider
         self.promptConfiguration = promptConfiguration
+        self.onApplicationObserved = onApplicationObserved
         self.onSuggestionAccepted = onSuggestionAccepted
         super.init()
     }
@@ -221,6 +227,7 @@ final class CompletionCoordinator: NSObject {
         }
         let recoveringFromSnapshotFailure = consecutiveSnapshotFailures > 0
         consecutiveSnapshotFailures = 0
+        recordApplicationObservation(from: snapshot)
 
         let previousSnapshot = lastSnapshot
         let focusChanged = previousSnapshot.map {
@@ -252,6 +259,24 @@ final class CompletionCoordinator: NSObject {
                 scheduleCompletion()
             }
         }
+    }
+
+    private func recordApplicationObservation(from snapshot: EditorSnapshot) {
+        guard
+            let bundleIdentifier = snapshot.applicationBundleIdentifier,
+            !bundleIdentifier.isEmpty
+        else {
+            return
+        }
+        onApplicationObserved(
+            ApplicationObservation(
+                bundleIdentifier: bundleIdentifier,
+                displayName: snapshot.applicationName ?? bundleIdentifier,
+                bundleURL: snapshot.applicationBundleURL,
+                observedAt: Date(),
+                isSecureField: false
+            )
+        )
     }
 
     private func scheduleCompletion() {

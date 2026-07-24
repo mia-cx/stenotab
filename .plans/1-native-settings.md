@@ -30,7 +30,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 ## TODOs
 
 - [x] Add pure, Codable app-policy and seen-app domain models with tests.
-- [ ] Add a persistent application-policy store and app-observation boundary.
+- [x] Add a persistent application-policy store and app-observation boundary.
 - [ ] Enforce app policy before completion/context work and test the gating rule.
 - [ ] Add the focused-app menu toggle with live state.
 - [ ] Add a searchable App Settings page backed by the same live store.
@@ -45,3 +45,6 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - Existing Prompt Lab settings remain in `UserDefaults`; provider secrets will
   require Keychain in a later slice.
 - `swift test --filter ApplicationPolicyTests` passes (5 tests).
+- App target compiles after wiring `ApplicationPolicyStore`; observations are
+  emitted only from successful non-secure editor snapshots and persistence is
+  throttled to at most once per app per minute when metadata is unchanged.

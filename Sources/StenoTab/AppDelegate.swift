@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var localServer: LocalLlamaServer?
     private var localModelTask: Task<Void, Never>?
     private let promptSettings = PromptSettingsStore()
+    private let applicationPolicy = ApplicationPolicyStore()
     private var promptLabWindowController: PromptLabWindowController?
     private var dailyAcceptanceCounter = DailyAcceptanceCounter(
         count: 0,
@@ -38,6 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             provider: router,
             promptConfiguration: { [promptSettings] in
                 promptSettings.configuration
+            },
+            onApplicationObserved: { [applicationPolicy] observation in
+                applicationPolicy.record(observation)
             },
             onSuggestionAccepted: { [weak self] _ in
                 self?.recordSuggestionAcceptance()

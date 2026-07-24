@@ -13,6 +13,8 @@ struct EditorSnapshot {
     let isWebBacked: Bool
     let editorIdentifier: String
     let applicationName: String?
+    let applicationBundleIdentifier: String?
+    let applicationBundleURL: URL?
     let inputKind: String?
 }
 
@@ -120,6 +122,8 @@ final class AccessibilityReader {
             isWebBacked: appIsWebBacked,
             editorIdentifier: elementIdentity(focused),
             applicationName: frontmostApp?.localizedName,
+            applicationBundleIdentifier: frontmostApp?.bundleIdentifier,
+            applicationBundleURL: frontmostApp?.bundleURL,
             inputKind: inputKind(
                 role: role,
                 subrole: subrole,
