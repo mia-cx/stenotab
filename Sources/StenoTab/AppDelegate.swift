@@ -333,6 +333,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                     openScreenRecordingSettings: {
                         [weak coordinator] in
                         coordinator?.openScreenRecordingSettings()
+                    },
+                    openKeyboardSettings: {
+                        guard let url = URL(
+                            string:
+                                "x-apple.systempreferences:"
+                                + "com.apple.Keyboard-Settings.extension"
+                        ) else {
+                            return
+                        }
+                        NSWorkspace.shared.open(url)
                     }
                 )
             )

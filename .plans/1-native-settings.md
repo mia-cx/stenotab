@@ -68,7 +68,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
   login, provider/model configuration, Keychain credentials, OCR privacy
   controls, shortcuts, diagnostics, and general settings beyond app policy.
 
-## Follow-up slice: setup and runtime diagnostics
+## Follow-up slice: permissions and runtime diagnostics
 
 ### Acceptance criteria
 
@@ -83,7 +83,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - [x] Extend the permission model and coordinator with optional Screen
       Recording status and actions.
 - [x] Add an observable runtime-status bridge shared by the menu and Settings.
-- [x] Add Setup and Models & Providers status pages to the settings sidebar.
+- [x] Add Permissions and Models & Providers pages to the settings sidebar.
 - [x] Run focused and full validation, then record the remaining issue scope.
 
 ### Notes
@@ -93,7 +93,10 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - `swift test --filter PermissionStateTests` passes (3 tests).
 - Permission and model transitions now flow through `RuntimeStatusStore`; the
   existing menu reads the same structured status that Settings will observe.
-- Setup reports both permissions with request and System Settings actions.
+- Permissions reports both permissions with request and System Settings actions.
+- The Permissions page also links to Keyboard settings with the exact Text
+  Input controls to disable Apple's competing inline predictions and suggested
+  replies.
 - Models & Providers shows the active runtime plus honest metadata for supported
   local profiles; configuration controls remain deferred until their persistence
   and credential boundaries exist.
@@ -153,19 +156,19 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 
 ### Acceptance criteria
 
-- [ ] Settings edits local profile, server URL, and completion length.
-- [ ] Cache state uses the standard Hugging Face cache root and can be revealed.
-- [ ] Missing supported models can be downloaded into a valid Hugging Face
+- [x] Settings edits local profile, server URL, and completion length.
+- [x] Cache state uses the standard Hugging Face cache root and can be revealed.
+- [x] Missing supported models can be downloaded into a valid Hugging Face
       snapshot/blob/ref layout with visible progress.
-- [ ] Selecting a downloaded local model starts or reuses llama.cpp immediately.
-- [ ] Download failures leave no model that appears complete.
+- [x] Selecting a downloaded local model starts or reuses llama.cpp immediately.
+- [x] Download failures leave no model that appears complete.
 
 ### TODOs
 
 - [x] Add local model configuration and shared-cache inspection controls.
 - [x] Add a Hugging Face cache download planner with layout tests.
 - [x] Add resumable download execution and progress to the provider store/UI.
-- [ ] Run full tests and a signed production build.
+- [x] Run full tests and a signed production build.
 
 ### Notes
 
@@ -179,3 +182,10 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
   `snapshots/<revision>/`, and `refs/main` paths and rejects traversal in
   server-supplied revision/ETag identifiers.
 - `swift test --filter HuggingFaceDownloadPlanTests` passes (2 tests).
+- The in-app downloader resumes partial files, publishes a snapshot only after
+  exact byte completion, reports progress, and selects the local runtime after
+  a successful install.
+- `swift test --filter HuggingFaceDownloadPlanTests` passes (3 tests).
+- Full `swift test` passes (99 tests).
+- Production app build succeeds with stable Apple Development signing and Team
+  ID `VJKBGC9AMK`.

@@ -7,6 +7,7 @@ struct SettingsActions {
     let openAccessibilitySettings: @MainActor () -> Void
     let requestScreenRecordingPermission: @MainActor () -> Void
     let openScreenRecordingSettings: @MainActor () -> Void
+    let openKeyboardSettings: @MainActor () -> Void
 }
 
 @MainActor
@@ -51,7 +52,7 @@ final class SettingsWindowController: NSWindowController {
 }
 
 private enum SettingsPage: String, CaseIterable, Identifiable {
-    case setup
+    case permissions
     case modelsProviders
     case promptLab
     case appSettings
@@ -65,13 +66,13 @@ private struct SettingsRootView: View {
     @ObservedObject var providerSettingsStore: ProviderSettingsStore
     @ObservedObject var runtimeStatusStore: RuntimeStatusStore
     let actions: SettingsActions
-    @State private var selection: SettingsPage? = .setup
+    @State private var selection: SettingsPage? = .permissions
 
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
-                Label("Setup", systemImage: "checkmark.shield")
-                    .tag(SettingsPage.setup)
+                Label("Permissions", systemImage: "lock.shield")
+                    .tag(SettingsPage.permissions)
                 Label("Models & Providers", systemImage: "cpu")
                     .tag(SettingsPage.modelsProviders)
                 Label("Prompt Lab", systemImage: "text.badge.sparkles")
@@ -81,9 +82,9 @@ private struct SettingsRootView: View {
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 205, max: 240)
         } detail: {
-            switch selection ?? .setup {
-            case .setup:
-                SetupSettingsView(
+            switch selection ?? .permissions {
+            case .permissions:
+                PermissionsSettingsView(
                     store: runtimeStatusStore,
                     actions: actions
                 )
@@ -102,7 +103,7 @@ private struct SettingsRootView: View {
     }
 }
 
-private struct SetupSettingsView: View {
+private struct PermissionsSettingsView: View {
     @ObservedObject var store: RuntimeStatusStore
     let actions: SettingsActions
 
@@ -124,17 +125,24 @@ private struct SetupSettingsView: View {
                     PermissionSettingsRow(
                         title: "Screen Recording",
                         detail:
-                            "Optional until screenshot/OCR context is enabled. "
-                            + "StenoTab does not capture the screen yet.",
+                            "Used for screenshot and OCR context when that "
+                            + "feature is enabled.",
                         isGranted:
                             store.permissionState.screenRecordingGranted,
                         request: actions.requestScreenRecordingPermission,
                         openSettings: actions.openScreenRecordingSettings
                     )
-                }
-
-                SettingsSection(title: "Completion Runtime") {
-                    RuntimeStatusRow(status: store.modelStatus)
+                    Divider()
+                    ManualSystemSettingRow(
+                        title: "macOS text suggestions",
+                        detail:
+                            "To avoid overlapping suggestions, open Keyboard "
+                            + "settings, click Edit beside Text Input, then "
+                            + "turn off Show inline predictive text and Show "
+                            + "suggested replies.",
+                        buttonTitle: "Open Keyboard Settings",
+                        action: actions.openKeyboardSettings
+                    )
                 }
             }
             .padding(.horizontal, 28)
@@ -143,6 +151,35 @@ private struct SetupSettingsView: View {
             .frame(maxWidth: 900, alignment: .leading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct ManualSystemSettingRow: View {
+    let title: String
+    let detail: String
+    let buttonTitle: String
+    let action: @MainActor () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            Image(systemName: "keyboard")
+                .foregroundStyle(.secondary)
+                .font(.title3)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(buttonTitle) {
+                action()
+            }
+        }
+        .padding(.vertical, 5)
     }
 }
 
