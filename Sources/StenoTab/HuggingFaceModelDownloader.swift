@@ -14,7 +14,9 @@ actor HuggingFaceModelDownloader {
 
     enum DownloadError: LocalizedError {
         case invalidProfile
+        case invalidRepository
         case invalidRevision
+        case noSingleFileGGUF
         case unexpectedResponse
         case httpStatus(Int)
         case incomplete(expected: Int64, received: Int64)
@@ -23,8 +25,12 @@ actor HuggingFaceModelDownloader {
             switch self {
             case .invalidProfile:
                 "The selected profile has no downloadable model file."
+            case .invalidRepository:
+                "Enter a Hugging Face model ID like owner/model."
             case .invalidRevision:
                 "Hugging Face returned an invalid repository revision."
+            case .noSingleFileGGUF:
+                "That repository has no supported single-file GGUF model."
             case .unexpectedResponse:
                 "Hugging Face returned an unexpected response."
             case let .httpStatus(status):
@@ -36,7 +42,12 @@ actor HuggingFaceModelDownloader {
     }
 
     private struct ModelInfo: Decodable {
+        struct Sibling: Decodable {
+            let rfilename: String
+        }
+
         let sha: String
+        let siblings: [Sibling]?
     }
 
     private let fileManager: FileManager
@@ -67,9 +78,13 @@ actor HuggingFaceModelDownloader {
         }
         let revision = try await fetchRevision(using: plan)
         guard
+            let blobIdentifier = HuggingFaceDownloadPlan.blobIdentifier(
+                revision: revision,
+                modelFile: plan.modelFile
+            ),
             let installation = plan.installation(
                 revision: revision,
-                blobIdentifier: "\(revision)-\(plan.modelFile)"
+                blobIdentifier: blobIdentifier
             )
         else {
             throw DownloadError.invalidRevision
@@ -168,10 +183,54 @@ actor HuggingFaceModelDownloader {
         )
     }
 
+    func resolveProfile(repository input: String) async throws
+        -> LocalModelProfile
+    {
+        guard
+            let repository =
+                HuggingFaceRepositorySelection.normalizedRepositoryID(
+                    from: input
+                ),
+            let encodedRepository = repository.addingPercentEncoding(
+                withAllowedCharacters: .urlPathAllowed
+            ),
+            let url = URL(
+                string:
+                    "https://huggingface.co/api/models/"
+                    + "\(encodedRepository)/revision/main"
+            )
+        else {
+            throw DownloadError.invalidRepository
+        }
+        let info = try await fetchModelInfo(at: url)
+        guard
+            let modelFile =
+                HuggingFaceRepositorySelection.preferredGGUFFile(
+                    from: info.siblings?.map(\.rfilename) ?? []
+                )
+        else {
+            throw DownloadError.noSingleFileGGUF
+        }
+        return LocalModelProfile(
+            id: "hf:\(repository):\(modelFile)",
+            displayName: "\(repository) · \(modelFile)",
+            repository: repository,
+            modelFile: modelFile,
+            apiStyle: .textCompletions,
+            minimumUnifiedMemoryGB: 0,
+            supportsImages: false,
+            qualityNote: "Custom model from Hugging Face."
+        )
+    }
+
     private func fetchRevision(
         using plan: HuggingFaceDownloadPlan
     ) async throws -> String {
-        var request = URLRequest(url: plan.revisionMetadataURL)
+        try await fetchModelInfo(at: plan.revisionMetadataURL).sha
+    }
+
+    private func fetchModelInfo(at url: URL) async throws -> ModelInfo {
+        var request = URLRequest(url: url)
         request.timeoutInterval = 15
         request.setValue("StenoTab/1", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: request)
@@ -181,7 +240,7 @@ actor HuggingFaceModelDownloader {
         guard (200..<300).contains(httpResponse.statusCode) else {
             throw DownloadError.httpStatus(httpResponse.statusCode)
         }
-        return try JSONDecoder().decode(ModelInfo.self, from: data).sha
+        return try JSONDecoder().decode(ModelInfo.self, from: data)
     }
 
     private func prepareIncompleteFile(

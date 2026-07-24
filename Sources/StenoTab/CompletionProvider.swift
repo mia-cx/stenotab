@@ -278,9 +278,7 @@ enum ProviderFactory {
         modelID: String? = nil
     ) -> (any CompletionProvider)? {
         guard
-            let profile = LocalModelProfiles.profile(
-                id: configuration.profileID
-            ),
+            let profile = configuration.selectedProfile,
             let url = baseURL ?? URL(string: configuration.baseURL)
         else {
             return nil

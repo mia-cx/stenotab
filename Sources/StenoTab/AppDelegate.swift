@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     private let applicationPolicy = ApplicationPolicyStore()
     private let providerSettings = ProviderSettingsStore()
     private let runtimeStatus = RuntimeStatusStore()
+    private let launchAtLoginSettings = LaunchAtLoginSettingsStore()
     private var settingsWindowController: SettingsWindowController?
     private var dailyAcceptanceCounter = DailyAcceptanceCounter(
         count: 0,
@@ -317,6 +318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                 applicationPolicyStore: applicationPolicy,
                 providerSettingsStore: providerSettings,
                 runtimeStatusStore: runtimeStatus,
+                launchAtLoginSettingsStore: launchAtLoginSettings,
                 actions: SettingsActions(
                     requestAccessibilityPermission: {
                         [weak coordinator] in
@@ -450,9 +452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         configuration: LocalCompletionConfiguration
     ) {
         guard
-            let profile = LocalModelProfiles.profile(
-                id: configuration.profileID
-            )
+            let profile = configuration.selectedProfile
         else {
             updateModelStatus(.builtInDemo)
             return

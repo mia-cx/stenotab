@@ -17,6 +17,7 @@ final class SettingsWindowController: NSWindowController {
         applicationPolicyStore: ApplicationPolicyStore,
         providerSettingsStore: ProviderSettingsStore,
         runtimeStatusStore: RuntimeStatusStore,
+        launchAtLoginSettingsStore: LaunchAtLoginSettingsStore,
         actions: SettingsActions
     ) {
         let rootView = SettingsRootView(
@@ -24,6 +25,7 @@ final class SettingsWindowController: NSWindowController {
             applicationPolicyStore: applicationPolicyStore,
             providerSettingsStore: providerSettingsStore,
             runtimeStatusStore: runtimeStatusStore,
+            launchAtLoginSettingsStore: launchAtLoginSettingsStore,
             actions: actions
         )
         let hostingController = NSHostingController(rootView: rootView)
@@ -52,8 +54,8 @@ final class SettingsWindowController: NSWindowController {
 }
 
 private enum SettingsPage: String, CaseIterable, Identifiable {
-    case permissions
-    case modelsProviders
+    case setup
+    case models
     case promptLab
     case appSettings
 
@@ -65,16 +67,17 @@ private struct SettingsRootView: View {
     @ObservedObject var applicationPolicyStore: ApplicationPolicyStore
     @ObservedObject var providerSettingsStore: ProviderSettingsStore
     @ObservedObject var runtimeStatusStore: RuntimeStatusStore
+    @ObservedObject var launchAtLoginSettingsStore: LaunchAtLoginSettingsStore
     let actions: SettingsActions
-    @State private var selection: SettingsPage? = .permissions
+    @State private var selection: SettingsPage? = .setup
 
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
-                Label("Permissions", systemImage: "lock.shield")
-                    .tag(SettingsPage.permissions)
-                Label("Models & Providers", systemImage: "cpu")
-                    .tag(SettingsPage.modelsProviders)
+                Label("Setup", systemImage: "checkmark.shield")
+                    .tag(SettingsPage.setup)
+                Label("Models", systemImage: "shippingbox")
+                    .tag(SettingsPage.models)
                 Label("Prompt Lab", systemImage: "text.badge.sparkles")
                     .tag(SettingsPage.promptLab)
                 Label("App Settings", systemImage: "app.badge.checkmark")
@@ -82,14 +85,15 @@ private struct SettingsRootView: View {
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 205, max: 240)
         } detail: {
-            switch selection ?? .permissions {
-            case .permissions:
-                PermissionsSettingsView(
+            switch selection ?? .setup {
+            case .setup:
+                SetupSettingsView(
                     store: runtimeStatusStore,
+                    launchAtLoginStore: launchAtLoginSettingsStore,
                     actions: actions
                 )
-            case .modelsProviders:
-                ModelsProvidersView(
+            case .models:
+                ModelsView(
                     runtimeStore: runtimeStatusStore,
                     providerStore: providerSettingsStore
                 )
@@ -103,13 +107,18 @@ private struct SettingsRootView: View {
     }
 }
 
-private struct PermissionsSettingsView: View {
+private struct SetupSettingsView: View {
     @ObservedObject var store: RuntimeStatusStore
+    @ObservedObject var launchAtLoginStore: LaunchAtLoginSettingsStore
     let actions: SettingsActions
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                SettingsSection(title: "General") {
+                    LaunchAtLoginRow(store: launchAtLoginStore)
+                }
+
                 SettingsSection(title: "Permissions") {
                     PermissionSettingsRow(
                         title: "Accessibility",
@@ -151,6 +160,47 @@ private struct PermissionsSettingsView: View {
             .frame(maxWidth: 900, alignment: .leading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct LaunchAtLoginRow: View {
+    @ObservedObject var store: LaunchAtLoginSettingsStore
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Launch automatically at login")
+                    .font(.headline)
+                Text(
+                    "Start StenoTab after you sign in so completions are "
+                        + "available without opening it manually."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                if let statusDetail = store.statusDetail {
+                    Text(statusDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Toggle(
+                "Launch automatically at login",
+                isOn: Binding(
+                    get: { store.isRequested },
+                    set: { store.setEnabled($0) }
+                )
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .frame(width: 54, alignment: .trailing)
+        }
+        .padding(.vertical, 3)
+        .onAppear {
+            store.refresh()
+        }
     }
 }
 
@@ -254,89 +304,126 @@ private struct RuntimeStatusRow: View {
     }
 }
 
-private struct ModelsProvidersView: View {
+private struct ModelsView: View {
     @ObservedObject var runtimeStore: RuntimeStatusStore
     @ObservedObject var providerStore: ProviderSettingsStore
+    @State private var modelPickerSelection = ""
+    @State private var customModelID = ""
+
+    private let otherModelSelection = "__other__"
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                SettingsSection(title: "Active Runtime") {
-                    RuntimeStatusRow(status: runtimeStore.modelStatus)
-                    Divider()
-                    Picker(
-                        "Active provider",
-                        selection: Binding(
-                            get: {
-                                providerStore.configuration.selection
-                            },
-                            set: {
-                                providerStore.setSelection($0)
-                            }
-                        )
-                    ) {
-                        Text("Built-in Demo")
-                            .tag(ProviderSelection.builtInDemo)
-                        Text("Local llama.cpp")
-                            .tag(ProviderSelection.local)
-                        ForEach(
-                            providerStore.configuration.remoteProviders
-                        ) { provider in
-                            Text(provider.displayName)
-                                .tag(
-                                    ProviderSelection.remote(
-                                        providerID: provider.id
-                                    )
-                                )
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: 420)
-                }
-
-                SettingsSection(title: "Local Runtime Configuration") {
+                SettingsSection(title: "Provider") {
                     Grid(
                         alignment: .leading,
                         horizontalSpacing: 12,
                         verticalSpacing: 8
                     ) {
                         GridRow {
-                            Text("Model")
+                            Text("Provider")
                                 .foregroundStyle(.secondary)
                             Picker(
-                                "Model",
-                                selection: localProfileID
+                                "Provider",
+                                selection: .constant("local")
                             ) {
-                                ForEach(LocalModelProfiles.all) { profile in
-                                    Text(profile.displayName)
-                                        .tag(profile.id)
-                                }
+                                Text("Local").tag("local")
                             }
                             .labelsHidden()
+                            .disabled(true)
+                            .frame(maxWidth: 320)
                         }
-                        GridRow {
-                            Text("Server URL")
-                                .foregroundStyle(.secondary)
-                            TextField(
-                                "http://127.0.0.1:18473/v1",
-                                text: localBaseURL
-                            )
-                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    Text(
+                        "StenoTab runs models locally with llama.cpp. Model "
+                            + "files are downloaded into the standard shared "
+                            + "Hugging Face cache, so an existing cached model "
+                            + "is reused instead of copied."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                    HStack {
+                        RuntimeStatusRow(status: runtimeStore.modelStatus)
+                        Spacer()
+                        Button("Open Hugging Face Cache") {
+                            openHuggingFaceCache()
                         }
+                    }
+                }
+
+                SettingsSection(title: "Model") {
+                    Grid(
+                        alignment: .leading,
+                        horizontalSpacing: 12,
+                        verticalSpacing: 8
+                    ) {
                         GridRow {
-                            Text("Maximum length")
+                            Text("Selected model")
                                 .foregroundStyle(.secondary)
-                            Stepper(
-                                "\(localConfiguration.maximumWords) words",
-                                value: localMaximumWords,
-                                in: 1...32
+                            Picker(
+                                "Selected model",
+                                selection: modelSelection
+                            ) {
+                                Section("Recommended") {
+                                    ForEach(LocalModelProfiles.all) { profile in
+                                        Text(profile.displayName)
+                                            .tag(profile.id)
+                                    }
+                                }
+                                if !cachedProfiles.isEmpty {
+                                    Section("Hugging Face Cache") {
+                                        ForEach(cachedProfiles) { profile in
+                                            Text(profile.displayName)
+                                                .tag(profile.id)
+                                        }
+                                    }
+                                }
+                                Divider()
+                                Text("Other…")
+                                    .tag(otherModelSelection)
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: 560)
+                        }
+                    }
+
+                    if modelPickerSelection == otherModelSelection {
+                        Divider()
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Hugging Face model ID")
+                                .font(.headline)
+                            Text(
+                                "Enter owner/model or paste its huggingface.co "
+                                    + "URL. StenoTab selects a single-file "
+                                    + "Q4_K_M GGUF when available."
                             )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            HStack {
+                                TextField(
+                                    "owner/model",
+                                    text: $customModelID
+                                )
+                                .textFieldStyle(.roundedBorder)
+                                Button("Download") {
+                                    providerStore.downloadCustomLocalModel(
+                                        repository: customModelID
+                                    )
+                                }
+                                .disabled(
+                                    normalizedCustomModelID == nil
+                                        || isDownloading
+                                )
+                            }
                         }
                     }
 
                     Divider()
                     if let profile = selectedLocalProfile {
-                        HStack(alignment: .center, spacing: 12) {
+                        HStack(alignment: .top, spacing: 12) {
                             Image(
                                 systemName: localModelURL == nil
                                     ? "arrow.down.circle"
@@ -351,15 +438,23 @@ private struct ModelsProvidersView: View {
                                 Text(
                                     localModelURL == nil
                                         ? "Model not downloaded"
-                                        : "Available in shared Hugging Face cache"
+                                        : "Available in the shared Hugging Face cache"
                                 )
                                 .font(.headline)
-                                Text(
-                                    localModelURL?.path
-                                        ?? HuggingFaceModelCache.defaultRoot()
-                                            .path
-                                )
-                                .font(.caption.monospaced())
+                                Text(profile.qualityNote)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if profile.minimumUnifiedMemoryGB > 0 {
+                                    Text(
+                                        "Recommended minimum: "
+                                            + "\(profile.minimumUnifiedMemoryGB) GB "
+                                            + "unified memory"
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                }
+                                Text(localModelURL?.path ?? profile.repository)
+                                    .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
                                 .lineLimit(2)
@@ -406,81 +501,31 @@ private struct ModelsProvidersView: View {
                             }
                         }
                     }
-
-                    Divider()
-                    HStack {
-                        Spacer()
-                        Button("Use Local Runtime") {
-                            providerStore.setSelection(.local)
-                        }
-                    }
                 }
 
-                SettingsSection(title: "Supported Local Models") {
-                    ForEach(LocalModelProfiles.all) { profile in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text(profile.displayName)
-                                    .font(.headline)
-                                Spacer()
-                                Text("llama.cpp")
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(.secondary)
-                            }
-                            Text(profile.qualityNote)
-                                .font(.caption)
+                SettingsSection(title: "Local Runtime") {
+                    Grid(
+                        alignment: .leading,
+                        horizontalSpacing: 12,
+                        verticalSpacing: 8
+                    ) {
+                        GridRow {
+                            Text("Server URL")
                                 .foregroundStyle(.secondary)
-                            HStack(spacing: 14) {
-                                Label(
-                                    "\(profile.minimumUnifiedMemoryGB) GB unified memory",
-                                    systemImage: "memorychip"
-                                )
-                                Label(
-                                    profile.modelFile ?? profile.repository,
-                                    systemImage: "shippingbox"
-                                )
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
+                            TextField(
+                                "http://127.0.0.1:18473/v1",
+                                text: localBaseURL
+                            )
+                            .textFieldStyle(.roundedBorder)
                         }
-                        .padding(.vertical, 5)
-                    }
-                }
-
-                SettingsSection(title: "Remote Providers") {
-                    if providerStore.configuration.remoteProviders.isEmpty {
-                        Text(
-                            "Add an OpenAI-compatible endpoint. API keys are "
-                                + "stored separately in your login Keychain."
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-
-                    ForEach(
-                        Array(
-                            providerStore.configuration.remoteProviders
-                                .enumerated()
-                        ),
-                        id: \.element.id
-                    ) { index, provider in
-                        if index > 0 {
-                            Divider()
-                        }
-                        RemoteProviderEditor(
-                            provider: provider,
-                            store: providerStore
-                        )
-                    }
-
-                    Divider()
-                    HStack {
-                        Spacer()
-                        Button {
-                            addRemoteProvider()
-                        } label: {
-                            Label("Add Provider", systemImage: "plus")
+                        GridRow {
+                            Text("Maximum length")
+                                .foregroundStyle(.secondary)
+                            Stepper(
+                                "\(localConfiguration.maximumWords) words",
+                                value: localMaximumWords,
+                                in: 1...32
+                            )
                         }
                     }
                 }
@@ -491,6 +536,15 @@ private struct ModelsProvidersView: View {
             .frame(maxWidth: 900, alignment: .leading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear {
+            providerStore.refreshCachedLocalProfiles()
+            providerStore.refreshLocalModelDownloadStatus()
+            modelPickerSelection = localConfiguration.profileID
+        }
+        .onChange(of: localConfiguration.profileID) {
+            _, profileID in
+            modelPickerSelection = profileID
+        }
     }
 
     private var localConfiguration: LocalCompletionConfiguration {
@@ -498,7 +552,7 @@ private struct ModelsProvidersView: View {
     }
 
     private var selectedLocalProfile: LocalModelProfile? {
-        LocalModelProfiles.profile(id: localConfiguration.profileID)
+        localConfiguration.selectedProfile
     }
 
     private var localModelURL: URL? {
@@ -507,17 +561,37 @@ private struct ModelsProvidersView: View {
         }
     }
 
-    private var localProfileID: Binding<String> {
+    private var cachedProfiles: [LocalModelProfile] {
+        let recommendedKeys = Set(
+            LocalModelProfiles.all.map(profileCacheKey)
+        )
+        var profilesByID = Dictionary(
+            uniqueKeysWithValues: providerStore.cachedLocalProfiles.map {
+                ($0.id, $0)
+            }
+        )
+        if let selectedLocalProfile,
+           !recommendedKeys.contains(profileCacheKey(selectedLocalProfile)) {
+            profilesByID[selectedLocalProfile.id] = selectedLocalProfile
+        }
+        return profilesByID.values
+            .filter { !recommendedKeys.contains(profileCacheKey($0)) }
+            .sorted {
+                $0.displayName.localizedStandardCompare($1.displayName)
+                    == .orderedAscending
+            }
+    }
+
+    private var modelSelection: Binding<String> {
         Binding(
-            get: { localConfiguration.profileID },
-            set: {
-                providerStore.setLocalConfiguration(
-                    LocalCompletionConfiguration(
-                        profileID: $0,
-                        baseURL: localConfiguration.baseURL,
-                        maximumWords: localConfiguration.maximumWords
-                    )
-                )
+            get: { modelPickerSelection },
+            set: { selection in
+                modelPickerSelection = selection
+                guard selection != otherModelSelection else { return }
+                guard let profile = selectableProfile(id: selection) else {
+                    return
+                }
+                providerStore.selectLocalProfile(profile)
             }
         )
     }
@@ -529,6 +603,7 @@ private struct ModelsProvidersView: View {
                 providerStore.setLocalConfiguration(
                     LocalCompletionConfiguration(
                         profileID: localConfiguration.profileID,
+                        customProfile: localConfiguration.customProfile,
                         baseURL: $0,
                         maximumWords: localConfiguration.maximumWords
                     )
@@ -544,6 +619,7 @@ private struct ModelsProvidersView: View {
                 providerStore.setLocalConfiguration(
                     LocalCompletionConfiguration(
                         profileID: localConfiguration.profileID,
+                        customProfile: localConfiguration.customProfile,
                         baseURL: localConfiguration.baseURL,
                         maximumWords: $0
                     )
@@ -552,22 +628,35 @@ private struct ModelsProvidersView: View {
         )
     }
 
-    private func addRemoteProvider() {
-        let provider = RemoteProviderConfiguration(
-            displayName: "New Provider",
-            baseURL: "http://127.0.0.1:8080/v1",
-            model: "",
-            apiStyle: .chatCompletions
+    private var normalizedCustomModelID: String? {
+        HuggingFaceRepositorySelection.normalizedRepositoryID(
+            from: customModelID
         )
-        do {
-            try providerStore.upsert(provider, apiKey: nil)
-            providerStore.setSelection(
-                .remote(providerID: provider.id)
-            )
-        } catch {
-            // An empty credential only removes a nonexistent Keychain item.
-            // There is no useful recovery UI for that exceptional path here.
+    }
+
+    private var isDownloading: Bool {
+        if case .downloading = providerStore.localModelDownloadStatus {
+            return true
         }
+        return false
+    }
+
+    private func selectableProfile(id: String) -> LocalModelProfile? {
+        LocalModelProfiles.profile(id: id)
+            ?? cachedProfiles.first { $0.id == id }
+    }
+
+    private func profileCacheKey(_ profile: LocalModelProfile) -> String {
+        "\(profile.repository)\u{0}\(profile.modelFile ?? "")"
+    }
+
+    private func openHuggingFaceCache() {
+        let cacheURL = HuggingFaceModelCache.defaultRoot()
+        try? FileManager.default.createDirectory(
+            at: cacheURL,
+            withIntermediateDirectories: true
+        )
+        NSWorkspace.shared.open(cacheURL)
     }
 
     @ViewBuilder

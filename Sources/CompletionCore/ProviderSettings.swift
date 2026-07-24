@@ -60,7 +60,7 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
     public var remoteProviders: [RemoteProviderConfiguration]
 
     public init(
-        selection: ProviderSelection = .builtInDemo,
+        selection: ProviderSelection = .local,
         localConfiguration: LocalCompletionConfiguration = .init(
             profileID: "gemma-4-e2b-base",
             baseURL: "http://127.0.0.1:18473/v1",

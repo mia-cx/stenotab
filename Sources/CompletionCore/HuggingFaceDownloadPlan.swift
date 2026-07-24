@@ -87,6 +87,19 @@ public struct HuggingFaceDownloadPlan: Equatable, Sendable {
         )
     }
 
+    public static func blobIdentifier(
+        revision: String,
+        modelFile: String
+    ) -> String? {
+        guard isSafeCacheComponent(revision) else { return nil }
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in modelFile.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return revision + "-" + String(format: "%016llx", hash)
+    }
+
     private static func isSafeCacheComponent(_ value: String) -> Bool {
         guard !value.isEmpty, value != ".", value != ".." else {
             return false

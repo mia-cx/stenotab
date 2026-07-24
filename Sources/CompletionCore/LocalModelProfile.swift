@@ -73,16 +73,26 @@ public struct LocalCompletionConfiguration:
     Codable, Sendable, Equatable
 {
     public let profileID: String
+    public let customProfile: LocalModelProfile?
     public let baseURL: String
     public let maximumWords: Int
 
     public init(
         profileID: String,
+        customProfile: LocalModelProfile? = nil,
         baseURL: String,
         maximumWords: Int
     ) {
         self.profileID = profileID
+        self.customProfile = customProfile
         self.baseURL = baseURL
         self.maximumWords = maximumWords
+    }
+
+    public var selectedProfile: LocalModelProfile? {
+        if let customProfile, customProfile.id == profileID {
+            return customProfile
+        }
+        return LocalModelProfiles.profile(id: profileID)
     }
 }

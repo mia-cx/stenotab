@@ -32,12 +32,14 @@ final class ProviderSettingsStore: ObservableObject {
         [String: ConnectionTestStatus] = [:]
     @Published private(set) var localModelDownloadStatus:
         LocalModelDownloadStatus = .idle
+    @Published private(set) var cachedLocalProfiles: [LocalModelProfile] = []
 
     private let defaults: UserDefaults
     private let credentialVault: any ProviderCredentialVault
     private let modelDownloader = HuggingFaceModelDownloader()
     private let storageKey = "provider-settings.v1"
     private var modelDownloadTask: Task<Void, Never>?
+    private var cacheRefreshTask: Task<Void, Never>?
 
     init(
         defaults: UserDefaults = .standard,
@@ -46,6 +48,7 @@ final class ProviderSettingsStore: ObservableObject {
     ) {
         self.defaults = defaults
         self.credentialVault = credentialVault
+        var loadedConfiguration: ProviderSettings
         if
             let data = defaults.data(forKey: storageKey),
             let saved = try? JSONDecoder().decode(
@@ -53,15 +56,18 @@ final class ProviderSettingsStore: ObservableObject {
                 from: data
             )
         {
-            configuration = saved
+            loadedConfiguration = saved
         } else if let legacy = ProviderFactory.localConfiguration() {
-            configuration = ProviderSettings(
+            loadedConfiguration = ProviderSettings(
                 selection: .local,
                 localConfiguration: legacy
             )
         } else {
-            configuration = ProviderSettings()
+            loadedConfiguration = ProviderSettings()
         }
+        loadedConfiguration.selection = .local
+        configuration = loadedConfiguration
+        refreshCachedLocalProfiles()
         refreshLocalModelDownloadStatus()
     }
 
@@ -77,6 +83,26 @@ final class ProviderSettingsStore: ObservableObject {
             return
         }
         configuration.localConfiguration = localConfiguration
+    }
+
+    func selectLocalProfile(_ profile: LocalModelProfile) {
+        var next = configuration
+        next.selection = .local
+        next.localConfiguration = LocalCompletionConfiguration(
+            profileID: profile.id,
+            customProfile:
+                LocalModelProfiles.profile(id: profile.id) == nil
+                    ? profile
+                    : nil,
+            baseURL: configuration.localConfiguration.baseURL,
+            maximumWords: configuration.localConfiguration.maximumWords
+        )
+        guard next != configuration else {
+            refreshLocalModelDownloadStatus()
+            return
+        }
+        configuration = next
+        refreshLocalModelDownloadStatus()
     }
 
     func upsert(
@@ -100,7 +126,7 @@ final class ProviderSettingsStore: ObservableObject {
         try credentialVault.setCredential(nil, for: id)
         configuration.remoteProviders.removeAll { $0.id == id }
         if configuration.selection == .remote(providerID: id) {
-            configuration.selection = .builtInDemo
+            configuration.selection = .local
         }
     }
 
@@ -152,9 +178,7 @@ final class ProviderSettingsStore: ObservableObject {
     func downloadSelectedLocalModel() {
         guard
             modelDownloadTask == nil,
-            let profile = LocalModelProfiles.profile(
-                id: configuration.localConfiguration.profileID
-            )
+            let profile = configuration.localConfiguration.selectedProfile
         else {
             return
         }
@@ -183,7 +207,57 @@ final class ProviderSettingsStore: ObservableObject {
                 guard let self else { return }
                 localModelDownloadStatus = .ready(modelURL)
                 modelDownloadTask = nil
-                setSelection(.local)
+                refreshCachedLocalProfiles()
+                if configuration.selection == .local {
+                    onChange?()
+                } else {
+                    setSelection(.local)
+                }
+            } catch is CancellationError {
+                guard let self else { return }
+                localModelDownloadStatus = .idle
+                modelDownloadTask = nil
+            } catch {
+                guard let self else { return }
+                localModelDownloadStatus = .failed(
+                    error.localizedDescription
+                )
+                modelDownloadTask = nil
+            }
+        }
+    }
+
+    func downloadCustomLocalModel(repository: String) {
+        guard modelDownloadTask == nil else { return }
+        localModelDownloadStatus = .downloading(
+            receivedBytes: 0,
+            totalBytes: nil
+        )
+        modelDownloadTask = Task { [weak self, modelDownloader] in
+            do {
+                let profile = try await modelDownloader.resolveProfile(
+                    repository: repository
+                )
+                let modelURL: URL
+                if let cachedURL = HuggingFaceModelCache.modelURL(for: profile) {
+                    modelURL = cachedURL
+                } else {
+                    modelURL = try await modelDownloader.download(
+                        profile: profile
+                    ) { progress in
+                        await MainActor.run {
+                            self?.localModelDownloadStatus = .downloading(
+                                receivedBytes: progress.receivedBytes,
+                                totalBytes: progress.totalBytes
+                            )
+                        }
+                    }
+                }
+                guard let self else { return }
+                modelDownloadTask = nil
+                refreshCachedLocalProfiles()
+                selectLocalProfile(profile)
+                localModelDownloadStatus = .ready(modelURL)
             } catch is CancellationError {
                 guard let self else { return }
                 localModelDownloadStatus = .idle
@@ -204,9 +278,7 @@ final class ProviderSettingsStore: ObservableObject {
 
     func refreshLocalModelDownloadStatus() {
         guard
-            let profile = LocalModelProfiles.profile(
-                id: configuration.localConfiguration.profileID
-            ),
+            let profile = configuration.localConfiguration.selectedProfile,
             let modelURL = HuggingFaceModelCache.modelURL(for: profile)
         else {
             if case .downloading = localModelDownloadStatus {
@@ -216,6 +288,18 @@ final class ProviderSettingsStore: ObservableObject {
             return
         }
         localModelDownloadStatus = .ready(modelURL)
+    }
+
+    func refreshCachedLocalProfiles() {
+        cacheRefreshTask?.cancel()
+        cacheRefreshTask = Task { [weak self] in
+            let profiles = await Task.detached(priority: .utility) {
+                HuggingFaceModelCache.cachedProfiles()
+            }.value
+            guard !Task.isCancelled else { return }
+            self?.cachedLocalProfiles = profiles
+            self?.cacheRefreshTask = nil
+        }
     }
 
     private func persist() {

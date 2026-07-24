@@ -63,6 +63,25 @@ final class HuggingFaceDownloadPlanTests: XCTestCase {
         )
     }
 
+    func testBlobIdentifierIsSafeForNestedModelFilenames() throws {
+        let identifier = try XCTUnwrap(
+            HuggingFaceDownloadPlan.blobIdentifier(
+                revision: "abc123",
+                modelFile: "quantized/model.Q4_K_M.gguf"
+            )
+        )
+
+        XCTAssertTrue(identifier.hasPrefix("abc123-"))
+        XCTAssertFalse(identifier.contains("/"))
+        XCTAssertEqual(
+            identifier,
+            HuggingFaceDownloadPlan.blobIdentifier(
+                revision: "abc123",
+                modelFile: "quantized/model.Q4_K_M.gguf"
+            )
+        )
+    }
+
     func testInstallerPublishesOnlyACompleteSnapshot() throws {
         let root = FileManager.default.temporaryDirectory.appending(
             path: UUID().uuidString,

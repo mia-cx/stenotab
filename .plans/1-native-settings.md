@@ -68,7 +68,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
   login, provider/model configuration, Keychain credentials, OCR privacy
   controls, shortcuts, diagnostics, and general settings beyond app policy.
 
-## Follow-up slice: permissions and runtime diagnostics
+## Follow-up slice: setup and runtime diagnostics
 
 ### Acceptance criteria
 
@@ -83,7 +83,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - [x] Extend the permission model and coordinator with optional Screen
       Recording status and actions.
 - [x] Add an observable runtime-status bridge shared by the menu and Settings.
-- [x] Add Permissions and Models & Providers pages to the settings sidebar.
+- [x] Add Setup and Models pages to the settings sidebar.
 - [x] Run focused and full validation, then record the remaining issue scope.
 
 ### Notes
@@ -93,8 +93,8 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - `swift test --filter PermissionStateTests` passes (3 tests).
 - Permission and model transitions now flow through `RuntimeStatusStore`; the
   existing menu reads the same structured status that Settings will observe.
-- Permissions reports both permissions with request and System Settings actions.
-- The Permissions page also links to Keyboard settings with the exact Text
+- Setup reports both permissions with request and System Settings actions.
+- Setup also links to Keyboard settings with the exact Text
   Input controls to disable Apple's competing inline predictions and suggested
   replies.
 - Models & Providers shows the active runtime plus honest metadata for supported
@@ -149,8 +149,34 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - Full `swift test` passes (96 tests).
 - Production app build succeeds with stable Apple Development signing and Team
   ID `VJKBGC9AMK`.
-- This slice does not yet download missing local models or bundle/install
-  `llama-server`; it configures and starts an already available local setup.
+
+## Follow-up slice: focused local model setup
+
+### Acceptance criteria
+
+- [x] Setup includes launch-at-login alongside external macOS setup.
+- [x] Models presents a disabled provider picker fixed to Local.
+- [x] Models explains the llama.cpp runtime and shared Hugging Face cache and
+      can open that cache in Finder.
+- [x] The model picker combines recommendations and arbitrary cached GGUFs.
+- [x] Other accepts a Hugging Face repository ID or URL and downloads a
+      preferred single-file GGUF into the shared cache.
+- [x] Existing provider settings decode safely and custom/cached profiles
+      persist across launches.
+
+### Notes
+
+- Remote-provider configuration and Keychain support remain implemented behind
+  the UI, but the current provider surface intentionally exposes Local only.
+- Cached model discovery runs off the main actor and deduplicates recommended
+  profiles that are already downloaded.
+- Custom repositories prefer Q4_K_M and reject sharded-only GGUF repositories
+  until multi-file loading is deliberately supported.
+- Focused model selection, cache discovery, legacy decoding, repository input,
+  and cache-layout tests pass (13 tests).
+- Full `swift test` passes (105 tests).
+- Production app build succeeds with stable Apple Development signing and Team
+  ID `VJKBGC9AMK`.
 
 ## Follow-up slice: local model management
 
@@ -176,8 +202,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
   completion length; choosing local applies immediately through the provider
   controller.
 - The UI resolves the same standard Hugging Face cache path used at runtime,
-  reveals downloaded files in Finder, and links missing profiles to their model
-  page until in-app download lands.
+  reveals downloaded files in Finder, and downloads missing profiles in-app.
 - The download planner produces the standard repository `blobs/`,
   `snapshots/<revision>/`, and `refs/main` paths and rejects traversal in
   server-supplied revision/ETag identifiers.

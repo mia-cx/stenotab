@@ -22,7 +22,8 @@ let package = Package(
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("CoreText"),
                 .linkedFramework("IOKit"),
-                .linkedFramework("Security")
+                .linkedFramework("Security"),
+                .linkedFramework("ServiceManagement")
             ]
         ),
         .testTarget(
