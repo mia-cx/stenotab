@@ -32,6 +32,21 @@ public enum CompletionSanitizer {
                 "task:",
                 "text:",
                 "insertion:",
+                "some examples of my writing:",
+                "my writing:",
+                "my text so far, up to the part i am currently typing:",
+                "the part of my writing i am currently typing:",
+                "what comes right after the part i am currently typing:",
+                "application i am typing in:",
+                "website i am typing on:",
+                "kind of input i am typing in:",
+                "text visible on screen around where i am typing:",
+                "recent examples of my writing:",
+                "what i have noticed about my writing:",
+                "my writing style:",
+                "i am typing the text at the end on my mac",
+                "i'm writing this on my mac",
+                "i'm writing a message in ",
             ].contains(where: visibleStart.hasPrefix) {
             return ""
         }

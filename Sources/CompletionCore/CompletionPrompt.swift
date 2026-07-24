@@ -35,6 +35,16 @@ public enum CompletionPrompt {
         PromptResources.baseBeforeCursorHeading
     private static let baseCurrentPartHeading =
         PromptResources.baseCurrentPartHeading
+    private static let seedExamplesHeading =
+        PromptResources.seedExamplesHeading
+    private static let seedWritingExamples =
+        PromptResources.seedWritingExamples
+    private static let baseWritingPrefix =
+        PromptResources.baseWritingPrefix
+    private static let baseApplicationConnector =
+        PromptResources.baseApplicationConnector
+    private static let baseWebsiteConnector =
+        PromptResources.baseWebsiteConnector
 
     public static let systemInstruction =
         PromptConfiguration.defaultSystemInstruction
@@ -45,14 +55,20 @@ public enum CompletionPrompt {
         context: CompletionContext,
         configuration: PromptConfiguration
     ) -> ComposedCompletionPrompt {
-        let sections = contextSections(
+        let chatSections = contextSections(
             context,
-            configuration: configuration
+            configuration: configuration,
+            useFirstPersonApplicationContext: false
+        )
+        let baseSections = contextSections(
+            context,
+            configuration: configuration,
+            useFirstPersonApplicationContext: true
         )
         let userMessage = chatUser(
             prefix: prefix,
             suffix: suffix,
-            contextSections: sections,
+            contextSections: chatSections,
             configuration: configuration
         )
         return ComposedCompletionPrompt(
@@ -62,8 +78,12 @@ public enum CompletionPrompt {
             textCompletionPrompt: base(
                 prefix: prefix,
                 suffix: suffix,
-                contextSections: sections,
-                configuration: configuration
+                contextSections: baseSections,
+                configuration: configuration,
+                includeSeedExamples: shouldIncludeSeedExamples(
+                    context,
+                    configuration: configuration
+                )
             )
         )
     }
@@ -79,7 +99,8 @@ public enum CompletionPrompt {
             suffix: suffix,
             contextSections: contextSections(
                 context,
-                configuration: configuration
+                configuration: configuration,
+                useFirstPersonApplicationContext: false
             ),
             configuration: configuration
         )
@@ -121,9 +142,14 @@ public enum CompletionPrompt {
             suffix: suffix,
             contextSections: contextSections(
                 context,
-                configuration: configuration
+                configuration: configuration,
+                useFirstPersonApplicationContext: true
             ),
-            configuration: configuration
+            configuration: configuration,
+            includeSeedExamples: shouldIncludeSeedExamples(
+                context,
+                configuration: configuration
+            )
         )
     }
 
@@ -131,10 +157,14 @@ public enum CompletionPrompt {
         prefix: String,
         suffix: String,
         contextSections: [String],
-        configuration: PromptConfiguration
+        configuration: PromptConfiguration,
+        includeSeedExamples: Bool
     ) -> String {
         var sections = [basePromptPrefix]
         sections.append(contentsOf: contextSections)
+        if includeSeedExamples {
+            sections.append(seedExamplesSection)
+        }
 
         if suffix.isEmpty {
             sections.append("\(baseWritingHeading)\n\(prefix)")
@@ -150,6 +180,14 @@ public enum CompletionPrompt {
             )
         }
         return sections.joined(separator: "\n\n")
+    }
+
+    private static var seedExamplesSection: String {
+        let examples = seedWritingExamples.map {
+            "\(baseWritingHeading)\n\($0)"
+        }
+        return ([seedExamplesHeading] + examples)
+            .joined(separator: "\n\n")
     }
 
     public static func previewExample(
@@ -174,7 +212,8 @@ public enum CompletionPrompt {
 
     private static func contextSections(
         _ context: CompletionContext,
-        configuration: PromptConfiguration
+        configuration: PromptConfiguration,
+        useFirstPersonApplicationContext: Bool
     ) -> [String] {
         var lines: [String] = []
         let options = configuration.context
@@ -192,7 +231,13 @@ public enum CompletionPrompt {
             lines.append("\(framing.inputKindPrefix) \(inputKind)")
         }
         var sections: [String] = []
-        if !lines.isEmpty {
+        if useFirstPersonApplicationContext,
+           let sentence = firstPersonApplicationContext(
+               context,
+               configuration: configuration
+           ) {
+            sections.append(sentence)
+        } else if !lines.isEmpty {
             sections.append(
                 "\(framing.contextHeading)\n"
                     + lines.joined(separator: "\n")
@@ -239,6 +284,70 @@ public enum CompletionPrompt {
         return sections
     }
 
+    private static func firstPersonApplicationContext(
+        _ context: CompletionContext,
+        configuration: PromptConfiguration
+    ) -> String? {
+        let options = configuration.context
+        let applicationName = options.includeCurrentApplication
+            ? bounded(context.applicationName, limit: 200)
+            : nil
+        let website = options.includeCurrentWebsite
+            ? bounded(context.website, limit: 500)
+            : nil
+        let inputKind = options.includeInputKind
+            ? inputNounPhrase(context.inputKind)
+            : nil
+        guard applicationName != nil || website != nil || inputKind != nil else {
+            return nil
+        }
+
+        var sentence = baseWritingPrefix
+        if let inputKind {
+            sentence += " \(inputKind)"
+        }
+        if let website {
+            sentence += " \(baseWebsiteConnector) \(website)"
+        }
+        if let applicationName {
+            sentence += " \(baseApplicationConnector) \(applicationName)"
+        }
+        return sentence + "."
+    }
+
+    private static func inputNounPhrase(_ value: String?) -> String? {
+        guard let value = nonempty(value)?.lowercased() else { return nil }
+        if value.contains("comment") {
+            return "a comment"
+        }
+        if value.contains("reply") {
+            return "a reply"
+        }
+        if value.contains("message")
+            || value.contains("chat")
+            || value.contains("rich-text") {
+            return "a message"
+        }
+        if value.contains("search") {
+            return "a search query"
+        }
+        if value.contains("email") || value.contains("mail") {
+            return "an email"
+        }
+        if value.contains("document")
+            || value.contains("multi-line")
+            || value.contains("text area") {
+            return "a document"
+        }
+        if value.contains("code") {
+            return "code"
+        }
+        if value.contains("post") {
+            return "a post"
+        }
+        return "some text"
+    }
+
     private static func appendOptionalSection(
         title: String,
         value: String?,
@@ -264,6 +373,14 @@ public enum CompletionPrompt {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func shouldIncludeSeedExamples(
+        _ context: CompletionContext,
+        configuration: PromptConfiguration
+    ) -> Bool {
+        !configuration.voice.includeInputHistory
+            || nonempty(context.inputHistory) == nil
     }
 
     private static func currentPart(of prefix: String) -> String {

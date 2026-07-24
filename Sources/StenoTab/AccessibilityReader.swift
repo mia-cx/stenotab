@@ -128,35 +128,17 @@ final class AccessibilityReader {
             applicationName: frontmostApp?.localizedName,
             applicationBundleIdentifier: frontmostApp?.bundleIdentifier,
             applicationBundleURL: frontmostApp?.bundleURL,
-            inputKind: inputKind(
+            inputKind: InputKindInference.classify(
                 role: role,
                 subrole: subrole,
-                isWebBacked: appIsWebBacked
+                isWebBacked: appIsWebBacked,
+                semanticHints: [
+                    stringAttribute("AXPlaceholderValue", from: focused),
+                    stringAttribute(kAXDescriptionAttribute, from: focused),
+                    stringAttribute(kAXTitleAttribute, from: focused),
+                ].compactMap { $0 }
             )
         )
-    }
-
-    private func inputKind(
-        role: String?,
-        subrole: String?,
-        isWebBacked: Bool
-    ) -> String? {
-        if isWebBacked,
-           role == kAXTextAreaRole as String
-            || role == "AXEditableText"
-            || subrole == "AXEditableText" {
-            return "message or rich-text input"
-        }
-        if role == kAXTextAreaRole as String {
-            return "multi-line text area"
-        }
-        if role == kAXTextFieldRole as String {
-            return "text field"
-        }
-        if role == kAXComboBoxRole as String {
-            return "combo box"
-        }
-        return role ?? subrole
     }
 
     private static func isWebBacked(bundleIdentifier: String) -> Bool {

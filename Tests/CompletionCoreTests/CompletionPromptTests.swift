@@ -54,8 +54,11 @@ final class CompletionPromptTests: XCTestCase {
             "I am typing the text at the end on my Mac. "
                 + "Additional context; some of it could be irrelevant:"
         ))
-        XCTAssertTrue(prompt.contains("Application I am typing in: ChatGPT"))
-        XCTAssertTrue(prompt.contains("Website I am typing on: chatgpt.com"))
+        XCTAssertTrue(prompt.contains(
+            "I'm writing a message on chatgpt.com in ChatGPT."
+        ))
+        XCTAssertFalse(prompt.contains("Application I am typing in:"))
+        XCTAssertFalse(prompt.contains("Kind of input I am typing in:"))
         XCTAssertTrue(prompt.contains("Relevant copied text"))
         XCTAssertTrue(prompt.contains("My writing style:\nUse concise sentences."))
         XCTAssertTrue(prompt.contains(
@@ -111,7 +114,7 @@ final class CompletionPromptTests: XCTestCase {
         }
     }
 
-    func testDebugFramingChangesBothRequestStyles() {
+    func testStructuredFramingChangesChatWhileBaseUsesFirstPersonContext() {
         var configuration = PromptConfiguration.defaults
         configuration.framing.applicationPrefix = "Working inside:"
         configuration.framing.textHeading = "Literal user text:"
@@ -126,6 +129,9 @@ final class CompletionPromptTests: XCTestCase {
         XCTAssertTrue(composed.userMessage.contains("Working inside: Xcode"))
         XCTAssertTrue(composed.userMessage.contains("Literal user text:\nship it"))
         XCTAssertTrue(
+            composed.textCompletionPrompt.contains("I'm writing in Xcode.")
+        )
+        XCTAssertFalse(
             composed.textCompletionPrompt.contains("Working inside: Xcode")
         )
         XCTAssertTrue(
@@ -157,6 +163,51 @@ final class CompletionPromptTests: XCTestCase {
         XCTAssertTrue(prompt.hasSuffix("My writing:\nDo anyt"))
         XCTAssertFalse(prompt.contains("What comes next:"))
         XCTAssertFalse(prompt.contains("Continue the"))
+    }
+
+    func testBasePromptUsesBundledSeedWritingUntilHistoryIsAvailable() {
+        let seeded = CompletionPrompt.base(
+            prefix: "yo what's up",
+            suffix: "",
+            context: CompletionContext(),
+            configuration: .defaults
+        )
+
+        XCTAssertTrue(seeded.contains("Some examples of my writing:"))
+        XCTAssertTrue(seeded.contains("My writing:\nhey, are you around later?"))
+        XCTAssertTrue(seeded.contains(
+            "My writing:\nI'm not sure why it's doing that."
+        ))
+        XCTAssertTrue(seeded.hasSuffix("My writing:\nyo what's up"))
+
+        var withHistory = PromptConfiguration.defaults
+        withHistory.voice.includeInputHistory = true
+        let personalized = CompletionPrompt.base(
+            prefix: "yo what's up",
+            suffix: "",
+            context: CompletionContext(
+                inputHistory: "yo, did you see the update?"
+            ),
+            configuration: withHistory
+        )
+
+        XCTAssertFalse(personalized.contains("Some examples of my writing:"))
+        XCTAssertFalse(personalized.contains("hey, are you around later?"))
+        XCTAssertTrue(personalized.contains(
+            "Recent examples of my writing:\nyo, did you see the update?"
+        ))
+    }
+
+    func testChatPromptDoesNotReceiveLocalBaseModelSeeds() {
+        let userMessage = CompletionPrompt.chatUser(
+            prefix: "yo what's up",
+            suffix: "",
+            context: CompletionContext(),
+            configuration: .defaults
+        )
+
+        XCTAssertFalse(userMessage.contains("Some examples of my writing:"))
+        XCTAssertFalse(userMessage.contains("hey, are you around later?"))
     }
 
     func testBundledMarkdownProvidesEveryPromptDefault() {

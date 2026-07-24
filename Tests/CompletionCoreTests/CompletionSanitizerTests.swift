@@ -107,6 +107,11 @@ final class CompletionSanitizerTests: XCTestCase {
             "Relevant input history: hello",
             "User voice assessment: casual",
             "Custom voice: concise",
+            "Some examples of my writing:",
+            "My writing:",
+            "I am typing the text at the end on my Mac.",
+            "I'm writing this on my Mac",
+            "I'm writing a message in ChatGPT.",
         ] {
             XCTAssertEqual(
                 CompletionSanitizer.sanitize(
