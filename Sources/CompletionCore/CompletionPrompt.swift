@@ -6,7 +6,8 @@ public struct CompletionContext: Sendable, Equatable {
     public let inputKind: String?
     public let ocrContent: String?
     public let clipboardContent: String?
-    public let userVoice: String?
+    public let inputHistory: String?
+    public let voiceAssessment: String?
 
     public init(
         applicationName: String? = nil,
@@ -14,50 +15,87 @@ public struct CompletionContext: Sendable, Equatable {
         inputKind: String? = nil,
         ocrContent: String? = nil,
         clipboardContent: String? = nil,
-        userVoice: String? = nil
+        inputHistory: String? = nil,
+        voiceAssessment: String? = nil
     ) {
         self.applicationName = applicationName
         self.website = website
         self.inputKind = inputKind
         self.ocrContent = ocrContent
         self.clipboardContent = clipboardContent
-        self.userVoice = userVoice
+        self.inputHistory = inputHistory
+        self.voiceAssessment = voiceAssessment
     }
 }
 
 public enum CompletionPrompt {
     public static let systemInstruction =
-        "Continue the user's current text at the cursor. Match their voice. "
-        + "Produce only text that should be inserted."
+        PromptConfiguration.defaultSystemInstruction
+
+    public static func compose(
+        prefix: String,
+        suffix: String,
+        context: CompletionContext,
+        configuration: PromptConfiguration
+    ) -> ComposedCompletionPrompt {
+        let sections = contextSections(
+            context,
+            configuration: configuration
+        )
+        let userMessage = chatUser(
+            prefix: prefix,
+            suffix: suffix,
+            contextSections: sections,
+            configuration: configuration
+        )
+        return ComposedCompletionPrompt(
+            systemMessage: nonempty(configuration.systemInstruction)
+                ?? PromptConfiguration.defaultSystemInstruction,
+            userMessage: userMessage,
+            textCompletionPrompt: base(
+                prefix: prefix,
+                suffix: suffix,
+                contextSections: sections,
+                configuration: configuration
+            )
+        )
+    }
 
     public static func chatUser(
         prefix: String,
         suffix: String,
-        context: CompletionContext
+        context: CompletionContext,
+        configuration: PromptConfiguration = .defaults
     ) -> String {
-        var sections = ["Context:\n" + contextLines(context).joined(separator: "\n")]
-        appendOptionalSection(
-            title: "OCR content from snapshot:",
-            value: context.ocrContent,
-            to: &sections
+        chatUser(
+            prefix: prefix,
+            suffix: suffix,
+            contextSections: contextSections(
+                context,
+                configuration: configuration
+            ),
+            configuration: configuration
         )
-        appendOptionalSection(
-            title: "Clipboard content:",
-            value: context.clipboardContent,
-            to: &sections
-        )
-        appendOptionalSection(
-            title: "User Voice:",
-            value: context.userVoice,
-            to: &sections
-        )
+    }
+
+    private static func chatUser(
+        prefix: String,
+        suffix: String,
+        contextSections: [String],
+        configuration: PromptConfiguration
+    ) -> String {
+        var sections = contextSections
         if !suffix.isEmpty {
-            sections.append("Text after the cursor:\n\(suffix)")
+            sections.append(
+                "\(configuration.framing.suffixHeading)\n\(suffix)"
+            )
         }
         sections.append(
-            "Continue the following text, continuing from the cursor. "
-                + "Match the user's voice. Produce only what should be inserted.\n"
-                + prefix
+            [
+                normalizedInstruction(configuration.completionInstruction),
+                configuration.framing.textHeading,
+                prefix,
+            ].joined(separator: "\n")
         )
         return sections.joined(separator: "\n\n")
     }
@@ -68,78 +106,163 @@ public enum CompletionPrompt {
     public static func base(
         prefix: String,
         suffix: String,
-        context: CompletionContext
+        context: CompletionContext,
+        configuration: PromptConfiguration = .defaults
     ) -> String {
-        """
-        Task: Continue the final Text value. Output only the characters to insert.
-
-        Text: The package should arrive
-        Insertion: tomorrow
-
-        Text: lol that was so
-        Insertion: weird
-
-        Text: Would you mind
-        Insertion: checking this?
-
-        Text: \(prefix)
-        Insertion:
-        """
+        base(
+            prefix: prefix,
+            suffix: suffix,
+            contextSections: contextSections(
+                context,
+                configuration: configuration
+            ),
+            configuration: configuration
+        )
     }
 
-    /// A compact lexical task for a word that the system spell checker says is
-    /// unfinished. Keeping this separate prevents ordinary continuation from
-    /// deciding that `anyt` is a complete token.
-    public static func wordSuffix(prefix: String) -> String {
-        """
-        Text: I will see you tom
-        Continuation: orrow
-
-        Text: I am currently ty
-        Continuation: ping
-
-        Text: This is incred
-        Continuation: ible
-
-        Text: We can do anyth
-        Continuation: ing
-
-        Text: \(prefix)
-        Continuation:
-        """
+    private static func base(
+        prefix: String,
+        suffix: String,
+        contextSections: [String],
+        configuration: PromptConfiguration
+    ) -> String {
+        let completionInstruction = normalizedInstruction(
+            configuration.completionInstruction
+        )
+        var sections = ["Task: \(completionInstruction)"]
+        sections.append(contentsOf: contextSections)
+        let examples = [
+            "Literal insertion examples:",
+            "Text: The package should arrive\nInsertion: tomorrow",
+            "Text: hello \nInsertion:world",
+            "Text: I am currently ty\nInsertion:ping",
+            "Text: We can do anyt\nInsertion:hing",
+            "Text: thank\nInsertion: you",
+            "Text: every\nInsertion:thing",
+            "Text: thank you \nInsertion:very much",
+            "Text: Would you mind\nInsertion: checking this?",
+        ].joined(separator: "\n\n")
+        sections.insert(examples, at: 1)
+        if !suffix.isEmpty {
+            sections.append(
+                "\(configuration.framing.suffixHeading)\n\(suffix)"
+            )
+        }
+        sections.append(
+            """
+            Text: \(prefix)
+            Insertion:
+            """
+        )
+        return sections.joined(separator: "\n\n")
     }
 
-    private static func contextLines(
-        _ context: CompletionContext
+    public static func previewExample(
+        configuration: PromptConfiguration
+    ) -> ComposedCompletionPrompt {
+        compose(
+            prefix: "I think the best next step is",
+            suffix: "",
+            context: CompletionContext(
+                applicationName: "Messages",
+                website: "example.com",
+                inputKind: "message box",
+                ocrContent: "Alex: Are you free to look at this tomorrow?",
+                clipboardContent: "Draft review at 14:00",
+                inputHistory: "that makes sense\nyeah, I can take a look",
+                voiceAssessment:
+                    "Casual and concise; uses lowercase acknowledgements."
+            ),
+            configuration: configuration
+        )
+    }
+
+    private static func contextSections(
+        _ context: CompletionContext,
+        configuration: PromptConfiguration
     ) -> [String] {
         var lines: [String] = []
-        if let applicationName = nonempty(context.applicationName) {
-            if let website = nonempty(context.website) {
-                lines.append(
-                    "- The user is typing in: \(applicationName), on \(website)"
-                )
-            } else {
-                lines.append("- The user is typing in: \(applicationName)")
-            }
-        } else if let website = nonempty(context.website) {
-            lines.append("- The user is typing on: \(website)")
+        let options = configuration.context
+        let framing = configuration.framing
+        if options.includeCurrentApplication,
+           let applicationName = bounded(context.applicationName, limit: 200) {
+            lines.append("\(framing.applicationPrefix) \(applicationName)")
         }
-        if let inputKind = nonempty(context.inputKind) {
-            lines.append("- Kind of input: \(inputKind)")
+        if options.includeCurrentWebsite,
+           let website = bounded(context.website, limit: 500) {
+            lines.append("\(framing.websitePrefix) \(website)")
         }
-        if lines.isEmpty {
-            lines.append("- No application metadata is available.")
+        if options.includeInputKind,
+           let inputKind = bounded(context.inputKind, limit: 120) {
+            lines.append("\(framing.inputKindPrefix) \(inputKind)")
         }
-        return lines
+        var sections: [String] = []
+        if !lines.isEmpty {
+            sections.append(
+                "\(framing.contextHeading)\n"
+                    + lines.joined(separator: "\n")
+            )
+        }
+        if options.includeOCR {
+            appendOptionalSection(
+                title: framing.ocrHeading,
+                value: context.ocrContent,
+                limit: 4_000,
+                to: &sections
+            )
+        }
+        if options.includeClipboard {
+            appendOptionalSection(
+                title: framing.clipboardHeading,
+                value: context.clipboardContent,
+                limit: 2_000,
+                to: &sections
+            )
+        }
+        if configuration.voice.includeInputHistory {
+            appendOptionalSection(
+                title: framing.inputHistoryHeading,
+                value: context.inputHistory,
+                limit: 3_000,
+                to: &sections
+            )
+        }
+        if configuration.voice.includePeriodicAssessments {
+            appendOptionalSection(
+                title: framing.assessmentHeading,
+                value: context.voiceAssessment,
+                limit: 1_500,
+                to: &sections
+            )
+        }
+        appendOptionalSection(
+            title: framing.customVoiceHeading,
+            value: configuration.voice.customVoice,
+            limit: 2_000,
+            to: &sections
+        )
+        return sections
     }
 
     private static func appendOptionalSection(
         title: String,
         value: String?,
+        limit: Int,
         to sections: inout [String]
     ) {
-        guard let value = nonempty(value) else { return }
+        guard let value = bounded(value, limit: limit) else { return }
         sections.append("\(title)\n\(value)")
+    }
+
+    private static func normalizedInstruction(
+        _ value: String,
+        fallback: String = PromptConfiguration.defaultCompletionInstruction
+    ) -> String {
+        nonempty(value) ?? fallback
+    }
+
+    private static func bounded(_ value: String?, limit: Int) -> String? {
+        nonempty(value).map { String($0.prefix(limit)) }
     }
 
     private static func nonempty(_ value: String?) -> String? {

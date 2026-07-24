@@ -19,9 +19,9 @@ final class PartialWordCompletionTests: XCTestCase {
     func testSanitizesFewShotOutputToOnlyTheMissingLetters() {
         let fixtures = [
             ("anyt", " hing\n\nText: something", "hing"),
-            ("anyth", " ing", "ing"),
+            ("anyth", "ing", "ing"),
             ("anythi", " ng", "ng"),
-            ("anythin", " g", "g"),
+            ("anythin", "g", "g"),
         ]
 
         for (fragment, raw, expected) in fixtures {
@@ -40,36 +40,38 @@ final class PartialWordCompletionTests: XCTestCase {
     func testRejectsScaffoldingAndRepeatedFragments() {
         XCTAssertNil(
             PartialWordCompletion.sanitize(
-                " Continuation: ing",
+                "Continuation: ing",
                 after: "anyth",
                 candidates: ["anything"]
             )
         )
         XCTAssertNil(
             PartialWordCompletion.sanitize(
-                " anyth",
+                "anyth",
                 after: "anyth",
                 candidates: ["anything"]
             )
         )
     }
 
-    func testRepairsInvalidAndRepeatedModelSuffixesUsingDictionaryCandidates() {
-        XCTAssertEqual(
+    func testDoesNotForceAnUnrelatedNextWordIntoADictionarySuffix() {
+        XCTAssertNil(
             PartialWordCompletion.sanitize(
-                " ing",
-                after: "anyt",
-                candidates: ["anything", "anytime"]
-            ),
-            "hing"
+                "you",
+                after: "thank",
+                candidates: ["thanks", "thankful", "thanking"]
+            )
         )
+    }
+
+    func testPreservesFollowingWordsAfterAValidatedSuffix() {
         XCTAssertEqual(
             PartialWordCompletion.sanitize(
-                " inginginginginging",
+                "hing else entirely",
                 after: "anyt",
                 candidates: ["anything", "anytime"]
             ),
-            "hing"
+            "hing else entirely"
         )
     }
 

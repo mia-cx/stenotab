@@ -6,6 +6,7 @@ struct CompletionRequest: Sendable {
     let prefix: String
     let suffix: String
     let context: CompletionContext
+    let promptConfiguration: PromptConfiguration
     let partialWordFragment: String?
     let partialWordCandidates: [String]
 }
@@ -82,26 +83,19 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
 
         switch apiStyle {
         case .textCompletions:
-            let prompt: String
-            let maxTokens: Int
-            if request.partialWordFragment != nil {
-                prompt = CompletionPrompt.wordSuffix(prefix: request.prefix)
-                maxTokens = 6
-            } else {
-                prompt = CompletionPrompt.base(
-                    prefix: String(request.prefix.suffix(1_500)),
-                    suffix: String(request.suffix.prefix(300)),
-                    context: request.context
-                )
-                maxTokens = 16
-            }
+            let prompt = CompletionPrompt.compose(
+                prefix: String(request.prefix.suffix(1_500)),
+                suffix: String(request.suffix.prefix(300)),
+                context: request.context,
+                configuration: request.promptConfiguration
+            ).textCompletionPrompt
             urlRequest.httpBody = try? JSONEncoder().encode(
                 TextCompletionBody(
                     model: model,
                     prompt: prompt,
-                    maxTokens: maxTokens,
+                    maxTokens: 16,
                     temperature: 0,
-                    stop: ["\n"]
+                    stop: nil
                 )
             )
         case .gemmaChatPrefill:
@@ -114,14 +108,15 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                     ),
                     maxTokens: 16,
                     temperature: 0,
-                    stop: ["<turn|>", "\n"]
+                    stop: ["<turn|>"]
                 )
             )
         case .chatCompletions:
-            let prompt = CompletionPrompt.chatUser(
+            let prompt = CompletionPrompt.compose(
                 prefix: String(request.prefix.suffix(1_500)),
                 suffix: String(request.suffix.prefix(300)),
-                context: request.context
+                context: request.context,
+                configuration: request.promptConfiguration
             )
             urlRequest.httpBody = try? JSONEncoder().encode(
                 ChatCompletionBody(
@@ -129,13 +124,13 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                     messages: [
                         .init(
                             role: "system",
-                            content: CompletionPrompt.systemInstruction
+                            content: prompt.systemMessage
                         ),
-                        .init(role: "user", content: prompt),
+                        .init(role: "user", content: prompt.userMessage),
                     ],
                     maxTokens: 16,
                     temperature: 0,
-                    stop: ["\n"]
+                    stop: nil
                 )
             )
         }
@@ -150,21 +145,36 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                 $0.text ?? $0.message?.content
             }
             let text = rawText.flatMap { raw -> String? in
+                let beginsWithInsertionWhitespace =
+                    beginsWithHorizontalWhitespaceAfterFormattingNewlines(raw)
                 if
                     apiStyle == .textCompletions,
-                    let fragment = request.partialWordFragment
-                {
-                    return PartialWordCompletion.sanitize(
+                    let fragment = request.partialWordFragment,
+                    let partial = PartialWordCompletion.sanitize(
                         raw,
                         after: fragment,
                         candidates: request.partialWordCandidates
                     )
+                {
+                    return CompletionSanitizer.sanitize(
+                        partial,
+                        after: request.prefix,
+                        maximumWords: maximumWords,
+                        inferLeadingSpace: false
+                    )
                 }
+                let shouldInferMissingSeparator =
+                    apiStyle == .textCompletions
+                    && request.partialWordFragment != nil
+                    && !request.partialWordCandidates.isEmpty
+                    && !beginsWithInsertionWhitespace
                 return CompletionSanitizer.sanitize(
                     raw,
                     after: request.prefix,
                     maximumWords: maximumWords,
-                    inferLeadingSpace: apiStyle == .chatCompletions
+                    inferLeadingSpace:
+                        apiStyle == .chatCompletions
+                        || shouldInferMissingSeparator
                 )
             }
             return CompletionResponse(
@@ -174,6 +184,16 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
         } catch {
             return CompletionResponse(requestID: request.id, text: nil)
         }
+    }
+
+    private func beginsWithHorizontalWhitespaceAfterFormattingNewlines(
+        _ value: String
+    ) -> Bool {
+        var remainder = value[...]
+        while remainder.first == "\n" || remainder.first == "\r" {
+            remainder.removeFirst()
+        }
+        return remainder.first == " " || remainder.first == "\t"
     }
 }
 
@@ -187,7 +207,7 @@ private struct ChatCompletionBody: Encodable {
     let messages: [Message]
     let maxTokens: Int
     let temperature: Double
-    let stop: [String]
+    let stop: [String]?
 
     enum CodingKeys: String, CodingKey {
         case model, messages, temperature, stop
@@ -200,7 +220,7 @@ private struct TextCompletionBody: Encodable {
     let prompt: String
     let maxTokens: Int
     let temperature: Double
-    let stop: [String]
+    let stop: [String]?
 
     enum CodingKeys: String, CodingKey {
         case model, prompt, temperature, stop

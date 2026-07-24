@@ -8,6 +8,9 @@ public enum CompletionSanitizer {
         guard maximumWords > 0 else { return "" }
 
         var candidate = rawCompletion
+        while candidate.first == "\n" || candidate.first == "\r" {
+            candidate.removeFirst()
+        }
         let visibleStart = candidate.drop(while: \.isWhitespace)
             .lowercased()
         if visibleStart.hasPrefix("[")
@@ -16,9 +19,13 @@ public enum CompletionSanitizer {
                 "context:",
                 "ocr content from snapshot:",
                 "clipboard content:",
-                "user voice:",
+                "relevant input history:",
+                "user voice assessment:",
+                "custom voice:",
                 "text before cursor:",
                 "text after cursor:",
+                "current application:",
+                "current website:",
                 "application:",
                 "kind of input:",
                 "text to continue:",
@@ -62,6 +69,13 @@ public enum CompletionSanitizer {
         }
         while limited.last?.isWhitespace == true {
             limited.removeLast()
+        }
+
+        if prefix.last?.isWhitespace == true {
+            while limited.first?.isWhitespace == true {
+                limited.removeFirst()
+            }
+            return limited
         }
 
         guard

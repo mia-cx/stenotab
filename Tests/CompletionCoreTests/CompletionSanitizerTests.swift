@@ -40,6 +40,27 @@ final class CompletionSanitizerTests: XCTestCase {
         )
     }
 
+    func testRemovesGeneratedSeparatorWhenPrefixAlreadyEndsInWhitespace() {
+        XCTAssertEqual(
+            CompletionSanitizer.sanitize(
+                " very much",
+                after: "thank you ",
+                maximumWords: 8,
+                inferLeadingSpace: false
+            ),
+            "very much"
+        )
+        XCTAssertEqual(
+            CompletionSanitizer.sanitize(
+                "world",
+                after: "hello ",
+                maximumWords: 8,
+                inferLeadingSpace: false
+            ),
+            "world"
+        )
+    }
+
     func testPreservesExactPartialWordContinuationForPrefill() {
         XCTAssertEqual(
             CompletionSanitizer.sanitize(
@@ -52,12 +73,40 @@ final class CompletionSanitizerTests: XCTestCase {
         )
     }
 
+    func testLeadingFormattingNewlinesDoNotEraseAValidCompletion() {
+        XCTAssertEqual(
+            CompletionSanitizer.sanitize(
+                "\n\n the server is down\n\nContext:",
+                after: "I think",
+                maximumWords: 8,
+                inferLeadingSpace: false
+            ),
+            " the server is down"
+        )
+    }
+
+    func testOnlyTheFirstGeneratedContentLineIsUsedForInlineGhostText() {
+        XCTAssertEqual(
+            CompletionSanitizer.sanitize(
+                " the first line\nsecond generated line",
+                after: "Continue",
+                maximumWords: 8,
+                inferLeadingSpace: false
+            ),
+            " the first line"
+        )
+    }
+
     func testRejectsInternalPromptScaffolding() {
         for leaked in [
             "[Completion instructions]",
             "[Context]",
             "[Text before cursor]",
             "Completion instructions:",
+            "Current application: Discord",
+            "Relevant input history: hello",
+            "User voice assessment: casual",
+            "Custom voice: concise",
         ] {
             XCTAssertEqual(
                 CompletionSanitizer.sanitize(
