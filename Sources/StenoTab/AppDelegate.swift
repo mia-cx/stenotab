@@ -40,6 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             promptConfiguration: { [promptSettings] in
                 promptSettings.configuration
             },
+            applicationCompletionsAreEnabled: {
+                [applicationPolicy] bundleIdentifier in
+                applicationPolicy.completionsAreEnabled(
+                    for: bundleIdentifier
+                )
+            },
             onApplicationObserved: { [applicationPolicy] observation in
                 applicationPolicy.record(observation)
             },

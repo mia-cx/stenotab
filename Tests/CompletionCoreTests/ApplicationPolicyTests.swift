@@ -39,6 +39,17 @@ final class ApplicationPolicyTests: XCTestCase {
         XCTAssertNil(state.overrides["com.example.editor"])
     }
 
+    func testUnknownApplicationIdentityFallsBackToGlobalPolicy() {
+        XCTAssertTrue(
+            ApplicationPolicyState(globalCompletionsEnabled: true)
+                .completionsAreEnabled(for: nil)
+        )
+        XCTAssertFalse(
+            ApplicationPolicyState(globalCompletionsEnabled: false)
+                .completionsAreEnabled(for: nil)
+        )
+    }
+
     func testSecureObservationsAreNeverRecorded() {
         var state = ApplicationPolicyState()
 

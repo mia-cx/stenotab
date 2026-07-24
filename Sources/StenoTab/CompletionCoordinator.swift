@@ -14,6 +14,8 @@ final class CompletionCoordinator: NSObject {
     private let overlay = SuggestionOverlay()
     private let provider: any CompletionProvider
     private let promptConfiguration: @MainActor () -> PromptConfiguration
+    private let applicationCompletionsAreEnabled:
+        @MainActor (String?) -> Bool
     private let onApplicationObserved:
         @MainActor (ApplicationObservation) -> Void
     private let onSuggestionAccepted: @MainActor (String) -> Void
@@ -60,6 +62,9 @@ final class CompletionCoordinator: NSObject {
         promptConfiguration: @escaping @MainActor () -> PromptConfiguration = {
             .defaults
         },
+        applicationCompletionsAreEnabled: @escaping @MainActor (
+            String?
+        ) -> Bool = { _ in true },
         onApplicationObserved: @escaping @MainActor (
             ApplicationObservation
         ) -> Void = { _ in },
@@ -67,6 +72,8 @@ final class CompletionCoordinator: NSObject {
     ) {
         self.provider = provider
         self.promptConfiguration = promptConfiguration
+        self.applicationCompletionsAreEnabled =
+            applicationCompletionsAreEnabled
         self.onApplicationObserved = onApplicationObserved
         self.onSuggestionAccepted = onSuggestionAccepted
         super.init()
@@ -164,7 +171,11 @@ final class CompletionCoordinator: NSObject {
     }
 
     private func handle(_ mutation: ShadowTextBuffer.Mutation) {
-        guard enabled else { return }
+        guard enabled, policyAllowsCurrentApplication() else {
+            invalidatePendingCompletion()
+            clearSuggestion()
+            return
+        }
         buffer.apply(mutation)
 
         if case let .insert(text) = mutation,
@@ -206,6 +217,11 @@ final class CompletionCoordinator: NSObject {
 
     private func reconcile() {
         guard enabled else {
+            clearSuggestion()
+            return
+        }
+        guard policyAllowsCurrentApplication() else {
+            invalidatePendingCompletion()
             clearSuggestion()
             return
         }
@@ -261,6 +277,12 @@ final class CompletionCoordinator: NSObject {
         }
     }
 
+    private func policyAllowsCurrentApplication() -> Bool {
+        applicationCompletionsAreEnabled(
+            accessibility.frontmostApplicationBundleIdentifier()
+        )
+    }
+
     private func recordApplicationObservation(from snapshot: EditorSnapshot) {
         guard
             let bundleIdentifier = snapshot.applicationBundleIdentifier,
@@ -280,7 +302,10 @@ final class CompletionCoordinator: NSObject {
     }
 
     private func scheduleCompletion() {
-        guard CompletionRequestPolicy.shouldRequest(prefix: buffer.prefix) else {
+        guard
+            policyAllowsCurrentApplication(),
+            CompletionRequestPolicy.shouldRequest(prefix: buffer.prefix)
+        else {
             invalidatePendingCompletion()
             clearSuggestion()
             return
@@ -305,6 +330,11 @@ final class CompletionCoordinator: NSObject {
     }
 
     private func prepare(_ request: CompletionRequest) -> Bool {
+        guard policyAllowsCurrentApplication() else {
+            invalidatePendingCompletion()
+            clearSuggestion()
+            return false
+        }
         guard let snapshot = accessibility.snapshot() ?? lastSnapshot else {
             return false
         }
@@ -409,6 +439,7 @@ final class CompletionCoordinator: NSObject {
     private func receive(_ response: CompletionResponse) {
         guard
             enabled,
+            policyAllowsCurrentApplication(),
             response.requestID == newestRequestID,
             let text = response.text,
             let preparedRequestSnapshot,
@@ -504,7 +535,14 @@ final class CompletionCoordinator: NSObject {
     private func acceptSuggestion(
         scope: SuggestionAcceptance.Scope
     ) -> Bool {
-        guard enabled, let suggestion, !suggestion.isEmpty else { return false }
+        guard
+            enabled,
+            policyAllowsCurrentApplication(),
+            let suggestion,
+            !suggestion.isEmpty
+        else {
+            return false
+        }
         caretReanchorTask?.cancel()
         let acceptance = SuggestionAcceptance.slice(
             in: suggestion,

@@ -31,7 +31,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 
 - [x] Add pure, Codable app-policy and seen-app domain models with tests.
 - [x] Add a persistent application-policy store and app-observation boundary.
-- [ ] Enforce app policy before completion/context work and test the gating rule.
+- [x] Enforce app policy before completion/context work and test the gating rule.
 - [ ] Add the focused-app menu toggle with live state.
 - [ ] Add a searchable App Settings page backed by the same live store.
 - [ ] Run the full test suite and signed production build; document residual
@@ -48,3 +48,7 @@ launch-at-login, and shortcut editing for later slices of the broad issue.
 - App target compiles after wiring `ApplicationPolicyStore`; observations are
   emitted only from successful non-secure editor snapshots and persistence is
   throttled to at most once per app per minute when metadata is unchanged.
+- Policy is checked from the frontmost bundle identifier before taking an AX
+  editor snapshot, building clipboard context, dispatching a request, accepting
+  a suggestion, or delivering a queued response.
+- `swift test --filter ApplicationPolicyTests` passes (6 tests).

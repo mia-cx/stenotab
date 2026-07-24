@@ -83,6 +83,15 @@ public struct ApplicationPolicyState: Codable, Equatable, Sendable {
         }
     }
 
+    public func completionsAreEnabled(
+        for bundleIdentifier: String?
+    ) -> Bool {
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else {
+            return globalCompletionsEnabled
+        }
+        return completionsAreEnabled(for: bundleIdentifier)
+    }
+
     public mutating func setPolicyOverride(
         _ policyOverride: ApplicationPolicyOverride,
         for bundleIdentifier: String

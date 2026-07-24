@@ -41,6 +41,10 @@ final class AccessibilityReader {
         _ = AXIsProcessTrustedWithOptions(options)
     }
 
+    func frontmostApplicationBundleIdentifier() -> String? {
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+    }
+
     func snapshot() -> EditorSnapshot? {
         guard AXIsProcessTrusted() else { return nil }
 

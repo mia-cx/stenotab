@@ -42,7 +42,7 @@ final class ApplicationPolicyStore: ObservableObject {
         }
     }
 
-    func completionsAreEnabled(for bundleIdentifier: String) -> Bool {
+    func completionsAreEnabled(for bundleIdentifier: String?) -> Bool {
         state.completionsAreEnabled(for: bundleIdentifier)
     }
 
