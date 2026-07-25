@@ -307,6 +307,12 @@ public enum CompletionEpisodePendingResolutionPolicy {
 }
 
 public enum CompletionEpisodeLiveEditorPolicy {
+    public static func requiresVerification(
+        activeInvocationID: UUID?
+    ) -> Bool {
+        activeInvocationID != nil
+    }
+
     public static func allowsCapture(
         activeEditorIdentifier: String?,
         liveEditorIdentifier: String?

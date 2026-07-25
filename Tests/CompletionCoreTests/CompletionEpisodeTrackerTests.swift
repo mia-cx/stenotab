@@ -222,6 +222,16 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
     }
 
     func testCaptureRequiresLiveSnapshotFromActiveEditor() {
+        XCTAssertFalse(
+            CompletionEpisodeLiveEditorPolicy.requiresVerification(
+                activeInvocationID: nil
+            )
+        )
+        XCTAssertTrue(
+            CompletionEpisodeLiveEditorPolicy.requiresVerification(
+                activeInvocationID: UUID()
+            )
+        )
         XCTAssertTrue(
             CompletionEpisodeLiveEditorPolicy.allowsCapture(
                 activeEditorIdentifier: "editor",

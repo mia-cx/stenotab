@@ -362,22 +362,29 @@ final class CompletionCoordinator: NSObject {
             )
             return
         }
-        let liveEditorIdentifier = accessibility.snapshot()?.editorIdentifier
-        guard
-            CompletionEpisodeLiveEditorPolicy.allowsCapture(
-                activeEditorIdentifier: lastSnapshot?.editorIdentifier,
-                liveEditorIdentifier: liveEditorIdentifier
-            )
-        else {
-            invalidatePendingCompletion()
-            clearOCRContext()
-            buffer.apply(.invalidate)
-            deferCompletionEpisodeFinalization(
-                resolution:
-                    completionEpisodeTracker.abandonedSuggestionResolution,
-                requiresPostEventObservation: true
-            )
-            return
+        if CompletionEpisodeLiveEditorPolicy.requiresVerification(
+            activeInvocationID:
+                completionEpisodeTracker.activeInvocationID
+        ) {
+            let liveEditorIdentifier =
+                accessibility.snapshot()?.editorIdentifier
+            guard
+                CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                    activeEditorIdentifier: lastSnapshot?.editorIdentifier,
+                    liveEditorIdentifier: liveEditorIdentifier
+                )
+            else {
+                invalidatePendingCompletion()
+                clearOCRContext()
+                buffer.apply(.invalidate)
+                deferCompletionEpisodeFinalization(
+                    resolution:
+                        completionEpisodeTracker
+                        .abandonedSuggestionResolution,
+                    requiresPostEventObservation: true
+                )
+                return
+            }
         }
         if
             case .focusChange = mutation,
