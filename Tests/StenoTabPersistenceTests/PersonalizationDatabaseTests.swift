@@ -1530,6 +1530,156 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertNil(assessment)
     }
 
+    func testRetentionWithoutEvictionPreservesDerivedProjections()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = PersonalLanguageModel()
+        let assessment = VoiceAssessment(
+            summary: "I write concise messages.",
+            sampleCount: 10,
+            sourceEventCount: 10,
+            generatedAt: Date(timeIntervalSince1970: 5_000)
+        )
+        try await fixture.database.saveLanguageModel(model)
+        try await fixture.database.saveVoiceAssessment(assessment)
+
+        let removed = try await fixture.database.enforceRetention(
+            PersonalizationRetentionPolicy(
+                maximumAge: nil,
+                maximumEncryptedBytes: nil
+            )
+        )
+
+        XCTAssertEqual(removed, 0)
+        let retainedModel =
+            try await fixture.database.loadLanguageModel()
+        let retainedAssessment =
+            try await fixture.database.loadVoiceAssessment()
+        XCTAssertEqual(retainedModel, model)
+        XCTAssertEqual(retainedAssessment, assessment)
+    }
+
+    func testKindCorruptionBlocksDestructiveChunkPruning() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let unrelated = makeEpisode(
+            id: UUID(),
+            text: "unrelated",
+            app: "com.example.Writer",
+            editor: "writer"
+        )
+        let completion = makeCompletionEpisode(
+            id: UUID(),
+            input: String(repeating: "private completion input ", count: 100),
+            suggestion: " suggestion",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 5_100)
+        )
+        try await fixture.database.record(unrelated)
+        try await fixture.database.record(completion)
+        let storageBefore =
+            try await fixture.database.completionEpisodeStorageStatistics()
+        try await fixture.database.replaceEventKindForTesting(
+            eventID: completion.id,
+            kind: "corrupted_kind"
+        )
+
+        do {
+            try await fixture.database.deleteEvent(id: unrelated.id)
+            XCTFail("Expected kind corruption to block deletion")
+        } catch {
+            XCTAssertEqual(
+                error as? PersonalizationPersistenceError,
+                .unsupportedEventKind("corrupted_kind")
+            )
+        }
+
+        let storageAfterFailedDeletion =
+            try await fixture.database.completionEpisodeStorageStatistics()
+        XCTAssertEqual(storageAfterFailedDeletion, storageBefore)
+        try await fixture.database.replaceEventKindForTesting(
+            eventID: completion.id,
+            kind: "completion_episode"
+        )
+        let restoredEpisodes =
+            try await fixture.database.completionEpisodes()
+        XCTAssertEqual(restoredEpisodes, [completion])
+    }
+
+    func testKnownKindSubstitutionBlocksDestructiveChunkPruning()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let unrelated = makeEpisode(
+            id: UUID(),
+            text: "unrelated",
+            app: "com.example.Writer",
+            editor: "writer"
+        )
+        let completion = makeCompletionEpisode(
+            id: UUID(),
+            input: String(repeating: "private completion input ", count: 100),
+            suggestion: " suggestion",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 5_150)
+        )
+        try await fixture.database.record(unrelated)
+        try await fixture.database.record(completion)
+        let storageBefore =
+            try await fixture.database.completionEpisodeStorageStatistics()
+        try await fixture.database.replaceEventKindForTesting(
+            eventID: completion.id,
+            kind: "writing_episode"
+        )
+
+        do {
+            try await fixture.database.deleteEvent(id: unrelated.id)
+            XCTFail("Expected semantic kind mismatch to block deletion")
+        } catch {}
+
+        let storageAfterFailedDeletion =
+            try await fixture.database.completionEpisodeStorageStatistics()
+        XCTAssertEqual(storageAfterFailedDeletion, storageBefore)
+    }
+
+    func testRecordingRejectsCorruptedReusedTextChunk() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let input = String(repeating: "shared private block ", count: 100)
+        let first = makeCompletionEpisode(
+            id: UUID(),
+            input: input,
+            suggestion: " first",
+            outcome: " first outcome",
+            date: Date(timeIntervalSince1970: 5_200)
+        )
+        try await fixture.database.record(first)
+        let swapped = try await fixture.database
+            .swapFirstTwoTextChunkPayloadsForTesting()
+        XCTAssertTrue(swapped)
+        let second = makeCompletionEpisode(
+            id: UUID(),
+            input: input,
+            suggestion: " second",
+            outcome: " second outcome",
+            date: Date(timeIntervalSince1970: 5_201)
+        )
+
+        do {
+            try await fixture.database.record(second)
+            XCTFail("Expected corrupted shared chunk reuse to fail")
+        } catch {
+            XCTAssertTrue(
+                String(describing: error).contains("HMAC mismatch")
+            )
+        }
+        let eventCount = try await fixture.database.eventCount()
+        XCTAssertEqual(eventCount, 1)
+    }
+
     private func makeDatabase() throws -> (
         database: PersonalizationDatabase,
         directory: URL

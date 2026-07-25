@@ -76,6 +76,9 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     private let defaults: UserDefaults
     private var collectionGeneration: UInt64 = 0
+    private var completionEpisodeDeleteAllBoundary: Date?
+    private var completionEpisodeApplicationDeletionBoundaries:
+        [String: Date] = [:]
     private var database: PersonalizationDatabase?
     private var isHistoryInspectorVisible = false
     private var modelWorker: PersonalizationModelWorker?
@@ -189,6 +192,7 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func deleteAll() {
         guard let modelWorker else { return }
+        completionEpisodeDeleteAllBoundary = Date()
         collectionGeneration &+= 1
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
@@ -275,6 +279,18 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func record(_ episode: CompletionEpisodeCapture) {
         guard collectionEnabled, let modelWorker else { return }
+        let applicationDeletedAt =
+            episode.invocation.context.applicationBundleIdentifier
+                .flatMap {
+                    completionEpisodeApplicationDeletionBoundaries[$0]
+                }
+        guard CompletionEpisodeDeletionBoundaryPolicy.allowsCapture(
+            invocationStartedAt: episode.invocation.startedAt,
+            deleteAllAt: completionEpisodeDeleteAllBoundary,
+            applicationDeletedAt: applicationDeletedAt
+        ) else {
+            return
+        }
         let policy = retentionPolicy
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
@@ -335,6 +351,8 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func deleteApplicationHistory(bundleIdentifier: String) {
         guard let modelWorker else { return }
+        completionEpisodeApplicationDeletionBoundaries[bundleIdentifier] =
+            Date()
         collectionGeneration &+= 1
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
@@ -718,22 +736,15 @@ actor PersonalizationModelWorker {
     private func sourceEventIDs(
         from examples: [PersonalizationExample]
     ) -> [UUID] {
-        examples.reduce(into: []) { result, example in
-            let sourceEventID = example.sourceEventID ?? example.id
-            if !result.contains(sourceEventID) {
-                result.append(sourceEventID)
-            }
+        examples.map { example in
+            example.sourceEventID ?? example.id
         }
     }
 
     private func sourceContexts(
         from examples: [PersonalizationExample]
     ) -> [PersonalizationContext] {
-        examples.reduce(into: []) { result, example in
-            if !result.contains(example.context) {
-                result.append(example.context)
-            }
-        }
+        examples.map(\.context)
     }
 
     private func rebuild() async throws -> PersonalLanguageModel {

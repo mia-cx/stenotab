@@ -1176,6 +1176,21 @@ public actor PersonalizationDatabase {
                     .integer(Int64(Self.keyVersion)),
                 ]
             )
+            if
+                connection.changedRowCount == 0,
+                !referencedChunks.contains(chunkHMAC)
+            {
+                var chunkCache: [Data: Data] = [:]
+                let authenticatedChunk = try loadTextChunk(
+                    chunkHMAC,
+                    chunkCache: &chunkCache
+                )
+                guard authenticatedChunk == chunk else {
+                    throw PersonalizationPersistenceError.database(
+                        "Completion episode text chunk content mismatch"
+                    )
+                }
+            }
             chunkHMACs.append(chunkHMAC)
             referencedChunks.insert(chunkHMAC)
             offset = end
@@ -1849,6 +1864,8 @@ public actor PersonalizationDatabase {
         try connection.transaction {
             try rebuildCompletionEpisodeIndexes()
             try rebuildSupportedEventTimestamps()
+            var removedCanonicalEvents =
+                try eventCount() < countBefore
             if let maximumAge = policy.maximumAge {
                 let cutoff = now.addingTimeInterval(-maximumAge)
                 try connection.execute(
@@ -1862,15 +1879,22 @@ public actor PersonalizationDatabase {
                         )
                     ]
                 )
-                try pruneUnusedTextChunks()
+                removedCanonicalEvents =
+                    removedCanonicalEvents || connection.changedRowCount > 0
             }
 
-            // Derived projections are reproducible and may already be stale
-            // after age/source cascades. Do not evict canonical events to pay
-            // for bytes that this transaction will remove.
-            try invalidateDerivedProjections()
+            if removedCanonicalEvents {
+                try invalidateDerivedProjections()
+                try pruneUnusedTextChunks()
+            }
             if let maximumBytes = policy.maximumEncryptedBytes {
                 var payloadBytes = try encryptedPayloadBytes()
+                if payloadBytes > maximumBytes {
+                    // Derived projections are reproducible. Drop them before
+                    // evicting canonical events to meet a storage cap.
+                    try invalidateDerivedProjections()
+                    payloadBytes = try encryptedPayloadBytes()
+                }
                 while payloadBytes > maximumBytes {
                     let oldestID = try connection.query(
                         """
@@ -1896,6 +1920,7 @@ public actor PersonalizationDatabase {
     }
 
     private func rebuildCompletionEpisodeIndexes() throws {
+        try validateEventRowsForDestructiveOperation()
         let episodes = try supportedStoredCompletionEpisodes()
         var chunkCache: [Data: Data] = [:]
         for episode in episodes {
@@ -1962,6 +1987,77 @@ public actor PersonalizationDatabase {
                         .text(sourceEventID.uuidString),
                     ]
                 )
+            }
+        }
+    }
+
+    private func validateEventRowsForDestructiveOperation() throws {
+        let rows = try connection.query(
+            """
+            SELECT id, kind, payload_sealed, payload_hmac
+            FROM personalization_event
+            ORDER BY sequence ASC
+            """
+        )
+        for row in rows {
+            guard let kind = row.text(at: 1) else {
+                throw PersonalizationPersistenceError.database(
+                    "Invalid personalization event row"
+                )
+            }
+            let payload = try validatedEventPayload(
+                row,
+                idIndex: 0,
+                kindIndex: 1,
+                payloadIndex: 2,
+                hmacIndex: 3,
+                expectedKind: kind
+            )
+            switch kind {
+            case Self.acceptedSuggestionKind:
+                _ = try decoder.decode(
+                    AcceptedSuggestionCapture.self,
+                    from: payload
+                )
+            case Self.completionFeedbackKind:
+                _ = try decoder.decode(
+                    CompletionFeedbackCapture.self,
+                    from: payload
+                )
+            case Self.writingEpisodeKind:
+                _ = try decoder.decode(
+                    WritingEpisodeCapture.self,
+                    from: payload
+                )
+            case Self.completionEpisodeKind:
+                if
+                    let header = try? decoder.decode(
+                        StoredCompletionEpisodeHeader.self,
+                        from: payload
+                    )
+                {
+                    guard
+                        header.storageVersion
+                            == StoredCompletionEpisode.currentStorageVersion
+                    else {
+                        throw PersonalizationPersistenceError.database(
+                            "Unsupported completion episode storage version "
+                                + "\(header.storageVersion)"
+                        )
+                    }
+                    _ = try decoder.decode(
+                        StoredCompletionEpisode.self,
+                        from: payload
+                    )
+                } else {
+                    _ = try decoder.decode(
+                        CompletionEpisodeCapture.self,
+                        from: payload
+                    )
+                }
+            default:
+                throw PersonalizationPersistenceError
+                    .unsupportedEventKind(kind)
             }
         }
     }

@@ -2,7 +2,7 @@ import XCTest
 @testable import CompletionCore
 
 final class CompletionEpisodeTrackerTests: XCTestCase {
-    func testReconciliationWaitsIndefinitelyForChangedAuthoritativeField() {
+    func testReconciliationWaitsForChangedAuthoritativeFieldBeforeDeadline() {
         let before = CapturedFieldState(
             text: "before",
             selection: UTF16Selection(location: 6, length: 0)
@@ -17,7 +17,48 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
             observedEditorIdentifier: "editor",
             authoritativeBaselineField: before,
             expectedField: expected,
-            observedField: before
+            observedField: before,
+            observationDeadlineExceeded: false
+        )
+
+        XCTAssertEqual(decision, .waitForAuthoritativeChange)
+    }
+
+    func testReconciliationUsesUnchangedAuthoritativeFieldAfterDeadline() {
+        let before = CapturedFieldState(
+            text: "before",
+            selection: UTF16Selection(location: 6, length: 0)
+        )
+        let expected = CapturedFieldState(
+            text: "before after",
+            selection: UTF16Selection(location: 12, length: 0)
+        )
+
+        let decision = CompletionEpisodeReconciliationPolicy.decision(
+            previousEditorIdentifier: "editor",
+            observedEditorIdentifier: "editor",
+            authoritativeBaselineField: before,
+            expectedField: expected,
+            observedField: before,
+            observationDeadlineExceeded: true
+        )
+
+        XCTAssertEqual(decision, .reconcile)
+    }
+
+    func testPassThroughEventWaitsForPostEventObservation() {
+        let unchanged = CapturedFieldState(
+            text: "before",
+            selection: UTF16Selection(location: 6, length: 0)
+        )
+
+        let decision = CompletionEpisodeReconciliationPolicy.decision(
+            previousEditorIdentifier: "editor",
+            observedEditorIdentifier: "editor",
+            authoritativeBaselineField: unchanged,
+            expectedField: unchanged,
+            observedField: unchanged,
+            requiresPostEventObservation: true
         )
 
         XCTAssertEqual(decision, .waitForAuthoritativeChange)
@@ -44,7 +85,7 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
         XCTAssertEqual(decision, .reconcile)
     }
 
-    func testFocusChangeDiscardsUnconfirmedPredictedEdit() {
+    func testFocusChangeFinalizesFromLastAuthoritativeField() {
         let authoritative = CapturedFieldState(
             text: "before",
             selection: UTF16Selection(location: 6, length: 0)
@@ -65,7 +106,36 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(decision, .discardUnconfirmedAndReconcile)
+        XCTAssertEqual(
+            decision,
+            .finalizeFromAuthoritativeBaselineAndReconcile
+        )
+    }
+
+    func testDeletionBoundaryRejectsOnlyPreDeletionInvocations() {
+        let startedAt = Date(timeIntervalSince1970: 100)
+
+        XCTAssertFalse(
+            CompletionEpisodeDeletionBoundaryPolicy.allowsCapture(
+                invocationStartedAt: startedAt,
+                deleteAllAt: Date(timeIntervalSince1970: 101),
+                applicationDeletedAt: nil
+            )
+        )
+        XCTAssertFalse(
+            CompletionEpisodeDeletionBoundaryPolicy.allowsCapture(
+                invocationStartedAt: startedAt,
+                deleteAllAt: nil,
+                applicationDeletedAt: Date(timeIntervalSince1970: 101)
+            )
+        )
+        XCTAssertTrue(
+            CompletionEpisodeDeletionBoundaryPolicy.allowsCapture(
+                invocationStartedAt: Date(timeIntervalSince1970: 102),
+                deleteAllAt: Date(timeIntervalSince1970: 101),
+                applicationDeletedAt: Date(timeIntervalSince1970: 101)
+            )
+        )
     }
 
     func testUnchangedInvalidationReconcilesWithoutPolling() {

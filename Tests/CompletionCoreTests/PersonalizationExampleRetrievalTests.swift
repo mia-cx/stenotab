@@ -60,6 +60,59 @@ final class PersonalizationExampleRetrievalTests: XCTestCase {
         )
     }
 
+    func testPromptLineageExcludesRecordsBeyondPromptCharacterLimit() {
+        let ids = [UUID(), UUID(), UUID()]
+        let contexts = ids.indices.map {
+            PersonalizationContext(
+                applicationBundleIdentifier: "com.example.\($0)",
+                editorIdentifier: "editor-\($0)"
+            )
+        }
+        let records = [
+            String(repeating: "a", count: 2_900),
+            String(repeating: "b", count: 200),
+            "not included",
+        ]
+        let context = PersonalizationPromptContext(
+            frecentExamples: records.joined(
+                separator:
+                    PersonalizationExample.promptRecordSeparator
+            ),
+            frecentSourceEventIDs: ids,
+            frecentSourceContexts: contexts
+        )
+
+        XCTAssertEqual(
+            context.sourceEventIDs(
+                includeFrecent: true,
+                includeRelevant: false
+            ),
+            Array(ids.prefix(2))
+        )
+        XCTAssertEqual(
+            context.sourceContexts(
+                includeFrecent: true,
+                includeRelevant: false
+            ),
+            Array(contexts.prefix(2))
+        )
+
+        let separatorAtBoundary = PersonalizationPromptContext(
+            frecentExamples:
+                String(repeating: "a", count: 2_999)
+                + PersonalizationExample.promptRecordSeparator
+                + "not included",
+            frecentSourceEventIDs: ids
+        )
+        XCTAssertEqual(
+            separatorAtBoundary.sourceEventIDs(
+                includeFrecent: true,
+                includeRelevant: false
+            ),
+            Array(ids.prefix(1))
+        )
+    }
+
     func testExampleUsesLiteralTextAndInsertionFormat() {
         let example = PersonalizationExample(
             id: UUID(),

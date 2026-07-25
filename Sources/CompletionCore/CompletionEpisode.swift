@@ -223,7 +223,7 @@ public enum CompletionEpisodeReconciliationDecision:
 {
     case waitForAuthoritativeChange
     case reconcile
-    case discardUnconfirmedAndReconcile
+    case finalizeFromAuthoritativeBaselineAndReconcile
 }
 
 public enum CompletionEpisodeReconciliationPolicy {
@@ -232,7 +232,9 @@ public enum CompletionEpisodeReconciliationPolicy {
         observedEditorIdentifier: String,
         authoritativeBaselineField: CapturedFieldState?,
         expectedField: CapturedFieldState?,
-        observedField: CapturedFieldState
+        observedField: CapturedFieldState,
+        requiresPostEventObservation: Bool = false,
+        observationDeadlineExceeded: Bool = false
     ) -> CompletionEpisodeReconciliationDecision {
         guard
             let authoritativeBaselineField,
@@ -244,18 +246,38 @@ public enum CompletionEpisodeReconciliationPolicy {
             previousEditorIdentifier != observedEditorIdentifier
         if
             !focusChanged,
-            expectedField != authoritativeBaselineField,
-            observedField == authoritativeBaselineField
+            observedField == authoritativeBaselineField,
+            (
+                expectedField != authoritativeBaselineField
+                    || requiresPostEventObservation
+            ),
+            !observationDeadlineExceeded
         {
             return .waitForAuthoritativeChange
         }
-        if
-            focusChanged,
-            expectedField != authoritativeBaselineField
-        {
-            return .discardUnconfirmedAndReconcile
+        if focusChanged {
+            return .finalizeFromAuthoritativeBaselineAndReconcile
         }
         return .reconcile
+    }
+}
+
+public enum CompletionEpisodeDeletionBoundaryPolicy {
+    public static func allowsCapture(
+        invocationStartedAt: Date,
+        deleteAllAt: Date?,
+        applicationDeletedAt: Date?
+    ) -> Bool {
+        if let deleteAllAt, invocationStartedAt <= deleteAllAt {
+            return false
+        }
+        if
+            let applicationDeletedAt,
+            invocationStartedAt <= applicationDeletedAt
+        {
+            return false
+        }
+        return true
     }
 }
 

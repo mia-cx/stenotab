@@ -158,8 +158,22 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
         includeVoiceAssessment: Bool = false
     ) -> [UUID] {
         let candidates =
-            (includeFrecent ? frecentSourceEventIDs : [])
-            + (includeRelevant ? relevantSourceEventIDs : [])
+            (
+                includeFrecent
+                    ? promptSourcePrefix(
+                        frecentSourceEventIDs,
+                        examples: frecentExamples
+                    )
+                    : []
+            )
+            + (
+                includeRelevant
+                    ? promptSourcePrefix(
+                        relevantSourceEventIDs,
+                        examples: relevantExamples
+                    )
+                    : []
+            )
             + (includeVoiceAssessment ? voiceSourceEventIDs : [])
         return candidates.reduce(into: []) { result, id in
             if !result.contains(id) {
@@ -174,14 +188,55 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
         includeVoiceAssessment: Bool = false
     ) -> [PersonalizationContext] {
         let candidates =
-            (includeFrecent ? frecentSourceContexts : [])
-            + (includeRelevant ? relevantSourceContexts : [])
+            (
+                includeFrecent
+                    ? promptSourcePrefix(
+                        frecentSourceContexts,
+                        examples: frecentExamples
+                    )
+                    : []
+            )
+            + (
+                includeRelevant
+                    ? promptSourcePrefix(
+                        relevantSourceContexts,
+                        examples: relevantExamples
+                    )
+                    : []
+            )
             + (includeVoiceAssessment ? voiceSourceContexts : [])
         return candidates.reduce(into: []) { result, context in
             if !result.contains(context) {
                 result.append(context)
             }
         }
+    }
+
+    private func promptSourcePrefix<Value>(
+        _ sources: [Value],
+        examples: String?
+    ) -> [Value] {
+        guard
+            let examples,
+            !examples.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty
+        else {
+            return []
+        }
+        let bounded = String(examples.prefix(3_000))
+        let includedRecordCount = bounded
+            .components(
+                separatedBy:
+                    PersonalizationExample.promptRecordSeparator
+            )
+            .filter {
+                !$0.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ).isEmpty
+            }
+            .count
+        return Array(sources.prefix(includedRecordCount))
     }
 }
 
