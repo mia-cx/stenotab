@@ -172,6 +172,21 @@ final class SuggestionOverlay {
             backingScaleFactor: backingScaleFactor
         )
         frame.size = layout.size
+        if let presentation = preparedPresentation {
+            preparedPresentation = PreparedPresentation(
+                attributes: presentation.attributes,
+                linePlacement: PreparedOverlayLinePlacement(
+                    origin: frame.origin,
+                    height: layout.size.height,
+                    baselineOffset: layout.baselineOffset
+                ),
+                leadingWhitespaceCompensation:
+                    presentation.leadingWhitespaceCompensation,
+                nativeLineHeight: presentation.nativeLineHeight,
+                nativeBaselineOffsetFromTop:
+                    presentation.nativeBaselineOffsetFromTop
+            )
+        }
 
         panel.setFrame(frame, display: false)
         textView.frame = NSRect(origin: .zero, size: layout.size)

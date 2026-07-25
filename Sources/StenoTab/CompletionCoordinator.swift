@@ -44,6 +44,7 @@ final class CompletionCoordinator: NSObject {
     private var lastSnapshot: EditorSnapshot?
     private var suggestion: String?
     private var suggestionConsumption: SuggestionConsumption?
+    private var suggestionRequestID: UInt64?
     private var newestRequestID: UInt64 = 0
     private var preparedRequestSnapshot:
         (requestID: UInt64, snapshot: EditorSnapshot)?
@@ -63,9 +64,12 @@ final class CompletionCoordinator: NSObject {
     private var refillRequestID: UInt64 = 0
     private var consecutiveSnapshotFailures = 0
 
-    private lazy var requestPump = LatestRequestPump<CompletionRequest, CompletionResponse>(
+    private lazy var requestPump = LatestStreamPump<
+        CompletionRequest,
+        CompletionResponse
+    >(
         operation: { [provider] request in
-            await provider.complete(request)
+            await provider.stream(request)
         },
         deliver: { [weak self] response in
             await MainActor.run {
@@ -234,6 +238,7 @@ final class CompletionCoordinator: NSObject {
             beginsTypingBurst = false
         }
 
+        let snapshotBeforeMutation = lastSnapshot
         buffer.apply(mutation)
         if beginsTypingBurst, let snapshot = lastSnapshot {
             requestOCRContext(
@@ -255,6 +260,18 @@ final class CompletionCoordinator: NSObject {
                 overlay.consume(
                     matchedText: text,
                     remainingSuggestion: remaining
+                )
+                scheduleCaretReanchor(
+                    expectedPrefix: buffer.prefix,
+                    previousSnapshot: snapshotBeforeMutation
+                )
+                return
+            case .awaitingStream:
+                suggestion = nil
+                overlay.hide()
+                scheduleCaretReanchor(
+                    expectedPrefix: buffer.prefix,
+                    previousSnapshot: snapshotBeforeMutation
                 )
                 return
             case .waitingForWhitespace:
@@ -436,6 +453,7 @@ final class CompletionCoordinator: NSObject {
         if focusChanged {
             suggestion = nil
             suggestionConsumption = nil
+            suggestionRequestID = nil
             overlay.hide()
         }
         updateTypographyScale(from: previousSnapshot, to: snapshot)
@@ -649,7 +667,6 @@ final class CompletionCoordinator: NSObject {
             policyAllowsCurrentApplication(),
             CompletionRequestPolicy.shouldRequest(prefix: buffer.prefix),
             response.requestID == newestRequestID,
-            let text = response.text,
             let preparedRequestSnapshot,
             preparedRequestSnapshot.requestID == response.requestID,
             lastSnapshot?.editorIdentifier
@@ -658,9 +675,45 @@ final class CompletionCoordinator: NSObject {
             return
         }
 
-        suggestion = text
-        suggestionConsumption = SuggestionConsumption(suggestion: text)
-        overlay.show(text)
+        guard let text = response.text, !text.isEmpty else {
+            return
+        }
+
+        let outcome: SuggestionConsumption.Outcome
+        if
+            suggestionRequestID == response.requestID,
+            var consumption = suggestionConsumption
+        {
+            outcome = consumption.update(
+                suggestion: text,
+                isFinal: response.isFinal
+            )
+            suggestionConsumption = consumption
+        } else {
+            suggestionRequestID = response.requestID
+            suggestionConsumption = SuggestionConsumption(
+                suggestion: text,
+                isFinal: response.isFinal
+            )
+            outcome = .matched(remaining: text)
+        }
+        presentStreamingOutcome(outcome)
+    }
+
+    private func presentStreamingOutcome(
+        _ outcome: SuggestionConsumption.Outcome
+    ) {
+        switch outcome {
+        case let .matched(remaining):
+            suggestion = remaining
+            overlay.show(remaining)
+        case .awaitingStream, .waitingForWhitespace:
+            suggestion = nil
+            overlay.hide()
+        case .triggerInference, .diverged:
+            clearSuggestion()
+            scheduleCompletion()
+        }
     }
 
     private func prepareOverlay(for snapshot: EditorSnapshot) {
@@ -761,29 +814,46 @@ final class CompletionCoordinator: NSObject {
         inputMonitor?.paste(acceptance.accepted)
         buffer.apply(.insert(acceptance.accepted))
         onSuggestionAccepted(acceptance.accepted)
-        if acceptance.remaining.isEmpty {
-            suggestionConsumption = nil
+
+        var consumption = suggestionConsumption
+            ?? SuggestionConsumption(suggestion: suggestion)
+        let outcome = consumption.apply(
+            insertedText: acceptance.accepted
+        )
+        let streamHasFinished = consumption.hasFinishedStreaming
+        suggestionConsumption = consumption
+
+        switch outcome {
+        case let .matched(remaining):
+            self.suggestion = remaining
+            overlay.consume(
+                matchedText: acceptance.accepted,
+                remainingSuggestion: remaining
+            )
+            scheduleCaretReanchor(
+                expectedPrefix: buffer.prefix,
+                previousSnapshot: snapshotBeforeAcceptance
+            )
+            if streamHasFinished {
+                startRefillIfNeeded(
+                    remainingSuggestion: remaining
+                )
+            }
+        case .awaitingStream:
+            self.suggestion = nil
+            overlay.hide()
+            scheduleCaretReanchor(
+                expectedPrefix: buffer.prefix,
+                previousSnapshot: snapshotBeforeAcceptance
+            )
+        case .waitingForWhitespace:
             clearSuggestion()
             if !promoteOrAwaitRefill(for: buffer.prefix) {
                 scheduleCompletion()
             }
-        } else {
-            self.suggestion = acceptance.remaining
-            suggestionConsumption = SuggestionConsumption(
-                suggestion: acceptance.remaining
-            )
-            overlay.consume(
-                matchedText: acceptance.accepted,
-                remainingSuggestion: acceptance.remaining
-            )
-            scheduleCaretReanchor(
-                expectedPrefix: buffer.prefix,
-                expectedSuggestion: acceptance.remaining,
-                previousSnapshot: snapshotBeforeAcceptance
-            )
-            startRefillIfNeeded(
-                remainingSuggestion: acceptance.remaining
-            )
+        case .triggerInference, .diverged:
+            clearSuggestion()
+            scheduleCompletion()
         }
         scheduleWhitespaceCalibration(
             suggestion: acceptance.accepted,
@@ -889,6 +959,7 @@ final class CompletionCoordinator: NSObject {
         prefetchedRefill = nil
         suggestion = text
         suggestionConsumption = SuggestionConsumption(suggestion: text)
+        suggestionRequestID = nil
 
         if
             let snapshot = accessibility.snapshot(),
@@ -903,7 +974,6 @@ final class CompletionCoordinator: NSObject {
         } else {
             scheduleCaretReanchor(
                 expectedPrefix: key.prefix,
-                expectedSuggestion: text,
                 previousSnapshot: lastSnapshot
             )
         }
@@ -911,7 +981,6 @@ final class CompletionCoordinator: NSObject {
 
     private func scheduleCaretReanchor(
         expectedPrefix: String,
-        expectedSuggestion: String,
         previousSnapshot: EditorSnapshot?
     ) {
         caretReanchorTask?.cancel()
@@ -924,8 +993,7 @@ final class CompletionCoordinator: NSObject {
                 try? await Task.sleep(for: .milliseconds(delay))
                 guard !Task.isCancelled, let self else { return }
                 guard
-                    self.buffer.prefix == expectedPrefix,
-                    self.suggestion == expectedSuggestion
+                    self.buffer.prefix == expectedPrefix
                 else {
                     return
                 }
@@ -950,7 +1018,12 @@ final class CompletionCoordinator: NSObject {
                 )
                 self.lastSnapshot = snapshot
                 self.prepareOverlay(for: snapshot)
-                self.overlay.show(expectedSuggestion)
+                if let suggestion = self.suggestion,
+                   !suggestion.isEmpty {
+                    self.overlay.show(suggestion)
+                } else {
+                    self.overlay.hide()
+                }
                 return
             }
         }
@@ -1050,6 +1123,7 @@ final class CompletionCoordinator: NSObject {
         suggestion = nil
         if resetConsumption {
             suggestionConsumption = nil
+            suggestionRequestID = nil
         }
         overlay.hide()
     }
@@ -1060,5 +1134,15 @@ final class CompletionCoordinator: NSObject {
         cancelRefill()
         preparedRequestSnapshot = nil
         newestRequestID &+= 1
+        let invalidatedRequestID = newestRequestID
+        Task { [weak self, requestPump] in
+            guard
+                let self,
+                self.newestRequestID == invalidatedRequestID
+            else {
+                return
+            }
+            await requestPump.cancel()
+        }
     }
 }

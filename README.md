@@ -26,6 +26,9 @@ sound like the person typing—not an assistant answering them.
   scheduling, and stale-response rejection.
 - No inference for inputs with fewer than three non-whitespace characters.
 - Suggestions remain alive while the user types matching predicted text.
+- Local completions stream into the inline overlay token by token. Matching
+  typing and Tab acceptance advance through the same in-flight response;
+  StenoTab cancels only when the edit diverges or a newer request supersedes it.
 - **Tab** accepts one word at a time; **Option–Tab** accepts everything.
 - Suggestions reanchor after accepted text and across line wrapping.
 - Screenshot keyboard shortcuts do not dismiss an active suggestion.
@@ -124,7 +127,9 @@ an incompatible model, and otherwise attempts to start its managed server at
 the configured port. On quit, StenoTab stops only a server process it launched
 itself.
 
-The default endpoint is `http://127.0.0.1:18473/v1`. The managed server uses a
+The default endpoint is `http://127.0.0.1:18473/v1`. StenoTab consumes the
+OpenAI-compatible server-sent event stream so the first usable completion
+fragment can appear before generation finishes. The managed server uses a
 4,096-token context, prompt caching, flash attention, and one parallel request.
 Its log is stored at:
 
@@ -245,8 +250,9 @@ swift test
 
 The suite covers prompt composition, partial-word handling, completion
 sanitization, request coalescing, exact-match consumption, word-by-word
-acceptance, refill behavior, per-app policy, model selection, permission state,
-caret geometry, and typography calibration.
+acceptance, streamed-response cancellation and overlap tracking, refill
+behavior, per-app policy, model selection, permission state, caret geometry,
+and typography calibration.
 
 Benchmark fixtures can be inspected with:
 

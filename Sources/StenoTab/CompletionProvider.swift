@@ -14,10 +14,40 @@ struct CompletionRequest: Sendable {
 struct CompletionResponse: Sendable {
     let requestID: UInt64
     let text: String?
+    let isFinal: Bool
+
+    init(
+        requestID: UInt64,
+        text: String?,
+        isFinal: Bool = true
+    ) {
+        self.requestID = requestID
+        self.text = text
+        self.isFinal = isFinal
+    }
 }
 
 protocol CompletionProvider: Sendable {
     func complete(_ request: CompletionRequest) async -> CompletionResponse
+    func stream(
+        _ request: CompletionRequest
+    ) async -> AsyncStream<CompletionResponse>
+}
+
+extension CompletionProvider {
+    func stream(
+        _ request: CompletionRequest
+    ) async -> AsyncStream<CompletionResponse> {
+        AsyncStream { continuation in
+            let producer = Task {
+                continuation.yield(await complete(request))
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in
+                producer.cancel()
+            }
+        }
+    }
 }
 
 actor SwitchingCompletionProvider: CompletionProvider {
@@ -33,6 +63,12 @@ actor SwitchingCompletionProvider: CompletionProvider {
 
     func complete(_ request: CompletionRequest) async -> CompletionResponse {
         await provider.complete(request)
+    }
+
+    func stream(
+        _ request: CompletionRequest
+    ) async -> AsyncStream<CompletionResponse> {
+        await provider.stream(request)
     }
 }
 
@@ -64,6 +100,37 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
     let maximumWords: Int
 
     func complete(_ request: CompletionRequest) async -> CompletionResponse {
+        let updates = await stream(request)
+        var latest = CompletionResponse(requestID: request.id, text: nil)
+        for await update in updates {
+            latest = update
+        }
+        return latest
+    }
+
+    func stream(
+        _ request: CompletionRequest
+    ) async -> AsyncStream<CompletionResponse> {
+        let urlRequest = makeURLRequest(for: request, stream: true)
+        return AsyncStream { continuation in
+            let producer = Task {
+                await performStreamingRequest(
+                    urlRequest,
+                    completionRequest: request,
+                    continuation: continuation
+                )
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in
+                producer.cancel()
+            }
+        }
+    }
+
+    private func makeURLRequest(
+        for request: CompletionRequest,
+        stream: Bool
+    ) -> URLRequest {
         let resource = switch apiStyle {
         case .textCompletions, .gemmaChatPrefill:
             "completions"
@@ -75,7 +142,14 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
             : "v1/\(resource)"
         var urlRequest = URLRequest(url: endpoint.appending(path: path))
         urlRequest.httpMethod = "POST"
-        urlRequest.timeoutInterval = 2
+        // TTFT includes prompt evaluation and can exceed the old two-second
+        // one-shot deadline, especially when OCR context changes the cached
+        // prefix. Superseding edits cancel the streaming task explicitly.
+        let host = endpoint.host?.lowercased()
+        let isLocalHost = host == "127.0.0.1"
+            || host == "localhost"
+            || host == "::1"
+        urlRequest.timeoutInterval = isLocalHost ? 120 : 30
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let apiKey, !apiKey.isEmpty {
             urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -95,7 +169,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                     prompt: prompt,
                     maxTokens: 16,
                     temperature: 0,
-                    stop: nil
+                    stop: nil,
+                    stream: stream
                 )
             )
         case .gemmaChatPrefill:
@@ -108,7 +183,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                     ),
                     maxTokens: 16,
                     temperature: 0,
-                    stop: ["<turn|>"]
+                    stop: ["<turn|>"],
+                    stream: stream
                 )
             )
         case .chatCompletions:
@@ -130,60 +206,162 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                     ],
                     maxTokens: 16,
                     temperature: 0,
-                    stop: nil
+                    stop: nil,
+                    stream: stream
                 )
             )
         }
+        return urlRequest
+    }
 
+    private func performStreamingRequest(
+        _ urlRequest: URLRequest,
+        completionRequest request: CompletionRequest,
+        continuation: AsyncStream<CompletionResponse>.Continuation
+    ) async {
         do {
-            let (data, response) = try await URLSession.shared.data(for: urlRequest)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                return CompletionResponse(requestID: request.id, text: nil)
+            let (bytes, response) = try await URLSession.shared.bytes(
+                for: urlRequest
+            )
+            guard
+                let httpResponse = response as? HTTPURLResponse,
+                httpResponse.statusCode == 200
+            else {
+                continuation.yield(
+                    CompletionResponse(requestID: request.id, text: nil)
+                )
+                return
             }
-            let payload = try JSONDecoder().decode(CompletionPayload.self, from: data)
-            let rawText = payload.choices.first.flatMap {
-                $0.text ?? $0.message?.content
+
+            let contentType = httpResponse.value(
+                forHTTPHeaderField: "Content-Type"
+            )?.lowercased() ?? ""
+            guard contentType.contains("text/event-stream") else {
+                var data = Data()
+                for try await byte in bytes {
+                    try Task.checkCancellation()
+                    data.append(byte)
+                }
+                continuation.yield(
+                    decodeOneShot(data, request: request)
+                )
+                return
             }
-            let text = rawText.flatMap { raw -> String? in
-                let beginsWithInsertionWhitespace =
-                    beginsWithHorizontalWhitespaceAfterFormattingNewlines(raw)
+
+            var decoder = CompletionStreamDecoder()
+            var rawText = ""
+            var lastPublishedText: String?
+            var didFinish = false
+            for try await line in bytes.lines {
+                try Task.checkCancellation()
+                guard let event = decoder.consume(line: line) else {
+                    continue
+                }
+                rawText += event.delta
+                let text = sanitizedText(rawText, request: request)
                 if
-                    apiStyle == .textCompletions,
-                    let fragment = request.partialWordFragment,
-                    let partial = PartialWordCompletion.sanitize(
-                        raw,
-                        after: fragment,
-                        candidates: request.partialWordCandidates
-                    )
+                    let text,
+                    !text.isEmpty,
+                    text != lastPublishedText,
+                    lastPublishedText.map(text.hasPrefix) ?? true
                 {
-                    return CompletionSanitizer.sanitize(
-                        partial,
-                        after: request.prefix,
-                        maximumWords: maximumWords,
-                        inferLeadingSpace: false
+                    lastPublishedText = text
+                    continuation.yield(
+                        CompletionResponse(
+                            requestID: request.id,
+                            text: text,
+                            isFinal: event.isFinished
+                        )
+                    )
+                } else if event.isFinished {
+                    continuation.yield(
+                        CompletionResponse(
+                            requestID: request.id,
+                            text: lastPublishedText,
+                            isFinal: true
+                        )
                     )
                 }
-                let shouldInferMissingSeparator =
-                    apiStyle == .textCompletions
-                    && request.partialWordFragment != nil
-                    && !request.partialWordCandidates.isEmpty
-                    && !beginsWithInsertionWhitespace
-                return CompletionSanitizer.sanitize(
-                    raw,
-                    after: request.prefix,
-                    maximumWords: maximumWords,
-                    inferLeadingSpace:
-                        apiStyle == .chatCompletions
-                        || shouldInferMissingSeparator
+                if event.isFinished {
+                    didFinish = true
+                    break
+                }
+            }
+            if !didFinish {
+                continuation.yield(
+                    CompletionResponse(
+                        requestID: request.id,
+                        text: lastPublishedText,
+                        isFinal: true
+                    )
                 )
             }
-            return CompletionResponse(
-                requestID: request.id,
-                text: text?.isEmpty == false ? text : nil
-            )
+        } catch is CancellationError {
+            return
         } catch {
-            return CompletionResponse(requestID: request.id, text: nil)
+            guard !Task.isCancelled else { return }
+            continuation.yield(
+                CompletionResponse(requestID: request.id, text: nil)
+            )
         }
+    }
+
+    private func decodeOneShot(
+        _ data: Data,
+        request: CompletionRequest
+    ) -> CompletionResponse {
+        let payload = try? JSONDecoder().decode(
+            CompletionPayload.self,
+            from: data
+        )
+        let rawText = payload?.choices.first.flatMap {
+            $0.text ?? $0.message?.content
+        }
+        return CompletionResponse(
+            requestID: request.id,
+            text: rawText.flatMap {
+                sanitizedText($0, request: request)
+            }
+        )
+    }
+
+    private func sanitizedText(
+        _ raw: String,
+        request: CompletionRequest
+    ) -> String? {
+        let beginsWithInsertionWhitespace =
+            beginsWithHorizontalWhitespaceAfterFormattingNewlines(raw)
+        if
+            apiStyle == .textCompletions,
+            let fragment = request.partialWordFragment,
+            let partial = PartialWordCompletion.sanitize(
+                raw,
+                after: fragment,
+                candidates: request.partialWordCandidates
+            )
+        {
+            let text = CompletionSanitizer.sanitize(
+                partial,
+                after: request.prefix,
+                maximumWords: maximumWords,
+                inferLeadingSpace: false
+            )
+            return text.isEmpty ? nil : text
+        }
+        let shouldInferMissingSeparator =
+            apiStyle == .textCompletions
+            && request.partialWordFragment != nil
+            && !request.partialWordCandidates.isEmpty
+            && !beginsWithInsertionWhitespace
+        let text = CompletionSanitizer.sanitize(
+            raw,
+            after: request.prefix,
+            maximumWords: maximumWords,
+            inferLeadingSpace:
+                apiStyle == .chatCompletions
+                || shouldInferMissingSeparator
+        )
+        return text.isEmpty ? nil : text
     }
 
     private func beginsWithHorizontalWhitespaceAfterFormattingNewlines(
@@ -208,9 +386,10 @@ private struct ChatCompletionBody: Encodable {
     let maxTokens: Int
     let temperature: Double
     let stop: [String]?
+    let stream: Bool
 
     enum CodingKeys: String, CodingKey {
-        case model, messages, temperature, stop
+        case model, messages, temperature, stop, stream
         case maxTokens = "max_tokens"
     }
 }
@@ -221,9 +400,10 @@ private struct TextCompletionBody: Encodable {
     let maxTokens: Int
     let temperature: Double
     let stop: [String]?
+    let stream: Bool
 
     enum CodingKeys: String, CodingKey {
-        case model, prompt, temperature, stop
+        case model, prompt, temperature, stop, stream
         case maxTokens = "max_tokens"
     }
 }
