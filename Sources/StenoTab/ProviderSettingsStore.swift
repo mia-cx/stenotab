@@ -255,11 +255,18 @@ final class ProviderSettingsStore: ObservableObject {
                 }
                 guard let self else { return }
                 modelDownloadTask = nil
-                let installedProfile = HuggingFaceModelCache.cachedProfile(
-                    repository: profile.repository,
-                    modelFile: profile.modelFile ?? modelURL.lastPathComponent,
-                    metadata: GGUFModelMetadata.read(from: modelURL)
-                )
+                let installedProfile = if profile.isMLXCheckpoint {
+                    HuggingFaceModelCache.cachedMLXProfile(
+                        repository: profile.repository
+                    )
+                } else {
+                    HuggingFaceModelCache.cachedProfile(
+                        repository: profile.repository,
+                        modelFile:
+                            profile.modelFile ?? modelURL.lastPathComponent,
+                        metadata: GGUFModelMetadata.read(from: modelURL)
+                    )
+                }
                 refreshCachedLocalProfiles()
                 selectLocalProfile(installedProfile)
                 localModelDownloadStatus = .ready(modelURL)

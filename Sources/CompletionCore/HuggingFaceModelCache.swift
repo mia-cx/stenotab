@@ -22,7 +22,6 @@ public enum HuggingFaceModelCache {
         cacheRoot: URL = defaultRoot(),
         fileManager: FileManager = .default
     ) -> URL? {
-        guard let modelFile = profile.modelFile else { return nil }
         let repositoryDirectory = "models--" +
             profile.repository.replacingOccurrences(of: "/", with: "--")
         let modelRoot = cacheRoot.appending(
@@ -35,13 +34,15 @@ public enum HuggingFaceModelCache {
             encoding: .utf8
         ).trimmingCharacters(in: .whitespacesAndNewlines),
            !revision.isEmpty {
-            let candidate = modelRoot
-                .appending(
-                    path: "snapshots/\(revision)",
-                    directoryHint: .isDirectory
-                )
-                .appending(path: modelFile)
-            if fileManager.fileExists(atPath: candidate.path) {
+            let snapshot = modelRoot.appending(
+                path: "snapshots/\(revision)",
+                directoryHint: .isDirectory
+            )
+            if let candidate = modelArtifactURL(
+                in: snapshot,
+                profile: profile,
+                fileManager: fileManager
+            ) {
                 return candidate
             }
         }
@@ -59,8 +60,11 @@ public enum HuggingFaceModelCache {
         }
         return revisions
             .compactMap { revision -> (URL, Date)? in
-                let candidate = revision.appending(path: modelFile)
-                guard fileManager.fileExists(atPath: candidate.path) else {
+                guard let candidate = modelArtifactURL(
+                    in: revision,
+                    profile: profile,
+                    fileManager: fileManager
+                ) else {
                     return nil
                 }
                 let date = try? revision.resourceValues(
@@ -110,6 +114,15 @@ public enum HuggingFaceModelCache {
             }
 
             for snapshot in snapshots {
+                if isCompleteMLXSnapshot(
+                    snapshot,
+                    repository: repository,
+                    fileManager: fileManager
+                ) {
+                    let profile = cachedMLXProfile(repository: repository)
+                    profilesByArtifact[artifactIdentity(for: profile)] = profile
+                }
+
                 guard
                     let enumerator = fileManager.enumerator(
                         at: snapshot,
@@ -149,10 +162,24 @@ public enum HuggingFaceModelCache {
                 return $0.repository.localizedStandardCompare($1.repository)
                     == .orderedAscending
             }
-            return ($0.modelFile ?? "").localizedStandardCompare(
-                $1.modelFile ?? ""
+            return ($0.modelFile ?? "mlx").localizedStandardCompare(
+                $1.modelFile ?? "mlx"
             ) == .orderedAscending
         }
+    }
+
+    public static func cachedMLXProfile(
+        repository: String
+    ) -> LocalModelProfile {
+        LocalModelProfile(
+            id: "hf:\(repository):mlx",
+            displayName: displayName(repository: repository),
+            repository: repository,
+            apiStyle: .textCompletions,
+            minimumUnifiedMemoryGB: 0,
+            supportsImages: false,
+            qualityNote: "Available in the shared Hugging Face cache."
+        )
     }
 
     public static func cachedProfile(
@@ -187,6 +214,96 @@ public enum HuggingFaceModelCache {
             .replacingOccurrences(of: "\\", with: "/")
             .lowercased()
         return "\(repository)\u{0}\(modelFile)"
+    }
+
+    private static func modelArtifactURL(
+        in snapshot: URL,
+        profile: LocalModelProfile,
+        fileManager: FileManager
+    ) -> URL? {
+        if let modelFile = profile.modelFile {
+            let candidate = snapshot.appending(path: modelFile)
+            return fileManager.fileExists(atPath: candidate.path)
+                ? candidate
+                : nil
+        }
+        return isCompleteMLXSnapshot(
+            snapshot,
+            repository: profile.repository,
+            fileManager: fileManager
+        )
+            ? snapshot
+            : nil
+    }
+
+    private static func isCompleteMLXSnapshot(
+        _ snapshot: URL,
+        repository: String,
+        fileManager: FileManager
+    ) -> Bool {
+        let configURL = snapshot.appending(path: "config.json")
+        guard
+            let configData = try? Data(contentsOf: configURL),
+            isMLXConfiguration(configData, repository: repository)
+        else {
+            return false
+        }
+        guard let files = fileManager.enumerator(
+            at: snapshot,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return false
+        }
+        return files.contains { item in
+            guard let url = item as? URL else { return false }
+            return url.pathExtension.lowercased() == "safetensors"
+                && fileManager.fileExists(atPath: url.path)
+        }
+    }
+
+    private static func isMLXConfiguration(
+        _ data: Data,
+        repository: String
+    ) -> Bool {
+        if repository.lowercased().hasPrefix("mlx-community/") {
+            return true
+        }
+        guard
+            let object = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any]
+        else {
+            return false
+        }
+        let quantization = object["quantization"] as? [String: Any]
+            ?? object["quantization_config"] as? [String: Any]
+        return (quantization?["mode"] as? String)?.lowercased() == "affine"
+            && quantization?["bits"] != nil
+    }
+
+    private static func displayName(repository: String) -> String {
+        let slug = repository.split(separator: "/").last.map(String.init)
+            ?? repository
+        var words = slug
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .split(separator: " ")
+            .map(String.init)
+        words = words.map { word in
+            switch word.lowercased() {
+            case "mlx":
+                "MLX"
+            case "it":
+                "IT"
+            case "e2b":
+                "E2B"
+            case "4bit":
+                "4-bit"
+            default:
+                word.capitalized
+            }
+        }
+        return words.joined(separator: " ")
     }
 
     private static func displayName(

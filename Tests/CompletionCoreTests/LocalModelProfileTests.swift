@@ -5,11 +5,14 @@ final class LocalModelProfileTests: XCTestCase {
     func testRecommendedProfilesUseSharedHuggingFaceRepositories() {
         XCTAssertEqual(
             LocalModelProfiles.profile(id: "gemma-4-e2b-base")?.repository,
-            "mradermacher/gemma-4-E2B-GGUF"
+            "mlx-community/gemma-4-e2b-4bit"
         )
-        XCTAssertEqual(
-            LocalModelProfiles.profile(id: "gemma-4-e2b-base")?.modelFile,
-            "gemma-4-E2B.Q4_K_M.gguf"
+        XCTAssertNil(
+            LocalModelProfiles.profile(id: "gemma-4-e2b-base")?.modelFile
+        )
+        XCTAssertTrue(
+            LocalModelProfiles.profile(id: "gemma-4-e2b-base")?
+                .isMLXCheckpoint == true
         )
         XCTAssertEqual(
             LocalModelProfiles.profile(id: "gemma-4-e2b-base")?.apiStyle,
@@ -91,14 +94,14 @@ final class LocalModelProfileTests: XCTestCase {
         )
     }
 
-    func testHuggingFaceCacheResolvesConfiguredGGUFFromMainSnapshot() throws {
+    func testHuggingFaceCacheResolvesConfiguredMLXSnapshot() throws {
         let root = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let modelRoot = root
             .appending(
-                path: "models--mradermacher--gemma-4-E2B-GGUF",
+                path: "models--mlx-community--gemma-4-e2b-4bit",
                 directoryHint: .isDirectory
             )
         let snapshot = modelRoot
@@ -114,16 +117,94 @@ final class LocalModelProfileTests: XCTestCase {
         try Data("revision-1\n".utf8).write(
             to: modelRoot.appending(path: "refs/main")
         )
-        let expected = snapshot.appending(path: "gemma-4-E2B.Q4_K_M.gguf")
-        try Data("gguf".utf8).write(to: expected)
+        try Data("{}".utf8).write(to: snapshot.appending(path: "config.json"))
+        try Data("weights".utf8).write(
+            to: snapshot.appending(path: "model.safetensors")
+        )
 
         let profile = try XCTUnwrap(
             LocalModelProfiles.profile(id: "gemma-4-e2b-base")
         )
         XCTAssertEqual(
             HuggingFaceModelCache.modelURL(for: profile, cacheRoot: root),
-            expected
+            snapshot
         )
+    }
+
+    func testHuggingFaceCacheDiscoversMLXCheckpointAsOneModel() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = root.appending(
+            path:
+                "models--mlx-community--gemma-4-e2b-4bit/"
+                    + "snapshots/revision-a",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(
+            at: snapshot,
+            withIntermediateDirectories: true
+        )
+        try Data("{}".utf8).write(to: snapshot.appending(path: "config.json"))
+        try Data("weights".utf8).write(
+            to: snapshot.appending(path: "model-00001-of-00002.safetensors")
+        )
+        try Data("weights".utf8).write(
+            to: snapshot.appending(path: "model-00002-of-00002.safetensors")
+        )
+
+        let profiles = HuggingFaceModelCache.cachedProfiles(cacheRoot: root)
+
+        XCTAssertEqual(profiles.count, 1)
+        XCTAssertEqual(profiles[0].repository, "mlx-community/gemma-4-e2b-4bit")
+        XCTAssertNil(profiles[0].modelFile)
+        XCTAssertEqual(profiles[0].displayName, "Gemma 4 E2B 4-bit")
+    }
+
+    func testHuggingFaceCacheDoesNotTreatGenericSafetensorsAsMLX() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = root.appending(
+            path: "models--example--transformers/snapshots/revision-a",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(
+            at: snapshot,
+            withIntermediateDirectories: true
+        )
+        try Data("{}".utf8).write(to: snapshot.appending(path: "config.json"))
+        try Data("weights".utf8).write(
+            to: snapshot.appending(path: "model.safetensors")
+        )
+
+        XCTAssertTrue(
+            HuggingFaceModelCache.cachedProfiles(cacheRoot: root).isEmpty
+        )
+    }
+
+    func testHuggingFaceCacheDiscoversConvertedAffineMLXCheckpoint() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = root.appending(
+            path: "models--example--converted/snapshots/revision-a",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(
+            at: snapshot,
+            withIntermediateDirectories: true
+        )
+        try Data(
+            #"{"quantization":{"mode":"affine","bits":4}}"#.utf8
+        ).write(to: snapshot.appending(path: "config.json"))
+        try Data("weights".utf8).write(
+            to: snapshot.appending(path: "model.safetensors")
+        )
+
+        let profiles = HuggingFaceModelCache.cachedProfiles(cacheRoot: root)
+
+        XCTAssertEqual(profiles.map(\.repository), ["example/converted"])
     }
 
     func testHuggingFaceCacheDiscoversGGUFsAcrossRepositories() throws {
@@ -233,8 +314,15 @@ final class LocalModelProfileTests: XCTestCase {
     }
 
     func testExistingServerIsReusableOnlyWhenItAdvertisesSelectedModel() throws {
-        let profile = try XCTUnwrap(
-            LocalModelProfiles.profile(id: "gemma-4-e2b-base")
+        let profile = LocalModelProfile(
+            id: "gemma-4-e2b-base",
+            displayName: "Gemma 4 E2B Base",
+            repository: "mradermacher/gemma-4-E2B-GGUF",
+            modelFile: "gemma-4-E2B.Q4_K_M.gguf",
+            apiStyle: .textCompletions,
+            minimumUnifiedMemoryGB: 16,
+            supportsImages: false,
+            qualityNote: "Test profile."
         )
 
         XCTAssertFalse(

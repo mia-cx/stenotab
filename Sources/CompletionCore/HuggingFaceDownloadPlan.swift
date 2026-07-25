@@ -23,6 +23,7 @@ public struct HuggingFaceDownloadPlan: Equatable, Sendable {
         guard
             let modelFile = profile.modelFile,
             !modelFile.isEmpty,
+            Self.isSafeModelPath(modelFile),
             !profile.repository.isEmpty,
             let encodedRepository = profile.repository.addingPercentEncoding(
                 withAllowedCharacters: .urlPathAllowed
@@ -69,6 +70,14 @@ public struct HuggingFaceDownloadPlan: Equatable, Sendable {
         else {
             return nil
         }
+        let nestedDirectoryCount = max(
+            modelFile.split(separator: "/").count - 1,
+            0
+        )
+        let snapshotSymlinkDestination =
+            Array(repeating: "..", count: 2 + nestedDirectoryCount)
+                .joined(separator: "/")
+                + "/blobs/\(blobIdentifier)"
         return Installation(
             revision: revision,
             blobIdentifier: blobIdentifier,
@@ -82,8 +91,7 @@ public struct HuggingFaceDownloadPlan: Equatable, Sendable {
                 )
                 .appending(path: modelFile),
             mainReferenceURL: repositoryRoot.appending(path: "refs/main"),
-            snapshotSymlinkDestination:
-                "../../blobs/\(blobIdentifier)"
+            snapshotSymlinkDestination: snapshotSymlinkDestination
         )
     }
 
@@ -110,5 +118,20 @@ public struct HuggingFaceDownloadPlan: Equatable, Sendable {
                 || $0 == "_"
                 || $0 == "."
         } && !value.contains("..")
+    }
+
+    private static func isSafeModelPath(_ value: String) -> Bool {
+        guard
+            !value.hasPrefix("/"),
+            !value.contains("\\")
+        else {
+            return false
+        }
+        let components = value.split(
+            separator: "/",
+            omittingEmptySubsequences: false
+        )
+        return !components.isEmpty
+            && components.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
     }
 }

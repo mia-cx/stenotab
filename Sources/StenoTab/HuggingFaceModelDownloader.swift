@@ -16,7 +16,7 @@ actor HuggingFaceModelDownloader {
         case invalidProfile
         case invalidRepository
         case invalidRevision
-        case noSingleFileGGUF
+        case noMLXCheckpoint
         case unexpectedResponse
         case httpStatus(Int)
         case incomplete(expected: Int64, received: Int64)
@@ -29,8 +29,8 @@ actor HuggingFaceModelDownloader {
                 "Enter a Hugging Face model ID like owner/model."
             case .invalidRevision:
                 "Hugging Face returned an invalid repository revision."
-            case .noSingleFileGGUF:
-                "That repository has no supported single-file GGUF model."
+            case .noMLXCheckpoint:
+                "That repository does not contain a complete MLX checkpoint."
             case .unexpectedResponse:
                 "Hugging Face returned an unexpected response."
             case let .httpStatus(status):
@@ -44,10 +44,20 @@ actor HuggingFaceModelDownloader {
     private struct ModelInfo: Decodable {
         struct Sibling: Decodable {
             let rfilename: String
+            let size: Int64?
         }
 
         let sha: String
         let siblings: [Sibling]?
+        let libraryName: String?
+        let tags: [String]?
+
+        enum CodingKeys: String, CodingKey {
+            case sha
+            case siblings
+            case libraryName = "library_name"
+            case tags
+        }
     }
 
     private let fileManager: FileManager
@@ -73,10 +83,28 @@ actor HuggingFaceModelDownloader {
         profile: LocalModelProfile,
         progress: @escaping @Sendable (DownloadProgress) async -> Void
     ) async throws -> URL {
+        if profile.isMLXCheckpoint {
+            return try await downloadMLXCheckpoint(
+                profile: profile,
+                progress: progress
+            )
+        }
         guard let plan = HuggingFaceDownloadPlan(profile: profile) else {
             throw DownloadError.invalidProfile
         }
         let revision = try await fetchRevision(using: plan)
+        return try await downloadFile(
+            using: plan,
+            revision: revision,
+            progress: progress
+        )
+    }
+
+    private func downloadFile(
+        using plan: HuggingFaceDownloadPlan,
+        revision: String,
+        progress: @escaping @Sendable (DownloadProgress) async -> Void
+    ) async throws -> URL {
         guard
             let blobIdentifier = HuggingFaceDownloadPlan.blobIdentifier(
                 revision: revision,
@@ -88,6 +116,19 @@ actor HuggingFaceModelDownloader {
             )
         else {
             throw DownloadError.invalidRevision
+        }
+        if fileManager.fileExists(atPath: installation.snapshotFileURL.path) {
+            let existingBytes = Self.fileSize(
+                at: installation.snapshotFileURL,
+                fileManager: fileManager
+            )
+            await progress(
+                DownloadProgress(
+                    receivedBytes: existingBytes,
+                    totalBytes: existingBytes
+                )
+            )
+            return installation.snapshotFileURL
         }
 
         try fileManager.createDirectory(
@@ -183,6 +224,82 @@ actor HuggingFaceModelDownloader {
         )
     }
 
+    private func downloadMLXCheckpoint(
+        profile: LocalModelProfile,
+        progress: @escaping @Sendable (DownloadProgress) async -> Void
+    ) async throws -> URL {
+        let info = try await fetchModelInfo(
+            repository: profile.repository
+        )
+        let siblings = info.siblings ?? []
+        let files = siblings
+            .filter { Self.isMLXCheckpointFile($0.rfilename) }
+            .sorted {
+                if $0.rfilename == "config.json" { return false }
+                if $1.rfilename == "config.json" { return true }
+                return $0.rfilename.localizedStandardCompare($1.rfilename)
+                    == .orderedAscending
+            }
+        guard
+            files.contains(where: { $0.rfilename == "config.json" }),
+            files.contains(where: {
+                $0.rfilename.lowercased().hasSuffix(".safetensors")
+            })
+        else {
+            throw DownloadError.noMLXCheckpoint
+        }
+
+        let knownTotal = files.allSatisfy { $0.size != nil }
+            ? files.compactMap(\.size).reduce(0, +)
+            : nil
+        var completedBytes: Int64 = 0
+        for sibling in files {
+            try Task.checkCancellation()
+            let fileProfile = LocalModelProfile(
+                id: profile.id,
+                displayName: profile.displayName,
+                repository: profile.repository,
+                modelFile: sibling.rfilename,
+                apiStyle: profile.apiStyle,
+                minimumUnifiedMemoryGB: profile.minimumUnifiedMemoryGB,
+                supportsImages: profile.supportsImages,
+                qualityNote: profile.qualityNote
+            )
+            guard let plan = HuggingFaceDownloadPlan(profile: fileProfile) else {
+                throw DownloadError.invalidProfile
+            }
+            let completedBeforeFile = completedBytes
+            let installedFile = try await downloadFile(
+                using: plan,
+                revision: info.sha
+            ) { fileProgress in
+                await progress(
+                    DownloadProgress(
+                        receivedBytes:
+                            completedBeforeFile + fileProgress.receivedBytes,
+                        totalBytes: knownTotal
+                    )
+                )
+            }
+            completedBytes += sibling.size
+                ?? Self.fileSize(
+                    at: installedFile,
+                    fileManager: fileManager
+                )
+        }
+
+        guard let checkpoint = HuggingFaceModelCache.modelURL(for: profile) else {
+            throw DownloadError.noMLXCheckpoint
+        }
+        await progress(
+            DownloadProgress(
+                receivedBytes: completedBytes,
+                totalBytes: knownTotal ?? completedBytes
+            )
+        )
+        return checkpoint
+    }
+
     func resolveProfile(repository input: String) async throws
         -> LocalModelProfile
     {
@@ -203,24 +320,40 @@ actor HuggingFaceModelDownloader {
             throw DownloadError.invalidRepository
         }
         let info = try await fetchModelInfo(at: url)
-        guard
-            let modelFile =
-                HuggingFaceRepositorySelection.preferredGGUFFile(
-                    from: info.siblings?.map(\.rfilename) ?? []
-                )
-        else {
-            throw DownloadError.noSingleFileGGUF
-        }
-        return HuggingFaceModelCache.cachedProfile(
+        let siblings = info.siblings?.map(\.rfilename) ?? []
+        if Self.isMLXCheckpointRepository(
+            siblings,
             repository: repository,
-            modelFile: modelFile
-        )
+            libraryName: info.libraryName,
+            tags: info.tags ?? []
+        ) {
+            return HuggingFaceModelCache.cachedMLXProfile(
+                repository: repository
+            )
+        }
+        throw DownloadError.noMLXCheckpoint
     }
 
     private func fetchRevision(
         using plan: HuggingFaceDownloadPlan
     ) async throws -> String {
         try await fetchModelInfo(at: plan.revisionMetadataURL).sha
+    }
+
+    private func fetchModelInfo(repository: String) async throws -> ModelInfo {
+        guard
+            let encodedRepository = repository.addingPercentEncoding(
+                withAllowedCharacters: .urlPathAllowed
+            ),
+            let url = URL(
+                string:
+                    "https://huggingface.co/api/models/"
+                    + "\(encodedRepository)/revision/main"
+            )
+        else {
+            throw DownloadError.invalidRepository
+        }
+        return try await fetchModelInfo(at: url)
     }
 
     private func fetchModelInfo(at url: URL) async throws -> ModelInfo {
@@ -268,5 +401,31 @@ actor HuggingFaceModelDownloader {
             return 0
         }
         return size.int64Value
+    }
+
+    private static func isMLXCheckpointRepository(
+        _ files: [String],
+        repository: String,
+        libraryName: String?,
+        tags: [String]
+    ) -> Bool {
+        let identifiesMLX =
+            repository.lowercased().hasPrefix("mlx-community/")
+                || libraryName?.lowercased() == "mlx"
+                || tags.contains { $0.lowercased() == "mlx" }
+        return identifiesMLX
+            && files.contains("config.json")
+            && files.contains {
+                $0.lowercased().hasSuffix(".safetensors")
+            }
+    }
+
+    private static func isMLXCheckpointFile(_ path: String) -> Bool {
+        let lowercased = path.lowercased()
+        return lowercased.hasSuffix(".json")
+            || lowercased.hasSuffix(".safetensors")
+            || lowercased.hasSuffix(".model")
+            || lowercased.hasSuffix(".txt")
+            || lowercased.hasSuffix(".tiktoken")
     }
 }

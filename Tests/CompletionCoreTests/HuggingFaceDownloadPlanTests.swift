@@ -3,11 +3,22 @@ import Foundation
 import XCTest
 
 final class HuggingFaceDownloadPlanTests: XCTestCase {
+    private var ggufProfile: LocalModelProfile {
+        LocalModelProfile(
+            id: "gemma-4-e2b-base-gguf",
+            displayName: "Gemma 4 E2B Base",
+            repository: "mradermacher/gemma-4-E2B-GGUF",
+            modelFile: "gemma-4-E2B.Q4_K_M.gguf",
+            apiStyle: .textCompletions,
+            minimumUnifiedMemoryGB: 16,
+            supportsImages: false,
+            qualityNote: "Test profile."
+        )
+    }
+
     func testPlansTheStandardHuggingFaceRepositoryLayout() throws {
         let root = URL(filePath: "/tmp/hf", directoryHint: .isDirectory)
-        let profile = try XCTUnwrap(
-            LocalModelProfiles.profile(id: "gemma-4-e2b-base")
-        )
+        let profile = ggufProfile
         let plan = try XCTUnwrap(
             HuggingFaceDownloadPlan(profile: profile, cacheRoot: root)
         )
@@ -44,9 +55,7 @@ final class HuggingFaceDownloadPlanTests: XCTestCase {
     }
 
     func testRejectsTraversalInServerSuppliedCacheIdentifiers() throws {
-        let profile = try XCTUnwrap(
-            LocalModelProfiles.profile(id: "gemma-4-e2b-base")
-        )
+        let profile = ggufProfile
         let plan = try XCTUnwrap(HuggingFaceDownloadPlan(profile: profile))
 
         XCTAssertNil(
@@ -61,6 +70,27 @@ final class HuggingFaceDownloadPlanTests: XCTestCase {
                 blobIdentifier: "../blob"
             )
         )
+    }
+
+    func testRejectsTraversalInServerSuppliedModelPaths() {
+        for modelFile in [
+            "../model.safetensors",
+            "tokenizer/../../model.safetensors",
+            "/tmp/model.safetensors",
+            #"tokenizer\model.safetensors"#,
+        ] {
+            let profile = LocalModelProfile(
+                id: "unsafe",
+                displayName: "Unsafe",
+                repository: "example/unsafe",
+                modelFile: modelFile,
+                apiStyle: .textCompletions,
+                minimumUnifiedMemoryGB: 0,
+                supportsImages: false,
+                qualityNote: "Test profile."
+            )
+            XCTAssertNil(HuggingFaceDownloadPlan(profile: profile))
+        }
     }
 
     func testBlobIdentifierIsSafeForNestedModelFilenames() throws {
@@ -82,15 +112,38 @@ final class HuggingFaceDownloadPlanTests: XCTestCase {
         )
     }
 
+    func testNestedSnapshotFilesLinkBackToTheSharedBlobDirectory() throws {
+        let profile = LocalModelProfile(
+            id: "nested",
+            displayName: "Nested",
+            repository: "example/nested",
+            modelFile: "tokenizer/assets/vocab.json",
+            apiStyle: .textCompletions,
+            minimumUnifiedMemoryGB: 0,
+            supportsImages: false,
+            qualityNote: "Test profile."
+        )
+        let plan = try XCTUnwrap(HuggingFaceDownloadPlan(profile: profile))
+        let installation = try XCTUnwrap(
+            plan.installation(
+                revision: "abc123",
+                blobIdentifier: "blob123"
+            )
+        )
+
+        XCTAssertEqual(
+            installation.snapshotSymlinkDestination,
+            "../../../../blobs/blob123"
+        )
+    }
+
     func testInstallerPublishesOnlyACompleteSnapshot() throws {
         let root = FileManager.default.temporaryDirectory.appending(
             path: UUID().uuidString,
             directoryHint: .isDirectory
         )
         defer { try? FileManager.default.removeItem(at: root) }
-        let profile = try XCTUnwrap(
-            LocalModelProfiles.profile(id: "gemma-4-e2b-base")
-        )
+        let profile = ggufProfile
         let plan = try XCTUnwrap(
             HuggingFaceDownloadPlan(profile: profile, cacheRoot: root)
         )

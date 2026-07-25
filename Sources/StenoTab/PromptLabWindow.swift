@@ -116,7 +116,6 @@ private struct SettingsRootView: View {
                 )
             case .models:
                 ModelsView(
-                    runtimeStore: runtimeStatusStore,
                     providerStore: providerSettingsStore
                 )
             case .contextPrivacy:
@@ -1100,7 +1099,6 @@ private struct RuntimeStatusRow: View {
 }
 
 private struct ModelsView: View {
-    @ObservedObject var runtimeStore: RuntimeStatusStore
     @ObservedObject var providerStore: ProviderSettingsStore
     @State private var modelPickerSelection = ""
     @State private var customModelID = ""
@@ -1111,217 +1109,168 @@ private struct ModelsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 SettingsSection(title: "Provider") {
-                    Grid(
-                        alignment: .leading,
-                        horizontalSpacing: 12,
-                        verticalSpacing: 8
-                    ) {
-                        GridRow {
+                    HStack(spacing: 16) {
+                        VStack(alignment: .leading, spacing: 3) {
                             Text("Provider")
-                                .foregroundStyle(.secondary)
-                            Picker(
-                                "Provider",
-                                selection: .constant("local")
-                            ) {
-                                Text("Local").tag("local")
+                                .font(.headline)
+                            Text(
+                                "StenoTab runs models directly on this Mac "
+                                    + "with MLX Swift."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Picker("Provider", selection: .constant("local")) {
+                            Text("Local").tag("local")
+                        }
+                        .labelsHidden()
+                        .disabled(true)
+                        .frame(width: 220)
+                    }
+                }
+
+                SettingsSection(title: "AI Model") {
+                    HStack(alignment: .center, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("AI model")
+                                .font(.headline)
+                            Text(
+                                "Choose a recommended model or an MLX model "
+                                    + "already in the Hugging Face cache."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Picker("AI model", selection: modelSelection) {
+                            Section("Recommended") {
+                                ForEach(LocalModelProfiles.all) { profile in
+                                    Text(profile.displayName)
+                                        .tag(profile.id)
+                                }
                             }
-                            .labelsHidden()
-                            .disabled(true)
-                            .frame(maxWidth: 320)
+                            if !cachedProfiles.isEmpty {
+                                Section("On This Mac") {
+                                    ForEach(cachedProfiles) { profile in
+                                        Text(profile.displayName)
+                                            .tag(profile.id)
+                                    }
+                                }
+                            }
+                            Divider()
+                            Text("Other…")
+                                .tag(otherModelSelection)
+                        }
+                        .labelsHidden()
+                        .frame(width: 300)
+
+                        downloadButton
+                    }
+
+                    selectedModelDetail
+
+                    if modelPickerSelection == otherModelSelection {
+                        Divider()
+                        HStack(alignment: .center, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Other MLX model")
+                                    .font(.headline)
+                                Text(
+                                    "Enter a Hugging Face model ID such as "
+                                        + "owner/model."
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            TextField("owner/model", text: $customModelID)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 300)
+
+                            Button("Download") {
+                                providerStore.downloadCustomLocalModel(
+                                    repository: customModelID
+                                )
+                            }
+                            .disabled(
+                                normalizedCustomModelID == nil
+                                    || isDownloading
+                            )
                         }
                     }
 
-                    Text(
-                        "StenoTab runs models locally with llama.cpp. Model "
-                            + "files are downloaded into the standard shared "
-                            + "Hugging Face cache, so an existing cached model "
-                            + "is reused instead of copied."
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    if case let .downloading(received, total) =
+                        providerStore.localModelDownloadStatus
+                    {
+                        HStack(spacing: 10) {
+                            if let total, total > 0 {
+                                ProgressView(
+                                    value: Double(received),
+                                    total: Double(total)
+                                )
+                            } else {
+                                ProgressView()
+                            }
+                            Text(downloadProgressText(
+                                received: received,
+                                total: total
+                            ))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        }
+                    }
 
-                    HStack {
-                        RuntimeStatusRow(status: runtimeStore.modelStatus)
-                        Spacer()
-                        Button("Open Hugging Face Cache") {
+                    if case let .failed(message) =
+                        providerStore.localModelDownloadStatus
+                    {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                    }
+
+                    Divider()
+
+                    HStack(alignment: .center, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Model files")
+                                .font(.headline)
+                            Text(
+                                "Open the shared Hugging Face cache containing "
+                                    + "downloaded MLX models."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Button("Reveal in Finder") {
                             openHuggingFaceCache()
                         }
                     }
                 }
 
-                SettingsSection(title: "Model") {
-                    Grid(
-                        alignment: .leading,
-                        horizontalSpacing: 12,
-                        verticalSpacing: 8
-                    ) {
-                        GridRow {
-                            Text("Selected model")
-                                .foregroundStyle(.secondary)
-                            Picker(
-                                "Selected model",
-                                selection: modelSelection
-                            ) {
-                                Section("Recommended") {
-                                    ForEach(LocalModelProfiles.all) { profile in
-                                        Text(profile.displayName)
-                                            .tag(profile.id)
-                                    }
-                                }
-                                if !cachedProfiles.isEmpty {
-                                    Section("Hugging Face Cache") {
-                                        ForEach(cachedProfiles) { profile in
-                                            Text(profile.displayName)
-                                                .tag(profile.id)
-                                        }
-                                    }
-                                }
-                                Divider()
-                                Text("Other…")
-                                    .tag(otherModelSelection)
-                            }
-                            .labelsHidden()
-                            .frame(maxWidth: 560)
-                        }
-                    }
-
-                    if modelPickerSelection == otherModelSelection {
-                        Divider()
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Hugging Face model ID")
-                                .font(.headline)
-                            Text(
-                                "Enter owner/model or paste its huggingface.co "
-                                    + "URL. StenoTab selects a single-file "
-                                    + "Q4_K_M GGUF when available."
-                            )
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            HStack {
-                                TextField(
-                                    "owner/model",
-                                    text: $customModelID
-                                )
-                                .textFieldStyle(.roundedBorder)
-                                Button("Download") {
-                                    providerStore.downloadCustomLocalModel(
-                                        repository: customModelID
-                                    )
-                                }
-                                .disabled(
-                                    normalizedCustomModelID == nil
-                                        || isDownloading
-                                )
-                            }
-                        }
-                    }
-
-                    Divider()
-                    if let profile = selectedLocalProfile {
-                        HStack(alignment: .top, spacing: 12) {
-                            Image(
-                                systemName: localModelURL == nil
-                                    ? "arrow.down.circle"
-                                    : "checkmark.circle.fill"
-                            )
-                            .foregroundStyle(
-                                localModelURL == nil
-                                    ? Color.secondary
-                                    : Color.green
-                            )
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(
-                                    localModelURL == nil
-                                        ? "Model not downloaded"
-                                        : "Available in the shared Hugging Face cache"
-                                )
-                                .font(.headline)
-                                Text(profile.qualityNote)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                if profile.minimumUnifiedMemoryGB > 0 {
-                                    Text(
-                                        "Recommended minimum: "
-                                            + "\(profile.minimumUnifiedMemoryGB) GB "
-                                            + "unified memory"
-                                    )
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                }
-                                Text(localModelURL?.path ?? profile.repository)
-                                    .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                                .lineLimit(2)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                            if let localModelURL {
-                                Button("Reveal") {
-                                    NSWorkspace.shared
-                                        .activateFileViewerSelecting([
-                                            localModelURL
-                                        ])
-                                }
-                            } else {
-                                localDownloadControls(profile: profile)
-                            }
-                        }
-                        if case let .failed(message) =
-                            providerStore.localModelDownloadStatus
-                        {
-                            Text(message)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                                .textSelection(.enabled)
-                        }
-                        if case let .downloading(received, total) =
-                            providerStore.localModelDownloadStatus
-                        {
-                            HStack(spacing: 10) {
-                                if let total, total > 0 {
-                                    ProgressView(
-                                        value: Double(received),
-                                        total: Double(total)
-                                    )
-                                } else {
-                                    ProgressView()
-                                }
-                                Text(downloadProgressText(
-                                    received: received,
-                                    total: total
-                                ))
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-
-                SettingsSection(title: "Local Runtime") {
-                    Grid(
-                        alignment: .leading,
-                        horizontalSpacing: 12,
-                        verticalSpacing: 8
-                    ) {
-                        GridRow {
-                            Text("Server URL")
-                                .foregroundStyle(.secondary)
-                            TextField(
-                                "http://127.0.0.1:18473/v1",
-                                text: localBaseURL
-                            )
-                            .textFieldStyle(.roundedBorder)
-                        }
-                        GridRow {
+                SettingsSection(title: "Completion") {
+                    HStack(spacing: 16) {
+                        VStack(alignment: .leading, spacing: 3) {
                             Text("Maximum length")
+                                .font(.headline)
+                            Text("Limit how many words one suggestion may contain.")
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Stepper(
-                                "\(localConfiguration.maximumWords) words",
-                                value: localMaximumWords,
-                                in: 1...32
-                            )
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Stepper(
+                            "\(localConfiguration.maximumWords) words",
+                            value: localMaximumWords,
+                            in: 1...32
+                        )
+                        .fixedSize()
                     }
                 }
             }
@@ -1376,9 +1325,10 @@ private struct ModelsView: View {
         }
         return profilesByID.values
             .filter {
-                !recommendedKeys.contains(
-                    HuggingFaceModelCache.artifactIdentity(for: $0)
-                )
+                $0.isMLXCheckpoint
+                    && !recommendedKeys.contains(
+                        HuggingFaceModelCache.artifactIdentity(for: $0)
+                    )
             }
             .sorted {
                 $0.displayName.localizedStandardCompare($1.displayName)
@@ -1396,22 +1346,6 @@ private struct ModelsView: View {
                     return
                 }
                 providerStore.selectLocalProfile(profile)
-            }
-        )
-    }
-
-    private var localBaseURL: Binding<String> {
-        Binding(
-            get: { localConfiguration.baseURL },
-            set: {
-                providerStore.setLocalConfiguration(
-                    LocalCompletionConfiguration(
-                        profileID: localConfiguration.profileID,
-                        customProfile: localConfiguration.customProfile,
-                        baseURL: $0,
-                        maximumWords: localConfiguration.maximumWords
-                    )
-                )
             }
         )
     }
@@ -1456,38 +1390,62 @@ private struct ModelsView: View {
             at: cacheURL,
             withIntermediateDirectories: true
         )
-        NSWorkspace.shared.open(cacheURL)
+        NSWorkspace.shared.selectFile(
+            nil,
+            inFileViewerRootedAtPath: cacheURL.path
+        )
     }
 
     @ViewBuilder
-    private func localDownloadControls(
-        profile: LocalModelProfile
-    ) -> some View {
+    private var downloadButton: some View {
         switch providerStore.localModelDownloadStatus {
         case .downloading:
             Button("Cancel") {
                 providerStore.cancelLocalModelDownload()
             }
-        case .idle, .failed:
-            VStack(alignment: .trailing, spacing: 5) {
-                Button("Download") {
-                    providerStore.downloadSelectedLocalModel()
-                }
-                Button("Model Page") {
-                    guard let url = URL(
-                        string:
-                            "https://huggingface.co/"
-                            + profile.repository
-                    ) else {
-                        return
-                    }
-                    NSWorkspace.shared.open(url)
-                }
-                .buttonStyle(.link)
-                .font(.caption)
+        case .idle, .failed, .ready:
+            Button("Download") {
+                providerStore.downloadSelectedLocalModel()
             }
-        case .ready:
-            EmptyView()
+            .disabled(
+                modelPickerSelection == otherModelSelection
+                    || selectedLocalProfile == nil
+                    || localModelURL != nil
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var selectedModelDetail: some View {
+        if let profile = selectedLocalProfile,
+           modelPickerSelection != otherModelSelection {
+            HStack(spacing: 7) {
+                if localModelURL != nil {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("Downloaded")
+                        .foregroundStyle(.green)
+                } else {
+                    Image(systemName: "arrow.down.circle")
+                        .foregroundStyle(.secondary)
+                    Text("Not downloaded")
+                        .foregroundStyle(.secondary)
+                }
+                Text("·")
+                    .foregroundStyle(.tertiary)
+                Text(profile.qualityNote)
+                    .foregroundStyle(.secondary)
+                if profile.minimumUnifiedMemoryGB > 0 {
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                    Text(
+                        "\(profile.minimumUnifiedMemoryGB) GB unified memory "
+                            + "recommended"
+                    )
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
         }
     }
 
