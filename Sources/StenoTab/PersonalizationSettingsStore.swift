@@ -5,6 +5,13 @@ import StenoTabPersistence
 
 @MainActor
 final class PersonalizationSettingsStore: ObservableObject {
+    private enum RecentHistoryKind {
+        case acceptedSuggestions
+        case completionEpisodes
+        case none
+        case writingEpisodes
+    }
+
     private enum Keys {
         static let collectionEnabled =
             "personalization.collectionEnabled"
@@ -69,6 +76,7 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     private let defaults: UserDefaults
     private var database: PersonalizationDatabase?
+    private var isHistoryInspectorVisible = false
     private var modelWorker: PersonalizationModelWorker?
 
     init(defaults: UserDefaults = .standard) {
@@ -127,6 +135,13 @@ final class PersonalizationSettingsStore: ObservableObject {
         }
     }
 
+    func setHistoryInspectorVisible(_ isVisible: Bool) {
+        isHistoryInspectorVisible = isVisible
+        if isVisible {
+            refresh()
+        }
+    }
+
     private func refreshStatistics() {
         guard let database else { return }
         Task {
@@ -140,6 +155,33 @@ final class PersonalizationSettingsStore: ObservableObject {
                 operationError = String(describing: error)
             }
         }
+    }
+
+    private func refreshAfterRecording(
+        _ historyKind: RecentHistoryKind
+    ) async throws {
+        guard let database else { return }
+        let statistics = try await database.storageStatistics()
+        storedEventCount = statistics.eventCount
+        encryptedPayloadBytes = statistics.encryptedPayloadBytes
+
+        guard isHistoryInspectorVisible else {
+            operationError = nil
+            return
+        }
+        switch historyKind {
+        case .acceptedSuggestions:
+            recentAcceptedSuggestions =
+                try await database.acceptedSuggestions(limit: 20)
+        case .completionEpisodes:
+            recentCompletionEpisodes =
+                try await database.completionEpisodes(limit: 20)
+        case .none:
+            break
+        case .writingEpisodes:
+            recentEpisodes = try await database.writingEpisodes(limit: 20)
+        }
+        operationError = nil
     }
 
     func deleteAll() {
@@ -171,7 +213,7 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
-                refreshStatistics()
+                try await refreshAfterRecording(.acceptedSuggestions)
             } catch {
                 operationError = String(describing: error)
             }
@@ -195,7 +237,7 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
-                refreshStatistics()
+                try await refreshAfterRecording(.writingEpisodes)
             } catch {
                 operationError = String(describing: error)
             }
@@ -211,7 +253,7 @@ final class PersonalizationSettingsStore: ObservableObject {
                     feedback,
                     retentionPolicy: policy
                 )
-                refreshStatistics()
+                try await refreshAfterRecording(.none)
             } catch {
                 operationError = String(describing: error)
             }
@@ -227,7 +269,7 @@ final class PersonalizationSettingsStore: ObservableObject {
                     episode,
                     retentionPolicy: policy
                 )
-                refreshStatistics()
+                try await refreshAfterRecording(.completionEpisodes)
             } catch {
                 operationError = String(describing: error)
             }

@@ -164,22 +164,38 @@ final class PersonalizationDatabaseTests: XCTestCase {
     {
         let fixture = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let supported = makeCompletionEpisode(
+        let olderSupported = makeCompletionEpisode(
             id: UUID(),
-            input: "supported input",
-            suggestion: " suggestion",
-            outcome: " outcome",
+            input: "older supported input",
+            suggestion: " older suggestion",
+            outcome: " older outcome",
             date: Date(timeIntervalSince1970: 400)
         )
-        try await fixture.database.record(supported)
+        let newerSupported = makeCompletionEpisode(
+            id: UUID(),
+            input: "newer supported input",
+            suggestion: " newer suggestion",
+            outcome: " newer outcome",
+            date: Date(timeIntervalSince1970: 401)
+        )
+        try await fixture.database.record(olderSupported)
+        try await fixture.database.record(newerSupported)
         try await fixture.database.recordUnsupportedCompletionEpisodeForTesting(
             id: UUID(),
             storageVersion: 999,
-            capturedAt: Date(timeIntervalSince1970: 401)
+            capturedAt: Date(timeIntervalSince1970: 402)
+        )
+        try await fixture.database.recordUnsupportedCompletionEpisodeForTesting(
+            id: UUID(),
+            storageVersion: 1_000,
+            capturedAt: Date(timeIntervalSince1970: 403)
         )
 
         let episodes = try await fixture.database.completionEpisodes()
-        XCTAssertEqual(episodes, [supported])
+        XCTAssertEqual(episodes, [olderSupported, newerSupported])
+        let latestSupported =
+            try await fixture.database.completionEpisodes(limit: 1)
+        XCTAssertEqual(latestSupported, [newerSupported])
     }
 
     func testTextDeltasPreserveDifferentlyNormalizedUTF8Exactly() throws {

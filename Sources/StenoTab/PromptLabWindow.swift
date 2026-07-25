@@ -514,7 +514,12 @@ private struct PersonalizationSettingsView: View {
             .frame(maxWidth: 900, alignment: .leading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { store.refresh() }
+        .onAppear {
+            store.setHistoryInspectorVisible(true)
+        }
+        .onDisappear {
+            store.setHistoryInspectorVisible(false)
+        }
         .confirmationDialog(
             "Delete all personalization data?",
             isPresented: $confirmsDeletion

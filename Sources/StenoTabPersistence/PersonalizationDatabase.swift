@@ -647,21 +647,12 @@ public actor PersonalizationDatabase {
     public func completionEpisodes(
         limit: Int? = nil
     ) throws -> [CompletionEpisodeCapture] {
-        let order = limit == nil ? "ASC" : "DESC"
-        let limitClause = limit.map { " LIMIT \(max(0, $0))" } ?? ""
-        let rows = try connection.query(
-            """
-            SELECT payload_sealed
-            FROM personalization_event
-            WHERE kind = ?
-            ORDER BY sequence \(order)\(limitClause)
-            """,
-            bindings: [.text(Self.completionEpisodeKind)]
-        )
         var chunkCache: [Data: Data] = [:]
-        let episodes = try rows.compactMap {
-            row -> CompletionEpisodeCapture? in
-            guard let sealedPayload = row.blob(at: 0) else {
+        func decode(
+            _ row: SQLiteRow,
+            payloadIndex: Int
+        ) throws -> CompletionEpisodeCapture? {
+            guard let sealedPayload = row.blob(at: payloadIndex) else {
                 throw PersonalizationPersistenceError.database(
                     "Invalid completion episode row"
                 )
@@ -698,7 +689,67 @@ public actor PersonalizationDatabase {
                 from: payload
             )
         }
-        return limit == nil ? episodes : Array(episodes.reversed())
+
+        guard let limit else {
+            let rows = try connection.query(
+                """
+                SELECT payload_sealed
+                FROM personalization_event
+                WHERE kind = ?
+                ORDER BY sequence ASC
+                """,
+                bindings: [.text(Self.completionEpisodeKind)]
+            )
+            return try rows.compactMap {
+                try decode($0, payloadIndex: 0)
+            }
+        }
+
+        let requestedCount = max(0, limit)
+        guard requestedCount > 0 else { return [] }
+        let pageSize = max(20, requestedCount)
+        var episodes: [CompletionEpisodeCapture] = []
+        var sequenceBefore: Int64?
+
+        while episodes.count < requestedCount {
+            let cursorPredicate =
+                sequenceBefore == nil ? "" : " AND sequence < ?"
+            var bindings: [SQLiteBinding] = [
+                .text(Self.completionEpisodeKind)
+            ]
+            if let sequenceBefore {
+                bindings.append(.integer(sequenceBefore))
+            }
+            bindings.append(.integer(Int64(pageSize)))
+            let rows = try connection.query(
+                """
+                SELECT sequence, payload_sealed
+                FROM personalization_event
+                WHERE kind = ?\(cursorPredicate)
+                ORDER BY sequence DESC
+                LIMIT ?
+                """,
+                bindings: bindings
+            )
+            guard !rows.isEmpty else { break }
+
+            for row in rows {
+                if let episode = try decode(row, payloadIndex: 1) {
+                    episodes.append(episode)
+                    if episodes.count == requestedCount {
+                        break
+                    }
+                }
+            }
+            guard
+                rows.count == pageSize,
+                let oldestSequence = rows.last?.integer(at: 0)
+            else {
+                break
+            }
+            sequenceBefore = oldestSequence
+        }
+        return Array(episodes.reversed())
     }
 
     private func decodedEvents<Value: Decodable>(
