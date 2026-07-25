@@ -6,6 +6,24 @@ import XCTest
 
 final class PersonalizationIntegrationTests: XCTestCase {
     @MainActor
+    func testDisablingCollectionCancelsPersonalizationConsumers() throws {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        var didResetConsumers = false
+        store.onHistoryReset = {
+            didResetConsumers = true
+        }
+
+        store.collectionEnabled = false
+
+        XCTAssertTrue(didResetConsumers)
+    }
+
+    @MainActor
     func testSettingsLoadDisablesLegacyClipboardAndOCROptIns() throws {
         let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(

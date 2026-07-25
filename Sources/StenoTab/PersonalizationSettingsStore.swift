@@ -30,6 +30,9 @@ final class PersonalizationSettingsStore: ObservableObject {
                 collectionEnabled,
                 forKey: Keys.collectionEnabled
             )
+            if oldValue, !collectionEnabled {
+                onHistoryReset?()
+            }
         }
     }
     @Published var collectDirectTyping: Bool {
