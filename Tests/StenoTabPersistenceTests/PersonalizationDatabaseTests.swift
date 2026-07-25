@@ -718,6 +718,29 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(episodes, [episode])
     }
 
+    func testCompletionEpisodeRejectsPromptReferenceInsideSurrogatePair()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: "😀 private input",
+            suggestion: " works",
+            outcome: " works",
+            date: Date(timeIntervalSince1970: 403),
+            invocationSelection: UTF16Selection(location: 1, length: 0)
+        )
+
+        try await fixture.database.record(episode)
+
+        let storedEpisodes = try await fixture.database.completionEpisodes()
+        let exportedEpisodes =
+            try await fixture.database.exportCorpus().completionEpisodes
+        XCTAssertEqual(storedEpisodes, [episode])
+        XCTAssertEqual(exportedEpisodes, [episode])
+    }
+
     func testLongProviderPrefixReusesAuthenticatedFieldChunks() async throws {
         let fixture = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -1830,6 +1853,7 @@ final class PersonalizationDatabaseTests: XCTestCase {
         outcome: String,
         date: Date,
         promptInputOverride: String? = nil,
+        invocationSelection: UTF16Selection? = nil,
         applicationBundleIdentifier: String = "com.example.Editor",
         sourceEventIDs: [UUID] = [],
         sourceContexts: [PersonalizationContext] = []
@@ -1839,7 +1863,7 @@ final class PersonalizationDatabaseTests: XCTestCase {
             id: id,
             field: CapturedFieldState(
                 text: input,
-                selection: UTF16Selection(
+                selection: invocationSelection ?? UTF16Selection(
                     location: input.utf16.count,
                     length: 0
                 )

@@ -16,10 +16,25 @@ public struct UTF16Selection: Codable, Sendable, Equatable {
 
     public func isValid(for text: String) -> Bool {
         let count = text.utf16.count
-        return location >= 0
+        guard
+            location >= 0
             && length >= 0
             && location <= count
             && length <= count - location
+        else {
+            return false
+        }
+        let utf16 = text.utf16
+        let lowerBound = utf16.index(
+            utf16.startIndex,
+            offsetBy: location
+        )
+        let upperBound = utf16.index(
+            lowerBound,
+            offsetBy: length
+        )
+        return String.Index(lowerBound, within: text) != nil
+            && String.Index(upperBound, within: text) != nil
     }
 
     public func selectionForDeletion(

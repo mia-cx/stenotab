@@ -129,4 +129,21 @@ final class PersonalizationCaptureTests: XCTestCase {
             UTF16Selection(location: 1, length: familyLength)
         )
     }
+
+    func testSelectionRejectsUTF16OffsetsInsideSurrogatePairs() {
+        let text = "😀"
+
+        XCTAssertFalse(
+            UTF16Selection(location: 1, length: 0).isValid(for: text)
+        )
+        XCTAssertFalse(
+            UTF16Selection(location: 0, length: 1).isValid(for: text)
+        )
+        XCTAssertTrue(
+            UTF16Selection(location: 0, length: 2).isValid(for: text)
+        )
+        XCTAssertTrue(
+            UTF16Selection(location: 2, length: 0).isValid(for: text)
+        )
+    }
 }
