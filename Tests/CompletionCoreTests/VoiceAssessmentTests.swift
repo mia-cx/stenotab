@@ -45,6 +45,46 @@ final class VoiceAssessmentTests: XCTestCase {
                 at: now.addingTimeInterval(60)
             )
         )
+        let legacy = VoiceAssessment(
+            summary: "Existing",
+            sampleCount: 10,
+            sourceEventCount: 10,
+            generatedAt: now,
+            analyzerVersion: nil
+        )
+        XCTAssertTrue(
+            VoiceAssessmentSchedule.shouldAssess(
+                existing: legacy,
+                sourceEventCount: 10,
+                at: now.addingTimeInterval(60)
+            )
+        )
+    }
+
+    func testLegacyAssessmentWithoutAnalyzerVersionDecodesAndRefreshes() throws {
+        let data = Data(
+            """
+            {
+              "summary": "Existing",
+              "sampleCount": 10,
+              "sourceEventCount": 10,
+              "generatedAt": 0
+            }
+            """.utf8
+        )
+        let assessment = try JSONDecoder().decode(
+            VoiceAssessment.self,
+            from: data
+        )
+
+        XCTAssertNil(assessment.analyzerVersion)
+        XCTAssertTrue(
+            VoiceAssessmentSchedule.shouldAssess(
+                existing: assessment,
+                sourceEventCount: 10,
+                at: Date(timeIntervalSinceReferenceDate: 60)
+            )
+        )
     }
 
     func testAssessmentSummarizesObservableWritingTraitsInFirstPerson() {
@@ -83,6 +123,149 @@ final class VoiceAssessmentTests: XCTestCase {
         )
         XCTAssertTrue(
             assessment?.summary.contains("technical terms") == true
+        )
+    }
+
+    func testAssessmentRecognizesRepeatedBritishEnglishPreferences() {
+        let texts = [
+            "my favourite colour is green",
+            "the centre panel needs more contrast",
+            "that behaviour seems intentional",
+            "i'll organise the remaining changes",
+            "the licence is in the repository"
+        ]
+
+        let assessment = VoiceAssessmentAnalyzer.assess(
+            texts: texts,
+            sourceEventCount: 10,
+            at: Date(timeIntervalSince1970: 300)
+        )
+
+        XCTAssertTrue(
+            assessment?.summary.contains(
+                "I usually write in British English"
+            ) == true
+        )
+    }
+
+    func testAssessmentRecognizesRepeatedAmericanEnglishPreferences() {
+        let texts = [
+            "my favorite color is green",
+            "the center panel needs more contrast",
+            "that behavior seems intentional",
+            "i'll organize the remaining changes",
+            "the license is in the repository"
+        ]
+
+        let assessment = VoiceAssessmentAnalyzer.assess(
+            texts: texts,
+            sourceEventCount: 10,
+            at: Date(timeIntervalSince1970: 400)
+        )
+
+        XCTAssertTrue(
+            assessment?.summary.contains(
+                "I usually write in American English"
+            ) == true
+        )
+    }
+
+    func testAssessmentDescribesSustainedMixedEnglishSpellingsWithoutChoosing() {
+        let texts = [
+            "my favourite color is green",
+            "the centre panel has odd behavior",
+            "i'll organise the license files",
+            "my favorite colour is blue",
+            "the center panel changed its behaviour",
+            "i'll organize the licence files"
+        ]
+
+        let assessment = VoiceAssessmentAnalyzer.assess(
+            texts: texts,
+            sourceEventCount: 10,
+            at: Date(timeIntervalSince1970: 500)
+        )
+
+        XCTAssertTrue(
+            assessment?.summary.contains(
+                "I mix British and American English spellings"
+            ) == true
+        )
+        XCTAssertFalse(
+            assessment?.summary.contains("I usually write in British English")
+                == true
+        )
+        XCTAssertFalse(
+            assessment?.summary.contains("I usually write in American English")
+                == true
+        )
+    }
+
+    func testAssessmentDoesNotGuessDialectFromOneRepeatedSpelling() {
+        let texts = [
+            "i like that colour",
+            "the colour is fine",
+            "can we keep this colour?",
+            "that colour works",
+            "same colour as before"
+        ]
+
+        let assessment = VoiceAssessmentAnalyzer.assess(
+            texts: texts,
+            sourceEventCount: 10,
+            at: Date(timeIntervalSince1970: 600)
+        )
+
+        XCTAssertFalse(
+            assessment?.summary.contains("British English") == true
+        )
+        XCTAssertFalse(
+            assessment?.summary.contains("American English") == true
+        )
+    }
+
+    func testAssessmentRecognizesSustainedEnglishAndDutchCodeSwitching() {
+        let texts = [
+            "could you check whether the settings window still opens?",
+            "i think the model download finished successfully",
+            "the autocomplete suggestion looks correctly aligned now",
+            "kun je controleren of het instellingenvenster nog opent?",
+            "volgens mij is het model helemaal klaar met downloaden",
+            "de automatische aanvulling staat nu op de juiste plek"
+        ]
+
+        let assessment = VoiceAssessmentAnalyzer.assess(
+            texts: texts,
+            sourceEventCount: 10,
+            at: Date(timeIntervalSince1970: 700)
+        )
+
+        XCTAssertTrue(
+            assessment?.summary.contains(
+                "I switch between English and Dutch"
+            ) == true
+        )
+    }
+
+    func testNonEnglishCognatesDoNotBecomeEnglishDialectEvidence() {
+        let texts = [
+            "le programme fonctionne correctement sur mon ordinateur",
+            "le centre de la fenêtre contient tous les réglages",
+            "la licence du logiciel se trouve dans le dépôt",
+            "je vais vérifier les autres modifications maintenant"
+        ]
+
+        let assessment = VoiceAssessmentAnalyzer.assess(
+            texts: texts,
+            sourceEventCount: 10,
+            at: Date(timeIntervalSince1970: 800)
+        )
+
+        XCTAssertTrue(
+            assessment?.summary.contains("I usually write in French") == true
+        )
+        XCTAssertFalse(
+            assessment?.summary.contains("British English") == true
         )
     }
 }
