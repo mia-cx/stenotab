@@ -729,16 +729,47 @@ final class PersonalizationDatabaseTests: XCTestCase {
             suggestion: " works",
             outcome: " works",
             date: Date(timeIntervalSince1970: 403),
+            promptInputOverride: "\u{FFFD}",
             invocationSelection: UTF16Selection(location: 1, length: 0)
         )
 
         try await fixture.database.record(episode)
 
+        let overlap = try await fixture.database
+            .firstCompletionFieldPromptChunkOverlapForTesting()
         let storedEpisodes = try await fixture.database.completionEpisodes()
         let exportedEpisodes =
             try await fixture.database.exportCorpus().completionEpisodes
+        XCTAssertEqual(overlap, 0)
         XCTAssertEqual(storedEpisodes, [episode])
         XCTAssertEqual(exportedEpisodes, [episode])
+    }
+
+    func testCompletionEpisodeReusesPromptReferenceAfterEmoji()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let input = "😀" + String(repeating: "a", count: 252)
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: input,
+            suggestion: " works",
+            outcome: " works",
+            date: Date(timeIntervalSince1970: 404),
+            invocationSelection: UTF16Selection(
+                location: input.utf16.count,
+                length: 0
+            )
+        )
+
+        try await fixture.database.record(episode)
+
+        let overlap = try await fixture.database
+            .firstCompletionFieldPromptChunkOverlapForTesting()
+        let storedEpisodes = try await fixture.database.completionEpisodes()
+        XCTAssertGreaterThan(overlap, 0)
+        XCTAssertEqual(storedEpisodes, [episode])
     }
 
     func testLongProviderPrefixReusesAuthenticatedFieldChunks() async throws {
