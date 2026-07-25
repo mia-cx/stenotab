@@ -79,6 +79,7 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     private let defaults: UserDefaults
     private var collectionGeneration: UInt64 = 0
+    private var derivedPersonalizationIsInvalidated = false
     private var completionEpisodeDeleteAllBoundary: Date?
     private var completionEpisodeApplicationDeletionBoundaries:
         [String: Date] = [:]
@@ -201,15 +202,20 @@ final class PersonalizationSettingsStore: ObservableObject {
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await modelWorker.deleteAll(
+                let rebuiltModel = try await modelWorker.deleteAll(
                     generation: generation
                 )
+                guard generation == collectionGeneration else { return }
+                languageModel = rebuiltModel
                 voiceAssessment = nil
                 storedEventCount = 0
                 encryptedPayloadBytes = 0
                 recentEpisodes = []
                 recentAcceptedSuggestions = []
                 recentCompletionEpisodes = []
+                finishDerivedPersonalizationInvalidation(
+                    generation: generation
+                )
                 operationError = nil
             } catch {
                 operationError = String(describing: error)
@@ -223,11 +229,18 @@ final class PersonalizationSettingsStore: ObservableObject {
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await modelWorker.record(
+                let updatedModel = try await modelWorker.record(
                     capture,
                     retentionPolicy: policy,
                     generation: generation
                 )
+                guard
+                    generation == collectionGeneration,
+                    !derivedPersonalizationIsInvalidated
+                else {
+                    return
+                }
+                languageModel = updatedModel
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
                 try await refreshAfterRecording(.acceptedSuggestions)
@@ -249,11 +262,18 @@ final class PersonalizationSettingsStore: ObservableObject {
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await modelWorker.record(
+                let updatedModel = try await modelWorker.record(
                     episode,
                     retentionPolicy: policy,
                     generation: generation
                 )
+                guard
+                    generation == collectionGeneration,
+                    !derivedPersonalizationIsInvalidated
+                else {
+                    return
+                }
+                languageModel = updatedModel
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
                 try await refreshAfterRecording(.writingEpisodes)
@@ -269,11 +289,18 @@ final class PersonalizationSettingsStore: ObservableObject {
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await modelWorker.record(
+                let updatedModel = try await modelWorker.record(
                     feedback,
                     retentionPolicy: policy,
                     generation: generation
                 )
+                guard
+                    generation == collectionGeneration,
+                    !derivedPersonalizationIsInvalidated
+                else {
+                    return
+                }
+                languageModel = updatedModel
                 try await refreshAfterRecording(.none)
             } catch {
                 operationError = String(describing: error)
@@ -304,11 +331,18 @@ final class PersonalizationSettingsStore: ObservableObject {
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await modelWorker.record(
+                let updatedModel = try await modelWorker.record(
                     episode,
                     retentionPolicy: policy,
                     generation: generation
                 )
+                guard
+                    generation == collectionGeneration,
+                    !derivedPersonalizationIsInvalidated
+                else {
+                    return
+                }
+                languageModel = updatedModel
                 try await refreshAfterRecording(.completionEpisodes)
             } catch {
                 operationError = String(describing: error)
@@ -346,12 +380,17 @@ final class PersonalizationSettingsStore: ObservableObject {
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await modelWorker.deleteEvent(
+                let rebuiltModel = try await modelWorker.deleteEvent(
                     id: id,
                     generation: generation
                 )
+                guard generation == collectionGeneration else { return }
+                languageModel = rebuiltModel
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
+                finishDerivedPersonalizationInvalidation(
+                    generation: generation
+                )
                 refresh()
             } catch {
                 operationError = String(describing: error)
@@ -368,13 +407,18 @@ final class PersonalizationSettingsStore: ObservableObject {
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await modelWorker.deleteEvents(
+                let rebuiltModel = try await modelWorker.deleteEvents(
                     scopeKind: "application",
                     value: bundleIdentifier,
                     generation: generation
                 )
+                guard generation == collectionGeneration else { return }
+                languageModel = rebuiltModel
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
+                finishDerivedPersonalizationInvalidation(
+                    generation: generation
+                )
                 refresh()
             } catch {
                 operationError = String(describing: error)
@@ -414,12 +458,17 @@ final class PersonalizationSettingsStore: ObservableObject {
         let policy = retentionPolicy
         enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await modelWorker.enforceRetention(
+                let rebuiltModel = try await modelWorker.enforceRetention(
                     policy,
                     generation: generation
                 )
+                guard generation == collectionGeneration else { return }
+                languageModel = rebuiltModel
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
+                finishDerivedPersonalizationInvalidation(
+                    generation: generation
+                )
                 refresh()
             } catch {
                 operationError = String(describing: error)
@@ -428,9 +477,17 @@ final class PersonalizationSettingsStore: ObservableObject {
     }
 
     private func invalidateDerivedPersonalization() {
+        derivedPersonalizationIsInvalidated = true
         languageModel = PersonalLanguageModel()
         voiceAssessment = nil
         onHistoryReset?()
+    }
+
+    private func finishDerivedPersonalizationInvalidation(
+        generation: UInt64
+    ) {
+        guard generation == collectionGeneration else { return }
+        derivedPersonalizationIsInvalidated = false
     }
 
     func report(error: Error) {
@@ -438,10 +495,23 @@ final class PersonalizationSettingsStore: ObservableObject {
     }
 
     func reassessVoice() {
-        guard let modelWorker else { return }
+        guard
+            !derivedPersonalizationIsInvalidated,
+            let modelWorker
+        else {
+            return
+        }
+        let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
             do {
-                voiceAssessment = try await modelWorker.reassessVoice()
+                let assessment = try await modelWorker.reassessVoice()
+                guard
+                    generation == collectionGeneration,
+                    !derivedPersonalizationIsInvalidated
+                else {
+                    return
+                }
+                voiceAssessment = assessment
                 operationError = nil
             } catch {
                 operationError = String(describing: error)
@@ -453,19 +523,31 @@ final class PersonalizationSettingsStore: ObservableObject {
         for prefix: String,
         context: PersonalizationContext
     ) -> PersonalCompletion? {
-        guard useLocalCompletions else { return nil }
+        guard
+            useLocalCompletions,
+            !derivedPersonalizationIsInvalidated
+        else {
+            return nil
+        }
         return languageModel.completion(for: prefix, context: context)
     }
 
     var vocabularyEntries: [PersonalVocabularyEntry] {
-        languageModel.vocabularyEntries(limit: 30)
+        guard !derivedPersonalizationIsInvalidated else { return [] }
+        return languageModel.vocabularyEntries(limit: 30)
     }
 
     func promptContext(
         for prefix: String,
         context: PersonalizationContext
     ) async -> PersonalizationPromptContext {
-        guard collectionEnabled, let modelWorker else { return .empty }
+        guard
+            collectionEnabled,
+            !derivedPersonalizationIsInvalidated,
+            let modelWorker
+        else {
+            return .empty
+        }
         do {
             return try await modelWorker.promptContext(
                 for: prefix,

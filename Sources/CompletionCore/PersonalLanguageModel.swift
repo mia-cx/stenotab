@@ -83,7 +83,7 @@ public struct PersonalVocabularyEntry:
 }
 
 public struct PersonalLanguageModel: Codable, Sendable, Equatable {
-    private static let currentProjectionVersion = 7
+    private static let currentProjectionVersion = 8
 
     private struct WordOccurrence {
         let display: String
@@ -167,20 +167,16 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         let authoritativeWords = Set(
             Self.words(in: episode.finalField.text).map(Self.normalize)
         )
+        let authoritativeEdits = Self.authoritativeEditFields(in: episode)
         let directlyTypedEdits = episode.edits.enumerated().filter {
             $0.element.provenance == .directlyTyped
         }
         for indexedEdit in directlyTypedEdits {
             let editIndex = indexedEdit.offset
             let edit = indexedEdit.element
-            let isFinalEpisodeEdit =
-                editIndex == episode.edits.indices.last
             guard
                 let fieldBefore = edit.fieldBefore,
-                let fieldAfter =
-                    isFinalEpisodeEdit
-                    ? episode.finalField
-                    : Self.resolvedFieldAfter(edit)
+                let authoritativeEdit = authoritativeEdits[editIndex]
             else {
                 continue
             }
@@ -191,15 +187,15 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
                         && $0.selectionAfter == edit.selectionBefore
                 } ?? false
             learnFieldChange(
-                before: fieldBefore.text,
-                after: fieldAfter.text,
+                before: authoritativeEdit.before,
+                after: authoritativeEdit.after,
                 signal: .directlyTyped,
                 context: episode.context,
                 at: edit.endedAt,
                 includeBoundaryTouch:
                     !immediatelyFollowsAcceptedSuggestion,
                 excludeUnterminatedTrailingWord:
-                    !isFinalEpisodeEdit
+                    editIndex != episode.edits.indices.last
                     || episode.boundary == .idle,
                 allowedNormalizedWords: authoritativeWords
             )
@@ -903,35 +899,91 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             + String(decoding: utf16[upperBound...], as: UTF16.self)
     }
 
-    private static func resolvedFieldAfter(
-        _ edit: WritingEditCapture
-    ) -> CapturedFieldState? {
-        if let fieldAfter = edit.fieldAfter {
-            return fieldAfter
-        }
-        guard let fieldBefore = edit.fieldBefore else { return nil }
-
-        let replacementSelection: UTF16Selection
-        if let deletedText = edit.deletedText, !deletedText.isEmpty {
-            replacementSelection = UTF16Selection(
-                location: edit.selectionAfter.location,
-                length: deletedText.utf16.count
+    private static func authoritativeEditFields(
+        in episode: WritingEpisodeCapture
+    ) -> [(before: String, after: String)?] {
+        var fields = Array<(before: String, after: String)?>(
+            repeating: nil,
+            count: episode.edits.count
+        )
+        var authoritativeAfter = episode.finalField.text
+        for editIndex in episode.edits.indices.reversed() {
+            let edit = episode.edits[editIndex]
+            guard
+                let authoritativeBefore = reversing(
+                    edit,
+                    from: authoritativeAfter
+                )
+            else {
+                break
+            }
+            fields[editIndex] = (
+                before: authoritativeBefore,
+                after: authoritativeAfter
             )
-        } else {
-            replacementSelection = edit.selectionBefore
+            authoritativeAfter = authoritativeBefore
         }
+        return fields
+    }
+
+    private static func reversing(
+        _ edit: WritingEditCapture,
+        from authoritativeAfter: String
+    ) -> String? {
+        let replacementLocation: Int
+        let originalText: String
+        if let deletedText = edit.deletedText, !deletedText.isEmpty {
+            replacementLocation = edit.selectionAfter.location
+            originalText = deletedText
+        } else {
+            replacementLocation = edit.selectionBefore.location
+            guard
+                let fieldBefore = edit.fieldBefore,
+                let selectedText = selectedText(
+                    edit.selectionBefore,
+                    in: fieldBefore.text
+                )
+            else {
+                return nil
+            }
+            originalText = selectedText
+        }
+        return replacing(
+            UTF16Selection(
+                location: replacementLocation,
+                length: edit.insertedText.utf16.count
+            ),
+            in: authoritativeAfter,
+            with: originalText
+        )
+    }
+
+    private static func selectedText(
+        _ selection: UTF16Selection,
+        in text: String
+    ) -> String? {
+        guard selection.isValid(for: text) else { return nil }
+        let utf16 = text.utf16
+        let lowerBound = utf16.index(
+            utf16.startIndex,
+            offsetBy: selection.location
+        )
+        let upperBound = utf16.index(
+            lowerBound,
+            offsetBy: selection.length
+        )
         guard
-            let text = replacing(
-                replacementSelection,
-                in: fieldBefore.text,
-                with: edit.insertedText
+            let lowerStringIndex = String.Index(
+                lowerBound,
+                within: text
+            ),
+            let upperStringIndex = String.Index(
+                upperBound,
+                within: text
             )
         else {
             return nil
         }
-        return CapturedFieldState(
-            text: text,
-            selection: edit.selectionAfter
-        )
+        return String(text[lowerStringIndex..<upperStringIndex])
     }
 }

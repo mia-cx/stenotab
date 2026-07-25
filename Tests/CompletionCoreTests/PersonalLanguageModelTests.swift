@@ -783,6 +783,121 @@ final class PersonalLanguageModelTests: XCTestCase {
         )
     }
 
+    func testAuthoritativeCorrectionDoesNotRelabelPreexistingWords() {
+        let date = Date(timeIntervalSince1970: 128)
+        let initialText = "teh middle "
+        let predictedText = "teh middle zebra "
+        let authoritativeText = "the middle zebra "
+        let initial = CapturedFieldState(
+            text: initialText,
+            selection: UTF16Selection(
+                location: initialText.utf16.count,
+                length: 0
+            )
+        )
+        let predicted = CapturedFieldState(
+            text: predictedText,
+            selection: UTF16Selection(
+                location: predictedText.utf16.count,
+                length: 0
+            )
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: CapturedFieldState(
+                text: authoritativeText,
+                selection: UTF16Selection(
+                    location: authoritativeText.utf16.count,
+                    length: 0
+                )
+            ),
+            edits: [
+                WritingEditCapture(
+                    insertedText: "zebra ",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: predicted.selection,
+                    fieldBefore: initial,
+                    fieldAfter: predicted,
+                    startedAt: date,
+                    endedAt: date
+                )
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date,
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(
+            model.vocabularyEntries().map(\.normalized),
+            ["zebra"]
+        )
+    }
+
+    func testAuthoritativeCorrectionPreservesMixedEditProvenance() {
+        let date = Date(timeIntervalSince1970: 129)
+        let initial = CapturedFieldState(
+            text: "",
+            selection: UTF16Selection(location: 0, length: 0)
+        )
+        let afterDirectTyping = CapturedFieldState(
+            text: "teh ",
+            selection: UTF16Selection(location: 4, length: 0)
+        )
+        let predictedFinal = CapturedFieldState(
+            text: "teh accepted",
+            selection: UTF16Selection(location: 12, length: 0)
+        )
+        let authoritativeFinal = CapturedFieldState(
+            text: "the accepted",
+            selection: UTF16Selection(location: 12, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: authoritativeFinal,
+            edits: [
+                WritingEditCapture(
+                    insertedText: "teh ",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: afterDirectTyping.selection,
+                    fieldBefore: initial,
+                    fieldAfter: afterDirectTyping,
+                    startedAt: date,
+                    endedAt: date
+                ),
+                WritingEditCapture(
+                    insertedText: "accepted",
+                    provenance: .acceptedSuggestion,
+                    selectionBefore: afterDirectTyping.selection,
+                    selectionAfter: predictedFinal.selection,
+                    fieldBefore: afterDirectTyping,
+                    fieldAfter: predictedFinal,
+                    startedAt: date.addingTimeInterval(1),
+                    endedAt: date.addingTimeInterval(1)
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date.addingTimeInterval(1),
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(
+            model.vocabularyEntries().map(\.normalized),
+            ["the"]
+        )
+    }
+
     func testVocabularyEntriesExposePreferredCasingAndFeedbackEvidence() {
         var model = PersonalLanguageModel()
         let context = PersonalizationContext(editorIdentifier: "editor")

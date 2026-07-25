@@ -332,6 +332,20 @@ final class PersonalizationIntegrationTests: XCTestCase {
         let store = PersonalizationSettingsStore(defaults: defaults)
         store.attach(database: database)
         await store.flushPendingPersistence()
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "DeleteAllUniqueToken",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date()
+        )
+        store.record(capture)
+        await store.flushPendingPersistence()
+        XCTAssertFalse(store.vocabularyEntries.isEmpty)
         let episode = makeCompletionEpisode(
             context: PersonalizationContext(editorIdentifier: "editor"),
             index: 0,
@@ -340,6 +354,7 @@ final class PersonalizationIntegrationTests: XCTestCase {
         )
 
         store.deleteAll()
+        XCTAssertTrue(store.vocabularyEntries.isEmpty)
         await store.flushPendingPersistence()
         store.record(episode)
         await store.flushPendingPersistence()
@@ -429,6 +444,17 @@ final class PersonalizationIntegrationTests: XCTestCase {
             editorIdentifier: "other-editor"
         )
         let generation = store.captureGeneration
+        let targetSuggestion = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "ApplicationDeleteUniqueToken",
+            acceptanceScope: .entireSuggestion,
+            context: targetContext,
+            capturedAt: Date()
+        )
         let targetEpisode = makeCompletionEpisode(
             context: targetContext,
             index: 0,
@@ -447,9 +473,11 @@ final class PersonalizationIntegrationTests: XCTestCase {
             collectionGeneration: generation,
             date: Date(timeIntervalSinceNow: 24 * 60 * 60)
         )
+        store.record(targetSuggestion)
         store.record(targetEpisode)
         store.record(otherEpisode)
         await store.flushPendingPersistence()
+        XCTAssertFalse(store.vocabularyEntries.isEmpty)
         var didResetHistory = false
         store.onHistoryReset = {
             didResetHistory = true
@@ -460,8 +488,16 @@ final class PersonalizationIntegrationTests: XCTestCase {
         )
 
         XCTAssertTrue(didResetHistory)
+        XCTAssertTrue(store.vocabularyEntries.isEmpty)
         await store.flushPendingPersistence()
+        let boundaryTargetEpisode = makeCompletionEpisode(
+            context: targetContext,
+            index: 3,
+            collectionGeneration: store.captureGeneration,
+            date: targetEpisode.invocation.startedAt
+        )
         store.record(staleTargetEpisode)
+        store.record(boundaryTargetEpisode)
         await store.flushPendingPersistence()
 
         let storedEpisodes = try await database.completionEpisodes()
@@ -499,6 +535,10 @@ final class PersonalizationIntegrationTests: XCTestCase {
         let store = PersonalizationSettingsStore(defaults: defaults)
         store.attach(database: database)
         await store.flushPendingPersistence()
+        let context = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Writer",
+            editorIdentifier: "editor"
+        )
         let capture = AcceptedSuggestionCapture(
             id: UUID(),
             field: CapturedFieldState(
@@ -507,10 +547,7 @@ final class PersonalizationIntegrationTests: XCTestCase {
             ),
             insertion: "QuasarUniqueToken",
             acceptanceScope: .entireSuggestion,
-            context: PersonalizationContext(
-                applicationBundleIdentifier: "com.example.Writer",
-                editorIdentifier: "editor"
-            ),
+            context: context,
             capturedAt: Date()
         )
         store.record(capture)
@@ -519,6 +556,11 @@ final class PersonalizationIntegrationTests: XCTestCase {
             store.vocabularyEntries.map(\.normalized),
             ["quasaruniquetoken"]
         )
+        let promptContext = await store.promptContext(
+            for: "QuasarUniqueToken",
+            context: context
+        )
+        XCTAssertNotEqual(promptContext, .empty)
         var didResetHistory = false
         store.onHistoryReset = {
             didResetHistory = true
@@ -528,6 +570,11 @@ final class PersonalizationIntegrationTests: XCTestCase {
 
         XCTAssertTrue(didResetHistory)
         XCTAssertTrue(store.vocabularyEntries.isEmpty)
+        let invalidatedPromptContext = await store.promptContext(
+            for: "QuasarUniqueToken",
+            context: context
+        )
+        XCTAssertEqual(invalidatedPromptContext, .empty)
         await store.flushPendingPersistence()
         let storedSuggestions = try await database.acceptedSuggestions()
         XCTAssertEqual(storedSuggestions, [])

@@ -161,6 +161,10 @@ final class CompletionProviderTests: XCTestCase {
             XCTAssertEqual(invocation.id, seed.id)
             XCTAssertEqual(invocation.field, seed.field)
             XCTAssertEqual(invocation.context, seed.context)
+            XCTAssertEqual(
+                invocation.collectionGeneration,
+                seed.collectionGeneration
+            )
             XCTAssertEqual(invocation.startedAt, seed.startedAt)
 
             switch style {
@@ -230,6 +234,7 @@ final class CompletionProviderTests: XCTestCase {
                 context: context,
                 sourceEventIDs: [sourceID],
                 sourceContexts: [sourceContext],
+                collectionGeneration: 37,
                 startedAt: Date(timeIntervalSince1970: 10)
             )
         )
