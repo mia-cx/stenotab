@@ -235,7 +235,32 @@ public enum CompletionEpisodeReconciliationDecision:
     case discardUnobservedAndReconcile
 }
 
+public enum CompletionEpisodeReconciliationSettlement:
+    Sendable,
+    Equatable
+{
+    case wait
+    case discard
+    case finalizeFromAuthoritativeBaseline
+    case finalizeFromObservedField
+}
+
 public enum CompletionEpisodeReconciliationPolicy {
+    public static func settlement(
+        for decision: CompletionEpisodeReconciliationDecision
+    ) -> CompletionEpisodeReconciliationSettlement {
+        switch decision {
+        case .waitForAuthoritativeChange:
+            return .wait
+        case .discardUnobservedAndReconcile:
+            return .discard
+        case .finalizeFromAuthoritativeBaselineAndReconcile:
+            return .finalizeFromAuthoritativeBaseline
+        case .reconcile:
+            return .finalizeFromObservedField
+        }
+    }
+
     public static func decision(
         previousEditorIdentifier: String?,
         observedEditorIdentifier: String,

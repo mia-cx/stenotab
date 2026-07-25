@@ -265,9 +265,16 @@ final class CompletionCoordinator: NSObject {
         reconciliationTimer = nil
         invalidatePendingCompletion()
         clearOCRContext()
+        let hasActiveCompletionEpisode =
+            pendingCompletionEpisodeResolution != nil
+            || completionEpisodeTracker.activeInvocationID != nil
+        let shutdownSnapshot =
+            hasActiveCompletionEpisode
+            ? accessibility.snapshot()
+            : nil
         if pendingCompletionEpisodeResolution != nil {
             if
-                let snapshot = accessibility.snapshot(),
+                let snapshot = shutdownSnapshot,
                 snapshot.editorIdentifier == lastSnapshot?.editorIdentifier
             {
                 let observedField = capturedField(from: snapshot)
@@ -293,21 +300,41 @@ final class CompletionCoordinator: NSObject {
                     prefix: snapshot.prefix,
                     suffix: snapshot.suffix
                 )
-                switch reconciliationDecision {
-                case .waitForAuthoritativeChange,
-                    .discardUnobservedAndReconcile:
+                switch CompletionEpisodeReconciliationPolicy.settlement(
+                    for: reconciliationDecision
+                ) {
+                case .wait, .discard:
                     discardPendingCompletionEpisode()
-                case .finalizeFromAuthoritativeBaselineAndReconcile:
+                case .finalizeFromAuthoritativeBaseline:
                     finalizePendingCompletionEpisodeIfNeeded(
                         finalField: authoritativeBaselineField
                     )
-                case .reconcile:
+                case .finalizeFromObservedField:
                     finalizePendingCompletionEpisodeIfNeeded(
                         finalField: observedField
                     )
                 }
             } else {
                 discardPendingCompletionEpisode()
+            }
+        } else if completionEpisodeTracker.activeInvocationID != nil {
+            if
+                let snapshot = shutdownSnapshot,
+                snapshot.editorIdentifier == lastSnapshot?.editorIdentifier
+            {
+                lastSnapshot = snapshot
+                _ = buffer.reconcile(
+                    prefix: snapshot.prefix,
+                    suffix: snapshot.suffix
+                )
+                finalizeCompletionEpisode(
+                    resolution:
+                        completionEpisodeTracker
+                        .abandonedSuggestionResolution,
+                    finalField: capturedField(from: snapshot)
+                )
+            } else {
+                discardCompletionEpisodeAndSuggestion()
             }
         }
         clearSuggestion(
@@ -661,7 +688,11 @@ final class CompletionCoordinator: NSObject {
                 observationDeadlineExceeded:
                     completionEpisodeObservationDeadlineExceeded
             )
-        if reconciliationDecision == .waitForAuthoritativeChange {
+        let reconciliationSettlement =
+            CompletionEpisodeReconciliationPolicy.settlement(
+                for: reconciliationDecision
+            )
+        if reconciliationSettlement == .wait {
             scheduleInvalidationReconciliation()
             return
         }
@@ -671,20 +702,19 @@ final class CompletionCoordinator: NSObject {
         completionEpisodeExpectedField = nil
         completionEpisodeRequiresPostEventObservation = false
         completionEpisodeObservationDeadline = nil
-        if reconciliationDecision
-            == .discardUnobservedAndReconcile
-        {
+        switch reconciliationSettlement {
+        case .discard:
             discardPendingCompletionEpisode()
-        } else if reconciliationDecision
-            == .finalizeFromAuthoritativeBaselineAndReconcile
-        {
+        case .finalizeFromAuthoritativeBaseline:
             finalizePendingCompletionEpisodeIfNeeded(
                 finalField: authoritativeBaselineField
             )
-        } else {
+        case .finalizeFromObservedField:
             finalizePendingCompletionEpisodeIfNeeded(
                 finalField: capturedField(from: snapshot)
             )
+        case .wait:
+            break
         }
         if focusChanged {
             invalidatePendingCompletion()
@@ -953,7 +983,11 @@ final class CompletionCoordinator: NSObject {
                 observationDeadlineExceeded:
                     completionEpisodeObservationDeadlineExceeded
             )
-        if reconciliationDecision == .waitForAuthoritativeChange {
+        let reconciliationSettlement =
+            CompletionEpisodeReconciliationPolicy.settlement(
+                for: reconciliationDecision
+            )
+        if reconciliationSettlement == .wait {
             scheduleModelCompletion()
             return nil
         }
@@ -963,20 +997,19 @@ final class CompletionCoordinator: NSObject {
         completionEpisodeExpectedField = nil
         completionEpisodeRequiresPostEventObservation = false
         completionEpisodeObservationDeadline = nil
-        if reconciliationDecision
-            == .discardUnobservedAndReconcile
-        {
+        switch reconciliationSettlement {
+        case .discard:
             discardPendingCompletionEpisode()
-        } else if reconciliationDecision
-            == .finalizeFromAuthoritativeBaselineAndReconcile
-        {
+        case .finalizeFromAuthoritativeBaseline:
             finalizePendingCompletionEpisodeIfNeeded(
                 finalField: authoritativeBaselineField
             )
-        } else {
+        case .finalizeFromObservedField:
             finalizePendingCompletionEpisodeIfNeeded(
                 finalField: capturedField(from: snapshot)
             )
+        case .wait:
+            break
         }
         if focusChanged {
             finalizeCompletionEpisode(

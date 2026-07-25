@@ -2,6 +2,33 @@ import XCTest
 @testable import CompletionCore
 
 final class CompletionEpisodeTrackerTests: XCTestCase {
+    func testReconciliationSettlementMapsEveryDecision() {
+        XCTAssertEqual(
+            CompletionEpisodeReconciliationPolicy.settlement(
+                for: .waitForAuthoritativeChange
+            ),
+            .wait
+        )
+        XCTAssertEqual(
+            CompletionEpisodeReconciliationPolicy.settlement(
+                for: .discardUnobservedAndReconcile
+            ),
+            .discard
+        )
+        XCTAssertEqual(
+            CompletionEpisodeReconciliationPolicy.settlement(
+                for: .finalizeFromAuthoritativeBaselineAndReconcile
+            ),
+            .finalizeFromAuthoritativeBaseline
+        )
+        XCTAssertEqual(
+            CompletionEpisodeReconciliationPolicy.settlement(
+                for: .reconcile
+            ),
+            .finalizeFromObservedField
+        )
+    }
+
     func testReconciliationWaitsForChangedAuthoritativeFieldBeforeDeadline() {
         let before = CapturedFieldState(
             text: "before",
