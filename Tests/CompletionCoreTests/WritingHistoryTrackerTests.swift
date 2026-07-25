@@ -189,4 +189,40 @@ final class WritingHistoryTrackerTests: XCTestCase {
         XCTAssertEqual(completed.finalField.text, final)
         XCTAssertEqual(completed.boundary, .idle)
     }
+
+    func testDeletionOnlyEpisodeRetainsDeletedText() throws {
+        let date = Date(timeIntervalSince1970: 400)
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        var tracker = WritingHistoryTracker()
+        _ = tracker.observe(
+            field: CapturedFieldState(
+                text: "Anythiings",
+                selection: UTF16Selection(location: 10, length: 0)
+            ),
+            context: context,
+            at: date
+        )
+        tracker.recordDeletion(
+            "i",
+            fieldBefore: CapturedFieldState(
+                text: "Anythiings",
+                selection: UTF16Selection(location: 7, length: 0)
+            ),
+            fieldAfter: CapturedFieldState(
+                text: "Anytings",
+                selection: UTF16Selection(location: 6, length: 0)
+            ),
+            at: date.addingTimeInterval(0.1)
+        )
+
+        let episode = try XCTUnwrap(
+            tracker.finalize(
+                boundary: .idle,
+                at: date.addingTimeInterval(3)
+            )
+        )
+        XCTAssertEqual(episode.edits.count, 1)
+        XCTAssertEqual(episode.edits[0].insertedText, "")
+        XCTAssertEqual(episode.edits[0].deletedText, "i")
+    }
 }

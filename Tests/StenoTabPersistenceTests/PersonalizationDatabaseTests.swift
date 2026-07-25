@@ -182,6 +182,35 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(finalCount, 0)
     }
 
+    func testCompletionFeedbackRoundTripsEncrypted() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let feedback = try XCTUnwrap(
+            PersonalizationCapture.typedSuggestionMatch(
+                id: UUID(),
+                fieldText: "private prefix",
+                selection: UTF16Selection(location: 14, length: 0),
+                suggestionText: " and private suffix",
+                context: PersonalizationContext(
+                    applicationBundleIdentifier: "com.example.Chat",
+                    editorIdentifier: "editor"
+                ),
+                capturedAt: Date(timeIntervalSince1970: 900)
+            )
+        )
+
+        try await fixture.database.record(feedback)
+        let stored = try await fixture.database.completionFeedback()
+
+        XCTAssertEqual(stored, [feedback])
+        let raw = try Data(
+            contentsOf: fixture.directory.appending(
+                path: "personalization.sqlite"
+            )
+        )
+        XCTAssertNil(raw.range(of: Data("private suffix".utf8)))
+    }
+
     private func makeDatabase() throws -> (
         database: PersonalizationDatabase,
         directory: URL

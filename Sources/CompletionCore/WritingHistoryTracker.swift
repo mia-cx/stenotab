@@ -8,6 +8,7 @@ public enum WritingEditProvenance: String, Codable, Sendable, Equatable {
 
 public struct WritingEditCapture: Codable, Sendable, Equatable {
     public let insertedText: String
+    public let deletedText: String?
     public let provenance: WritingEditProvenance
     public let selectionBefore: UTF16Selection
     public let selectionAfter: UTF16Selection
@@ -16,6 +17,7 @@ public struct WritingEditCapture: Codable, Sendable, Equatable {
 
     public init(
         insertedText: String,
+        deletedText: String? = nil,
         provenance: WritingEditProvenance,
         selectionBefore: UTF16Selection,
         selectionAfter: UTF16Selection,
@@ -23,6 +25,7 @@ public struct WritingEditCapture: Codable, Sendable, Equatable {
         endedAt: Date
     ) {
         self.insertedText = insertedText
+        self.deletedText = deletedText
         self.provenance = provenance
         self.selectionBefore = selectionBefore
         self.selectionAfter = selectionAfter
@@ -179,6 +182,36 @@ public struct WritingHistoryTracker: Sendable {
         } else {
             active.edits.append(edit)
         }
+        active.currentField = fieldAfter
+        active.lastActivityAt = date
+        self.active = active
+    }
+
+    public mutating func recordDeletion(
+        _ text: String,
+        fieldBefore: CapturedFieldState,
+        fieldAfter: CapturedFieldState,
+        at date: Date = Date()
+    ) {
+        guard
+            !text.isEmpty,
+            fieldBefore.selection.isValid(for: fieldBefore.text),
+            fieldAfter.selection.isValid(for: fieldAfter.text),
+            var active
+        else {
+            return
+        }
+        active.edits.append(
+            WritingEditCapture(
+                insertedText: "",
+                deletedText: text,
+                provenance: .directlyTyped,
+                selectionBefore: fieldBefore.selection,
+                selectionAfter: fieldAfter.selection,
+                startedAt: date,
+                endedAt: date
+            )
+        )
         active.currentField = fieldAfter
         active.lastActivityAt = date
         self.active = active

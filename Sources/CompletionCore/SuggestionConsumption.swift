@@ -16,6 +16,10 @@ public struct SuggestionConsumption: Sendable, Equatable {
         isFinal
     }
 
+    public var consumedSuggestionText: String {
+        String(streamed.prefix(min(consumed.count, streamed.count)))
+    }
+
     public init(suggestion: String, isFinal: Bool = true) {
         streamed = Array(suggestion)
         consumed = []

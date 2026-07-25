@@ -34,6 +34,8 @@ final class CompletionCoordinator: NSObject {
         @MainActor (AcceptedSuggestionCapture) -> Void
     private let onWritingEpisode:
         @MainActor (WritingEpisodeCapture) -> Void
+    private let onCompletionFeedback:
+        @MainActor (CompletionFeedbackCapture) -> Void
     private var inputMonitor: GlobalInputMonitor?
     private var reconciliationTimer: Timer?
     private var debounceTask: Task<Void, Never>?
@@ -67,6 +69,8 @@ final class CompletionCoordinator: NSObject {
     private var refillRequestID: UInt64 = 0
     private var consecutiveSnapshotFailures = 0
     private var writingHistoryTracker = WritingHistoryTracker()
+    private var completionReversionTracker = CompletionReversionTracker()
+    private var typedSuggestionOrigin: CapturedFieldState?
 
     private lazy var requestPump = LatestStreamPump<
         CompletionRequest,
@@ -99,6 +103,9 @@ final class CompletionCoordinator: NSObject {
         ) -> Void = { _ in },
         onWritingEpisode: @escaping @MainActor (
             WritingEpisodeCapture
+        ) -> Void = { _ in },
+        onCompletionFeedback: @escaping @MainActor (
+            CompletionFeedbackCapture
         ) -> Void = { _ in }
     ) {
         self.provider = provider
@@ -109,6 +116,7 @@ final class CompletionCoordinator: NSObject {
         self.onSuggestionAccepted = onSuggestionAccepted
         self.onPersonalizationCapture = onPersonalizationCapture
         self.onWritingEpisode = onWritingEpisode
+        self.onCompletionFeedback = onCompletionFeedback
         super.init()
     }
 
@@ -244,6 +252,20 @@ final class CompletionCoordinator: NSObject {
         }
         let snapshotBeforeMutation = lastSnapshot
         let fieldBeforeMutation = currentCapturedField()
+        let deletion = fieldBeforeMutation.flatMap {
+            deletionResult(for: mutation, fieldBefore: $0)
+        }
+        if case .deleteBackward = mutation,
+           let fieldBeforeMutation,
+           let feedback = completionReversionTracker
+            .recordBackwardDeletion(
+                fieldBefore: fieldBeforeMutation,
+                at: Date()
+            ) {
+            onCompletionFeedback(feedback)
+        } else if case .insert = mutation {
+            completionReversionTracker.cancel()
+        }
         buffer.apply(mutation)
         if case let .insert(text) = mutation,
            let fieldBeforeMutation {
@@ -252,6 +274,13 @@ final class CompletionCoordinator: NSObject {
                 provenance: .directlyTyped,
                 fieldBefore: fieldBeforeMutation,
                 fieldAfter: currentCapturedFieldFromBuffer(),
+                at: Date()
+            )
+        } else if let deletion {
+            writingHistoryTracker.recordDeletion(
+                deletion.deletedText,
+                fieldBefore: deletion.fieldBefore,
+                fieldAfter: deletion.fieldAfter,
                 at: Date()
             )
         }
@@ -282,6 +311,7 @@ final class CompletionCoordinator: NSObject {
                 )
                 return
             case .waitingForWhitespace:
+                recordTypedSuggestionMatch(from: consumption)
                 suggestion = nil
                 overlay.hide()
                 return
@@ -710,6 +740,10 @@ final class CompletionCoordinator: NSObject {
             suggestionConsumption = consumption
         } else {
             suggestionRequestID = response.requestID
+            typedSuggestionOrigin = CapturedFieldState(
+                text: preparedRequestSnapshot.snapshot.fieldText,
+                selection: preparedRequestSnapshot.snapshot.selection
+            )
             suggestionConsumption = SuggestionConsumption(
                 suggestion: text,
                 isFinal: response.isFinal
@@ -726,7 +760,13 @@ final class CompletionCoordinator: NSObject {
         case let .matched(remaining):
             suggestion = remaining
             overlay.show(remaining)
-        case .awaitingStream, .waitingForWhitespace:
+        case .awaitingStream:
+            suggestion = nil
+            overlay.hide()
+        case .waitingForWhitespace:
+            if let suggestionConsumption {
+                recordTypedSuggestionMatch(from: suggestionConsumption)
+            }
             suggestion = nil
             overlay.hide()
         case .triggerInference, .diverged:
@@ -829,6 +869,7 @@ final class CompletionCoordinator: NSObject {
             scope: scope
         )
         guard !acceptance.accepted.isEmpty else { return false }
+        typedSuggestionOrigin = nil
         let snapshotBeforeAcceptance = accessibility.snapshot() ?? lastSnapshot
         let personalizationCapture = snapshotBeforeAcceptance.flatMap {
             PersonalizationCapture.acceptedSuggestion(
@@ -867,6 +908,9 @@ final class CompletionCoordinator: NSObject {
         onSuggestionAccepted(acceptance.accepted)
         if let personalizationCapture {
             onPersonalizationCapture(personalizationCapture)
+            completionReversionTracker.register(
+                personalizationCapture
+            )
         }
 
         var consumption = suggestionConsumption
@@ -963,6 +1007,25 @@ final class CompletionCoordinator: NSObject {
         )
     }
 
+    private func recordTypedSuggestionMatch(
+        from consumption: SuggestionConsumption
+    ) {
+        guard
+            let origin = typedSuggestionOrigin,
+            let snapshot = lastSnapshot,
+            let feedback = PersonalizationCapture.typedSuggestionMatch(
+                fieldText: origin.text,
+                selection: origin.selection,
+                suggestionText: consumption.consumedSuggestionText,
+                context: personalizationContext(for: snapshot)
+            )
+        else {
+            return
+        }
+        typedSuggestionOrigin = nil
+        onCompletionFeedback(feedback)
+    }
+
     private func currentCapturedField() -> CapturedFieldState? {
         if buffer.needsReconciliation, let lastSnapshot {
             return CapturedFieldState(
@@ -1000,6 +1063,66 @@ final class CompletionCoordinator: NSObject {
         return String(decoding: utf16[..<start], as: UTF16.self)
             + insertion
             + String(decoding: utf16[end...], as: UTF16.self)
+    }
+
+    private func deletionResult(
+        for mutation: ShadowTextBuffer.Mutation,
+        fieldBefore: CapturedFieldState
+    ) -> (
+        deletedText: String,
+        fieldBefore: CapturedFieldState,
+        fieldAfter: CapturedFieldState
+    )? {
+        let selection: UTF16Selection
+        if fieldBefore.selection.length > 0 {
+            selection = fieldBefore.selection
+        } else {
+            switch mutation {
+            case .deleteBackward:
+                guard fieldBefore.selection.location > 0 else {
+                    return nil
+                }
+                selection = UTF16Selection(
+                    location: fieldBefore.selection.location - 1,
+                    length: 1
+                )
+            case .deleteForward:
+                guard
+                    fieldBefore.selection.location
+                        < fieldBefore.text.utf16.count
+                else {
+                    return nil
+                }
+                selection = UTF16Selection(
+                    location: fieldBefore.selection.location,
+                    length: 1
+                )
+            case .insert, .invalidate:
+                return nil
+            }
+        }
+        let nsText = fieldBefore.text as NSString
+        let range = NSRange(
+            location: selection.location,
+            length: selection.length
+        )
+        guard NSMaxRange(range) <= nsText.length else { return nil }
+        let deletedText = nsText.substring(with: range)
+        let afterText = nsText.replacingCharacters(
+            in: range,
+            with: ""
+        )
+        return (
+            deletedText,
+            fieldBefore,
+            CapturedFieldState(
+                text: afterText,
+                selection: UTF16Selection(
+                    location: selection.location,
+                    length: 0
+                )
+            )
+        )
     }
 
     private func finalizeIdleWritingEpisode() {
@@ -1263,6 +1386,7 @@ final class CompletionCoordinator: NSObject {
         if resetConsumption {
             suggestionConsumption = nil
             suggestionRequestID = nil
+            typedSuggestionOrigin = nil
         }
         overlay.hide()
     }

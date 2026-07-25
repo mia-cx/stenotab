@@ -46,23 +46,27 @@ public struct PersonalizationCorpusExport: Codable, Sendable, Equatable {
     public let formatVersion: Int
     public let exportedAt: Date
     public let acceptedSuggestions: [AcceptedSuggestionCapture]
+    public let completionFeedback: [CompletionFeedbackCapture]
     public let writingEpisodes: [WritingEpisodeCapture]
 
     public init(
         formatVersion: Int = 1,
         exportedAt: Date,
         acceptedSuggestions: [AcceptedSuggestionCapture],
+        completionFeedback: [CompletionFeedbackCapture],
         writingEpisodes: [WritingEpisodeCapture]
     ) {
         self.formatVersion = formatVersion
         self.exportedAt = exportedAt
         self.acceptedSuggestions = acceptedSuggestions
+        self.completionFeedback = completionFeedback
         self.writingEpisodes = writingEpisodes
     }
 }
 
 public actor PersonalizationDatabase {
     private static let acceptedSuggestionKind = "accepted_suggestion"
+    private static let completionFeedbackKind = "completion_feedback"
     private static let writingEpisodeKind = "writing_episode"
     private static let keyVersion = 1
 
@@ -122,6 +126,16 @@ public actor PersonalizationDatabase {
             capturedAt: episode.endedAt,
             payload: episode,
             context: episode.context
+        )
+    }
+
+    public func record(_ feedback: CompletionFeedbackCapture) throws {
+        try recordEvent(
+            id: feedback.id,
+            kind: Self.completionFeedbackKind,
+            capturedAt: feedback.capturedAt,
+            payload: feedback,
+            context: feedback.context
         )
     }
 
@@ -199,6 +213,15 @@ public actor PersonalizationDatabase {
         )
     }
 
+    public func completionFeedback() throws
+        -> [CompletionFeedbackCapture]
+    {
+        try decodedEvents(
+            kind: Self.completionFeedbackKind,
+            as: CompletionFeedbackCapture.self
+        )
+    }
+
     private func decodedEvents<Value: Decodable>(
         kind expectedKind: String,
         as type: Value.Type,
@@ -242,6 +265,7 @@ public actor PersonalizationDatabase {
         PersonalizationCorpusExport(
             exportedAt: date,
             acceptedSuggestions: try acceptedSuggestions(),
+            completionFeedback: try completionFeedback(),
             writingEpisodes: try writingEpisodes()
         )
     }

@@ -77,6 +77,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             },
             onWritingEpisode: { [weak self] episode in
                 self?.recordWritingEpisode(episode)
+            },
+            onCompletionFeedback: { [weak self] feedback in
+                self?.recordCompletionFeedback(feedback)
             }
         )
         self.coordinator = coordinator
@@ -342,6 +345,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             } catch {
                 personalizationLogger.error(
                     "Could not record writing episode: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+    }
+
+    private func recordCompletionFeedback(
+        _ feedback: CompletionFeedbackCapture
+    ) {
+        guard
+            personalizationSettings.collectionEnabled,
+            let personalizationDatabase
+        else {
+            return
+        }
+
+        Task { [personalizationLogger] in
+            do {
+                try await personalizationDatabase.record(feedback)
+                await MainActor.run {
+                    personalizationSettings.didRecordEvent()
+                }
+            } catch {
+                personalizationLogger.error(
+                    "Could not record completion feedback: \(String(describing: error), privacy: .public)"
                 )
             }
         }
