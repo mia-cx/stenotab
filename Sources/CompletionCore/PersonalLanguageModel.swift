@@ -83,11 +83,13 @@ public struct PersonalVocabularyEntry:
 }
 
 public struct PersonalLanguageModel: Codable, Sendable, Equatable {
-    private static let currentProjectionVersion = 3
+    private static let currentProjectionVersion = 5
 
     private struct WordOccurrence {
         let display: String
         let range: Range<String.Index>
+        let leadingSeparator: String
+        var trailingSeparator: String
     }
 
     private struct WordEvidence: Codable, Sendable, Equatable {
@@ -111,6 +113,8 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
     private struct ScoredCandidate {
         let normalized: String
         let display: String
+        let leadingSeparator: String
+        let trailingSeparator: String
         let score: Double
         let netEvidence: Double
     }
@@ -160,25 +164,39 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
     }
 
     public mutating func ingest(_ episode: WritingEpisodeCapture) {
-        let directlyTypedEdits = episode.edits.filter {
-            $0.provenance == .directlyTyped
+        let directlyTypedEdits = episode.edits.enumerated().filter {
+            $0.element.provenance == .directlyTyped
         }
-        for (index, edit) in directlyTypedEdits.enumerated() {
+        for (directIndex, indexedEdit) in directlyTypedEdits.enumerated() {
+            let editIndex = indexedEdit.offset
+            let edit = indexedEdit.element
             guard
                 let fieldBefore = edit.fieldBefore,
                 let fieldAfter = Self.resolvedFieldAfter(edit)
             else {
                 continue
             }
+            let delimiterOnly = !edit.insertedText.contains(
+                where: Self.isWordCharacter
+            )
+            let immediatelyFollowsAcceptedSuggestion =
+                episode.edits[..<editIndex].last.map {
+                    $0.provenance == .acceptedSuggestion
+                        && $0.fieldAfter == fieldBefore
+                        && $0.selectionAfter == edit.selectionBefore
+                } ?? false
             learnFieldChange(
                 before: fieldBefore.text,
                 after: fieldAfter.text,
                 signal: .directlyTyped,
                 context: episode.context,
                 at: edit.endedAt,
+                includeBoundaryTouch:
+                    !(delimiterOnly
+                        && immediatelyFollowsAcceptedSuggestion),
                 excludeUnterminatedTrailingWord:
                     episode.boundary == .idle
-                    && index == directlyTypedEdits.count - 1
+                    && directIndex == directlyTypedEdits.count - 1
             )
         }
     }
@@ -196,7 +214,9 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             after: fieldAfter,
             signal: .acceptedSuggestion,
             context: capture.context,
-            at: capture.capturedAt
+            at: capture.capturedAt,
+            includeBoundaryTouch:
+                !capture.insertion.contains(where: Self.isWordCharacter)
         )
     }
 
@@ -235,8 +255,9 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         let contextText = fragment.map {
             String(prefix.dropLast($0.count))
         } ?? prefix
+        let existingSeparator = Self.trailingSeparator(in: contextText)
         var contextWords = Self.words(in: contextText)
-        var generated: [String] = []
+        var generated: [ScoredCandidate] = []
         var firstScore: ScoredCandidate?
         var currentFragment = fragment
 
@@ -247,7 +268,9 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
                     fragment: currentFragment,
                     context: context,
                     at: date,
-                    allowUnigram: generated.isEmpty
+                    allowUnigram: generated.isEmpty,
+                    separatorPrefix:
+                        generated.isEmpty ? existingSeparator : nil
                 )
             else {
                 break
@@ -255,16 +278,19 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             if firstScore == nil {
                 firstScore = candidate
             }
-            generated.append(candidate.display)
+            generated.append(candidate)
             contextWords.append(candidate.display)
             currentFragment = nil
+            if !candidate.trailingSeparator.isEmpty {
+                break
+            }
         }
 
         guard let firstScore, !generated.isEmpty else { return nil }
         let insertion = Self.insertion(
             generatedWords: generated,
             fragment: fragment,
-            prefix: prefix
+            existingSeparator: existingSeparator
         )
         guard !insertion.isEmpty else { return nil }
         let confidence = min(
@@ -340,6 +366,7 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         signal: PersonalizationLearningSignal,
         context: PersonalizationContext,
         at date: Date,
+        includeBoundaryTouch: Bool? = nil,
         excludeUnterminatedTrailingWord: Bool = false
     ) {
         let words = Self.wordOccurrences(in: after)
@@ -359,7 +386,9 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             let intersects = Self.intersects(
                 words[$0].range,
                 changedRange: changedRange,
-                includeBoundaryTouch: signal == .directlyTyped
+                includeBoundaryTouch:
+                    includeBoundaryTouch
+                    ?? (signal == .directlyTyped)
             )
             let isUnterminatedTail =
                 trailingWordIsUnterminated && $0 == words.count - 1
@@ -387,9 +416,17 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
                 let key = Self.contextKey(
                     words[contextStart..<index].map(\.display)
                 )
+                let leadingSeparator =
+                    contextLength == 0
+                    ? ""
+                    : words[index].leadingSeparator
                 updateTransition(
                     contextKey: key,
-                    candidate: normalized,
+                    candidate: Self.transitionCandidateKey(
+                        normalized: normalized,
+                        leadingSeparator: leadingSeparator,
+                        trailingSeparator: words[index].trailingSeparator
+                    ),
                     signal: signal,
                     scopeKeys: scopeKeys,
                     at: date
@@ -431,7 +468,8 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         fragment: String?,
         context: PersonalizationContext,
         at date: Date,
-        allowUnigram: Bool
+        allowUnigram: Bool,
+        separatorPrefix: String?
     ) -> ScoredCandidate? {
         let normalizedFragment = fragment.map(Self.normalize)
         let maximumContext = min(
@@ -448,23 +486,41 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
                 through: minimumContext,
                 by: -1
             ) {
-            let key = Self.contextKey(
-                Array(contextWords.suffix(length))
-            )
-            let matching = (transitions[key] ?? [:]).filter {
-                normalizedFragment.map($0.key.hasPrefix) ?? true
-            }
-            if !matching.isEmpty {
-                candidates = matching
-                break
-            }
+                let key = Self.contextKey(
+                    Array(contextWords.suffix(length))
+                )
+                let matching = (transitions[key] ?? [:]).filter {
+                    guard
+                        let candidate = Self.transitionCandidate(from: $0.key)
+                    else {
+                        return false
+                    }
+                    let fragmentMatches =
+                        normalizedFragment.map {
+                            candidate.normalized.hasPrefix($0)
+                        } ?? true
+                    let separatorMatches =
+                        separatorPrefix.map {
+                            candidate.leadingSeparator.hasPrefix($0)
+                        } ?? true
+                    return fragmentMatches && separatorMatches
+                }
+                if !matching.isEmpty {
+                    candidates = matching
+                    break
+                }
             }
         }
 
         if candidates.isEmpty, allowUnigram, let normalizedFragment {
             for (token, evidence) in vocabulary
             where token.hasPrefix(normalizedFragment) {
-                candidates[token] = CandidateEvidence(
+                let key = Self.transitionCandidateKey(
+                    normalized: token,
+                    leadingSeparator: separatorPrefix ?? "",
+                    trailingSeparator: ""
+                )
+                candidates[key] = CandidateEvidence(
                     positive: evidence.positive,
                     reversions: evidence.reversions,
                     accepted: evidence.accepted,
@@ -477,13 +533,19 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
 
         let scored = candidates.compactMap {
             score(
-                normalized: $0.key,
+                candidateKey: $0.key,
                 evidence: $0.value,
                 scopeKeys: scopeKeys,
                 at: date
             )
         }.sorted {
             if $0.score == $1.score {
+                if $0.normalized == $1.normalized {
+                    if $0.leadingSeparator == $1.leadingSeparator {
+                        return $0.trailingSeparator < $1.trailingSeparator
+                    }
+                    return $0.leadingSeparator < $1.leadingSeparator
+                }
                 return $0.normalized < $1.normalized
             }
             return $0.score > $1.score
@@ -497,11 +559,16 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
     }
 
     private func score(
-        normalized: String,
+        candidateKey: String,
         evidence: CandidateEvidence,
         scopeKeys: [String],
         at date: Date
     ) -> ScoredCandidate? {
+        guard
+            let candidate = Self.transitionCandidate(from: candidateKey)
+        else {
+            return nil
+        }
         let netEvidence =
             evidence.positive - evidence.reversions * 4
         guard netEvidence >= minimumEvidence else { return nil }
@@ -519,8 +586,10 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             + evidence.typedMatches * 0.15
             + recency
         return ScoredCandidate(
-            normalized: normalized,
-            display: preferredCasing(for: normalized),
+            normalized: candidate.normalized,
+            display: preferredCasing(for: candidate.normalized),
+            leadingSeparator: candidate.leadingSeparator,
+            trailingSeparator: candidate.trailingSeparator,
             score: score,
             netEvidence: netEvidence
         )
@@ -539,24 +608,32 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
     }
 
     private static func insertion(
-        generatedWords: [String],
+        generatedWords: [ScoredCandidate],
         fragment: String?,
-        prefix: String
+        existingSeparator: String
     ) -> String {
         var result = ""
-        for (index, word) in generatedWords.enumerated() {
+        for (index, candidate) in generatedWords.enumerated() {
+            let word = candidate.display
             if index == 0, let fragment {
                 guard word.count >= fragment.count else { return "" }
                 result += String(word.dropFirst(fragment.count))
                 continue
             }
-            if index == 0,
-               prefix.isEmpty || prefix.last?.isWhitespace == true {
+            if index == 0 {
+                guard
+                    candidate.leadingSeparator.hasPrefix(existingSeparator)
+                else {
+                    return ""
+                }
+                result += candidate.leadingSeparator
+                    .dropFirst(existingSeparator.count)
                 result += word
             } else {
-                result += " " + word
+                result += candidate.leadingSeparator + word
             }
         }
+        result += generatedWords.last?.trailingSeparator ?? ""
         return result
     }
 
@@ -569,37 +646,42 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
     ) -> [WordOccurrence] {
         var result: [WordOccurrence] = []
         var cursor = text.startIndex
+        var separatorStart = text.startIndex
 
         while cursor < text.endIndex {
-            while cursor < text.endIndex, text[cursor].isWhitespace {
+            while cursor < text.endIndex,
+                  !isWordCharacter(text[cursor]) {
                 cursor = text.index(after: cursor)
             }
             guard cursor < text.endIndex else { break }
 
-            let chunkStart = cursor
-            while cursor < text.endIndex, !text[cursor].isWhitespace {
+            let wordStart = cursor
+            while cursor < text.endIndex {
+                if isWordCharacter(text[cursor]) {
+                    cursor = text.index(after: cursor)
+                    continue
+                }
+                guard isInternalWordPunctuation(at: cursor, in: text) else {
+                    break
+                }
                 cursor = text.index(after: cursor)
             }
-            let chunkEnd = cursor
-            var wordStart = chunkStart
-            var wordEnd = chunkEnd
-
-            while wordStart < wordEnd,
-                  !isWordCharacter(text[wordStart]) {
-                wordStart = text.index(after: wordStart)
-            }
-            while wordStart < wordEnd {
-                let previous = text.index(before: wordEnd)
-                guard !isWordCharacter(text[previous]) else { break }
-                wordEnd = previous
-            }
-            guard wordStart < wordEnd else { continue }
+            let wordEnd = cursor
 
             result.append(
                 WordOccurrence(
                     display: String(text[wordStart..<wordEnd]),
-                    range: wordStart..<wordEnd
+                    range: wordStart..<wordEnd,
+                    leadingSeparator:
+                        String(text[separatorStart..<wordStart]),
+                    trailingSeparator: ""
                 )
+            )
+            separatorStart = wordEnd
+        }
+        if let lastIndex = result.indices.last {
+            result[lastIndex].trailingSeparator = String(
+                text[result[lastIndex].range.upperBound...]
             )
         }
         return result
@@ -675,6 +757,61 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         tokens.map(normalize).joined(separator: "\u{1F}")
     }
 
+    private static func transitionCandidateKey(
+        normalized: String,
+        leadingSeparator: String,
+        trailingSeparator: String
+    ) -> String {
+        let encodedLeadingSeparator = Data(leadingSeparator.utf8)
+            .base64EncodedString()
+        let encodedTrailingSeparator = Data(trailingSeparator.utf8)
+            .base64EncodedString()
+        return encodedLeadingSeparator + "\u{1F}"
+            + encodedTrailingSeparator + "\u{1F}" + normalized
+    }
+
+    private static func transitionCandidate(
+        from key: String
+    ) -> (
+        normalized: String,
+        leadingSeparator: String,
+        trailingSeparator: String
+    )? {
+        let components = key.split(
+            separator: "\u{1F}",
+            maxSplits: 2,
+            omittingEmptySubsequences: false
+        )
+        guard
+            components.count == 3,
+            let leadingSeparatorData = Data(
+                base64Encoded: String(components[0])
+            ),
+            let trailingSeparatorData = Data(
+                base64Encoded: String(components[1])
+            ),
+            let leadingSeparator = String(
+                data: leadingSeparatorData,
+                encoding: .utf8
+            ),
+            let trailingSeparator = String(
+                data: trailingSeparatorData,
+                encoding: .utf8
+            ),
+            !components[2].isEmpty
+        else {
+            return nil
+        }
+        let normalized = String(components[2])
+        guard
+            !normalized.isEmpty,
+            !normalized.contains("\u{1F}")
+        else {
+            return nil
+        }
+        return (normalized, leadingSeparator, trailingSeparator)
+    }
+
     private static func normalize(_ token: String) -> String {
         token.folding(
             options: [.caseInsensitive, .diacriticInsensitive],
@@ -705,11 +842,35 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         }
     }
 
+    private static func isInternalWordPunctuation(
+        at index: String.Index,
+        in text: String
+    ) -> Bool {
+        let character = text[index]
+        guard
+            character == "'" || character == "’" || character == "-",
+            index > text.startIndex
+        else {
+            return false
+        }
+        let nextIndex = text.index(after: index)
+        guard nextIndex < text.endIndex else { return false }
+        return isWordCharacter(text[text.index(before: index)])
+            && isWordCharacter(text[nextIndex])
+    }
+
     private static func isWordContinuation(_ character: Character) -> Bool {
         isWordCharacter(character)
             || character == "'"
             || character == "’"
             || character == "-"
+    }
+
+    private static func trailingSeparator(in text: String) -> String {
+        guard let lastWord = wordOccurrences(in: text).last else {
+            return text
+        }
+        return String(text[lastWord.range.upperBound...])
     }
 
     private static func replacing(

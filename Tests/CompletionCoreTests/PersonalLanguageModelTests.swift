@@ -21,6 +21,24 @@ final class PersonalLanguageModelTests: XCTestCase {
         XCTAssertFalse(current.requiresRebuild)
     }
 
+    func testOlderProjectionVersionRequiresRebuild() throws {
+        let current = PersonalLanguageModel()
+        let encoded = try JSONEncoder().encode(current)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded)
+                as? [String: Any]
+        )
+        object["projectionVersion"] = 4
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(
+            PersonalLanguageModel.self,
+            from: legacyData
+        )
+
+        XCTAssertTrue(decoded.requiresRebuild)
+    }
+
     func testWritingEpisodeLearnsAffectedFullWordInsteadOfTypedFragment() {
         let date = Date(timeIntervalSince1970: 50)
         let initialText = "some validation from m"
@@ -101,6 +119,31 @@ final class PersonalLanguageModelTests: XCTestCase {
         XCTAssertFalse(entries.contains { $0.normalized == "hing" })
     }
 
+    func testAcceptedDelimiterOnlyCompletionBecomesLearnedEvidence() throws {
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        var model = PersonalLanguageModel()
+        for offset in 0..<2 {
+            let capture = try XCTUnwrap(
+                PersonalizationCapture.acceptedSuggestion(
+                    fieldText: "hello",
+                    selection: UTF16Selection(location: 5, length: 0),
+                    insertion: "!",
+                    acceptanceScope: .entireSuggestion,
+                    context: context,
+                    capturedAt: Date(
+                        timeIntervalSince1970: Double(75 + offset)
+                    )
+                )
+            )
+            model.ingest(capture)
+        }
+
+        XCTAssertEqual(
+            model.completion(for: "hello", context: context)?.insertion,
+            "!"
+        )
+    }
+
     func testMixedEpisodeLearnsOnlyDirectlyTypedEdits() {
         let date = Date(timeIntervalSince1970: 77)
         let initial = CapturedFieldState(
@@ -154,6 +197,58 @@ final class PersonalLanguageModelTests: XCTestCase {
             model.vocabularyEntries().map(\.normalized),
             ["please"]
         )
+    }
+
+    func testTypedDelimiterDoesNotRelabelAcceptedWordAsDirectWriting() {
+        let date = Date(timeIntervalSince1970: 77.5)
+        let initial = CapturedFieldState(
+            text: "hello",
+            selection: UTF16Selection(location: 5, length: 0)
+        )
+        let afterAcceptance = CapturedFieldState(
+            text: "hello world",
+            selection: UTF16Selection(location: 11, length: 0)
+        )
+        let final = CapturedFieldState(
+            text: "hello world ",
+            selection: UTF16Selection(location: 12, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: final,
+            edits: [
+                WritingEditCapture(
+                    insertedText: " world",
+                    provenance: .acceptedSuggestion,
+                    selectionBefore: initial.selection,
+                    selectionAfter: afterAcceptance.selection,
+                    fieldBefore: initial,
+                    fieldAfter: afterAcceptance,
+                    startedAt: date,
+                    endedAt: date
+                ),
+                WritingEditCapture(
+                    insertedText: " ",
+                    provenance: .directlyTyped,
+                    selectionBefore: afterAcceptance.selection,
+                    selectionAfter: final.selection,
+                    fieldBefore: afterAcceptance,
+                    fieldAfter: final,
+                    startedAt: date,
+                    endedAt: date
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date,
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertTrue(model.vocabularyEntries().isEmpty)
     }
 
     func testAcceptedSeparatorDoesNotReinforceUnchangedBoundaryWord() throws {
@@ -264,6 +359,124 @@ final class PersonalLanguageModelTests: XCTestCase {
         )
 
         XCTAssertEqual(completion.insertion, "uest for this")
+    }
+
+    func testPhraseCompletionPreservesPunctuationSeparators() throws {
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        var model = PersonalLanguageModel()
+        for offset in 0..<3 {
+            model.learn(
+                insertedText: "hello, world",
+                precedingText: "",
+                signal: .directlyTyped,
+                context: context,
+                at: Date(timeIntervalSince1970: Double(100 + offset))
+            )
+        }
+
+        XCTAssertEqual(
+            model.completion(
+                for: "hello",
+                context: context,
+                at: Date(timeIntervalSince1970: 110)
+            )?.insertion,
+            ", world"
+        )
+        XCTAssertEqual(
+            model.completion(
+                for: "hello,",
+                context: context,
+                at: Date(timeIntervalSince1970: 110)
+            )?.insertion,
+            " world"
+        )
+        XCTAssertEqual(
+            model.completion(
+                for: "hello, w",
+                context: context,
+                at: Date(timeIntervalSince1970: 110)
+            )?.insertion,
+            "orld"
+        )
+    }
+
+    func testPunctuationSplitsWordsWithoutSplittingContractions() {
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+
+        model.learn(
+            insertedText: "hello,world can't re-enter",
+            precedingText: "",
+            signal: .directlyTyped,
+            context: context
+        )
+
+        XCTAssertEqual(
+            Set(model.vocabularyEntries().map(\.normalized)),
+            Set(["hello", "world", "can't", "re-enter"])
+        )
+    }
+
+    func testPhraseCompletionPreservesTerminalPunctuation() throws {
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        var model = PersonalLanguageModel()
+        for offset in 0..<3 {
+            model.learn(
+                insertedText: "hello, world!",
+                precedingText: "",
+                signal: .directlyTyped,
+                context: context,
+                at: Date(timeIntervalSince1970: Double(120 + offset))
+            )
+        }
+
+        XCTAssertEqual(
+            model.completion(
+                for: "hello",
+                context: context,
+                at: Date(timeIntervalSince1970: 130)
+            )?.insertion,
+            ", world!"
+        )
+        XCTAssertEqual(
+            model.completion(
+                for: "hello, world",
+                context: context,
+                at: Date(timeIntervalSince1970: 130)
+            )?.insertion,
+            "!"
+        )
+    }
+
+    func testPartialWordCompletionPreservesApostrophesAndHyphens() throws {
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        var model = PersonalLanguageModel()
+        for offset in 0..<3 {
+            let date = Date(timeIntervalSince1970: Double(140 + offset))
+            model.learn(
+                insertedText: "can't",
+                precedingText: "",
+                signal: .directlyTyped,
+                context: context,
+                at: date
+            )
+            model.learn(
+                insertedText: "re-enter",
+                precedingText: "",
+                signal: .directlyTyped,
+                context: context,
+                at: date
+            )
+        }
+
+        XCTAssertEqual(
+            model.completion(for: "can", context: context)?.insertion,
+            "'t"
+        )
+        XCTAssertEqual(
+            model.completion(for: "re", context: context)?.insertion,
+            "-enter"
+        )
     }
 
     func testIdleEpisodeWaitsForDelimiterBeforeLearningTrailingWord() {
@@ -419,6 +632,34 @@ final class PersonalLanguageModelTests: XCTestCase {
         XCTAssertEqual(completion.insertion, "uest for this")
         XCTAssertGreaterThanOrEqual(completion.confidence, 0.7)
         XCTAssertEqual(completion.source, .personalLanguageModel)
+    }
+
+    func testTerminalSeparatorStopsPhraseGeneration() {
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        var model = PersonalLanguageModel()
+        for offset in 0..<3 {
+            model.learn(
+                insertedText: "hello world!",
+                precedingText: "",
+                signal: .directlyTyped,
+                context: context,
+                at: Date(timeIntervalSince1970: Double(1_100 + offset))
+            )
+        }
+        for offset in 0..<2 {
+            model.learn(
+                insertedText: "hello world again",
+                precedingText: "",
+                signal: .directlyTyped,
+                context: context,
+                at: Date(timeIntervalSince1970: Double(1_200 + offset))
+            )
+        }
+
+        XCTAssertEqual(
+            model.completion(for: "hello", context: context)?.insertion,
+            " world!"
+        )
     }
 
     func testLearnsPreferredCapitalization() throws {

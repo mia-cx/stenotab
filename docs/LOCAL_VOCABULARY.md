@@ -19,8 +19,9 @@ without migrating the corpus.
 
 Keyboard-event fragments are never vocabulary entries. Input events identify
 that an editor changed, but the projection extracts affected complete words
-from the reconstructed editor text. Surrounding punctuation is discarded;
-internal punctuation such as apostrophes and hyphens remains part of the word.
+from the reconstructed editor text. Phrase transitions retain separators such
+as commas and whitespace, while internal apostrophes and hyphens remain part of
+the word.
 
 The raw vocabulary table is not appended to the model prompt. It powers local
 partial-word and phrase completion, and can provide aggregate evidence to the
