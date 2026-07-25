@@ -3,6 +3,8 @@ import ApplicationServices
 import CompletionCore
 
 struct EditorSnapshot {
+    let fieldText: String
+    let selection: UTF16Selection
     let prefix: String
     let suffix: String
     /// AppKit global-screen coordinates.
@@ -118,6 +120,11 @@ final class AccessibilityReader {
         )
 
         return EditorSnapshot(
+            fieldText: value,
+            selection: UTF16Selection(
+                location: range.location,
+                length: range.length
+            ),
             prefix: prefix,
             suffix: suffix,
             caretRect: caretRect,

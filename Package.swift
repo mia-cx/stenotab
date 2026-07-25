@@ -18,9 +18,17 @@ let package = Package(
                 .copy("Resources/Prompts")
             ]
         ),
+        .target(
+            name: "StenoTabPersistence",
+            dependencies: ["CompletionCore"],
+            linkerSettings: [
+                .linkedLibrary("sqlite3"),
+                .linkedFramework("Security")
+            ]
+        ),
         .executableTarget(
             name: "StenoTab",
-            dependencies: ["CompletionCore"],
+            dependencies: ["CompletionCore", "StenoTabPersistence"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("ApplicationServices"),
@@ -36,6 +44,10 @@ let package = Package(
         .testTarget(
             name: "CompletionCoreTests",
             dependencies: ["CompletionCore"]
+        ),
+        .testTarget(
+            name: "StenoTabPersistenceTests",
+            dependencies: ["CompletionCore", "StenoTabPersistence"]
         )
     ]
 )

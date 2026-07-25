@@ -22,6 +22,7 @@ final class SettingsWindowController: NSWindowController {
         systemTextSuggestionSettingsStore:
             SystemTextSuggestionSettingsStore,
         clipboardAccessStore: ClipboardAccessStore,
+        personalizationSettingsStore: PersonalizationSettingsStore,
         actions: SettingsActions
     ) {
         let rootView = SettingsRootView(
@@ -33,6 +34,7 @@ final class SettingsWindowController: NSWindowController {
             systemTextSuggestionSettingsStore:
                 systemTextSuggestionSettingsStore,
             clipboardAccessStore: clipboardAccessStore,
+            personalizationSettingsStore: personalizationSettingsStore,
             actions: actions
         )
         let hostingController = NSHostingController(rootView: rootView)
@@ -64,6 +66,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
     case setup
     case models
     case contextPrivacy
+    case personalization
     case promptLab
     case appSettings
 
@@ -79,6 +82,8 @@ private struct SettingsRootView: View {
     @ObservedObject var systemTextSuggestionSettingsStore:
         SystemTextSuggestionSettingsStore
     @ObservedObject var clipboardAccessStore: ClipboardAccessStore
+    @ObservedObject var personalizationSettingsStore:
+        PersonalizationSettingsStore
     let actions: SettingsActions
     @State private var selection: SettingsPage? = .setup
 
@@ -91,6 +96,8 @@ private struct SettingsRootView: View {
                     .tag(SettingsPage.models)
                 Label("Context & Privacy", systemImage: "hand.raised")
                     .tag(SettingsPage.contextPrivacy)
+                Label("Personalization", systemImage: "person.crop.circle.badge.checkmark")
+                    .tag(SettingsPage.personalization)
                 Label("Prompt Lab", systemImage: "text.badge.sparkles")
                     .tag(SettingsPage.promptLab)
                 Label("App Settings", systemImage: "app.badge.checkmark")
@@ -116,6 +123,10 @@ private struct SettingsRootView: View {
                 ContextPrivacyView(
                     store: promptStore,
                     clipboardEnabled: clipboardEnabled
+                )
+            case .personalization:
+                PersonalizationSettingsView(
+                    store: personalizationSettingsStore
                 )
             case .promptLab:
                 PromptLabView(
@@ -160,6 +171,96 @@ private struct SettingsRootView: View {
                 }
             }
         )
+    }
+}
+
+private struct PersonalizationSettingsView: View {
+    @ObservedObject var store: PersonalizationSettingsStore
+    @State private var confirmsDeletion = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                SettingsSection(title: "Learning") {
+                    HStack(alignment: .top, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Learn from my writing")
+                                .font(.headline)
+                            Text(
+                                "Store accepted completions and their full "
+                                + "input context locally in encrypted form. "
+                                + "Turning this off stops new collection."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Toggle(
+                            "Learn from my writing",
+                            isOn: $store.collectionEnabled
+                        )
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .frame(width: 54, alignment: .trailing)
+                    }
+                    .padding(.vertical, 3)
+                }
+
+                SettingsSection(title: "Stored Data") {
+                    HStack(alignment: .center, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Personalization events")
+                                .font(.headline)
+                            Text(
+                                "\(store.storedEventCount) encrypted "
+                                + (store.storedEventCount == 1
+                                    ? "event is"
+                                    : "events are")
+                                + " stored on this Mac."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Button("Delete All…") {
+                            confirmsDeletion = true
+                        }
+                        .disabled(store.storedEventCount == 0)
+                    }
+
+                    if let operationError = store.operationError {
+                        Divider()
+                        Text(operationError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 22)
+            .padding(.bottom, 36)
+            .frame(maxWidth: 900, alignment: .leading)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { store.refresh() }
+        .confirmationDialog(
+            "Delete all personalization data?",
+            isPresented: $confirmsDeletion
+        ) {
+            Button("Delete All", role: .destructive) {
+                store.deleteAll()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "This permanently deletes the encrypted writing history "
+                + "and all learned personalization derived from it."
+            )
+        }
     }
 }
 

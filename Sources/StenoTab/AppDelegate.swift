@@ -1,6 +1,8 @@
 import AppKit
 import ApplicationServices
 import CompletionCore
+import OSLog
+import StenoTabPersistence
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
@@ -26,6 +28,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     private let systemTextSuggestionSettings =
         SystemTextSuggestionSettingsStore()
     private let clipboardAccess = ClipboardAccessStore()
+    private let personalizationSettings = PersonalizationSettingsStore()
+    private let personalizationLogger = Logger(
+        subsystem: "cx.mia.stenotab",
+        category: "Personalization"
+    )
+    private var personalizationDatabase: PersonalizationDatabase?
     private var settingsWindowController: SettingsWindowController?
     private var dailyAcceptanceCounter = DailyAcceptanceCounter(
         count: 0,
@@ -36,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         installMainMenu()
+        configurePersonalizationDatabase()
 
         let environment = ProcessInfo.processInfo.environment
         let usesExplicitProvider =
@@ -62,6 +71,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             },
             onSuggestionAccepted: { [weak self] _ in
                 self?.recordSuggestionAcceptance()
+            },
+            onPersonalizationCapture: { [weak self] capture in
+                self?.recordPersonalizationCapture(capture)
             }
         )
         self.coordinator = coordinator
@@ -257,6 +269,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         updateDailyAcceptanceCountDisplay()
     }
 
+    private func configurePersonalizationDatabase() {
+        do {
+            let applicationSupport = try FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            let databaseURL = applicationSupport
+                .appending(path: "StenoTab", directoryHint: .isDirectory)
+                .appending(path: "Personalization", directoryHint: .isDirectory)
+                .appending(path: "personalization.sqlite")
+            personalizationDatabase = try PersonalizationDatabase(
+                databaseURL: databaseURL,
+                keyProvider: KeychainPersonalizationKeyProvider()
+            )
+            if let personalizationDatabase {
+                personalizationSettings.attach(
+                    database: personalizationDatabase
+                )
+            }
+        } catch {
+            personalizationLogger.error(
+                "Could not initialize personalization storage: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
+    private func recordPersonalizationCapture(
+        _ capture: AcceptedSuggestionCapture
+    ) {
+        guard
+            personalizationSettings.collectionEnabled,
+            let personalizationDatabase
+        else {
+            return
+        }
+
+        Task { [personalizationLogger] in
+            do {
+                try await personalizationDatabase.record(capture)
+                await MainActor.run {
+                    personalizationSettings.didRecordEvent()
+                }
+            } catch {
+                personalizationLogger.error(
+                    "Could not record personalization event: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+    }
+
     private func observeCalendarDayChanges() {
         calendarDayObserver = NotificationCenter.default.addObserver(
             forName: .NSCalendarDayChanged,
@@ -325,6 +389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                 systemTextSuggestionSettingsStore:
                     systemTextSuggestionSettings,
                 clipboardAccessStore: clipboardAccess,
+                personalizationSettingsStore: personalizationSettings,
                 actions: SettingsActions(
                     requestAccessibilityPermission: {
                         [weak coordinator] in

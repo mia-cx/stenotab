@@ -12,9 +12,9 @@ public enum SuggestionAcceptance {
         }
     }
 
-    public enum Scope: Sendable, Equatable {
-        case nextWord
-        case entireSuggestion
+    public enum Scope: String, Codable, Sendable, Equatable {
+        case nextWord = "next_word"
+        case entireSuggestion = "entire_suggestion"
     }
 
     public struct Slice: Sendable, Equatable {

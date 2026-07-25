@@ -30,6 +30,8 @@ final class CompletionCoordinator: NSObject {
     private let onApplicationObserved:
         @MainActor (ApplicationObservation) -> Void
     private let onSuggestionAccepted: @MainActor (String) -> Void
+    private let onPersonalizationCapture:
+        @MainActor (AcceptedSuggestionCapture) -> Void
     private var inputMonitor: GlobalInputMonitor?
     private var reconciliationTimer: Timer?
     private var debounceTask: Task<Void, Never>?
@@ -88,7 +90,10 @@ final class CompletionCoordinator: NSObject {
         onApplicationObserved: @escaping @MainActor (
             ApplicationObservation
         ) -> Void = { _ in },
-        onSuggestionAccepted: @escaping @MainActor (String) -> Void = { _ in }
+        onSuggestionAccepted: @escaping @MainActor (String) -> Void = { _ in },
+        onPersonalizationCapture: @escaping @MainActor (
+            AcceptedSuggestionCapture
+        ) -> Void = { _ in }
     ) {
         self.provider = provider
         self.promptConfiguration = promptConfiguration
@@ -96,6 +101,7 @@ final class CompletionCoordinator: NSObject {
             applicationCompletionsAreEnabled
         self.onApplicationObserved = onApplicationObserved
         self.onSuggestionAccepted = onSuggestionAccepted
+        self.onPersonalizationCapture = onPersonalizationCapture
         super.init()
     }
 
@@ -792,9 +798,28 @@ final class CompletionCoordinator: NSObject {
         )
         guard !acceptance.accepted.isEmpty else { return false }
         let snapshotBeforeAcceptance = accessibility.snapshot() ?? lastSnapshot
+        let personalizationCapture = snapshotBeforeAcceptance.flatMap {
+            PersonalizationCapture.acceptedSuggestion(
+                fieldText: $0.fieldText,
+                selection: $0.selection,
+                insertion: acceptance.accepted,
+                acceptanceScope: scope,
+                context: PersonalizationContext(
+                    applicationBundleIdentifier:
+                        $0.applicationBundleIdentifier,
+                    website: nil,
+                    inputKind: $0.inputKind,
+                    detectedLanguage: nil,
+                    editorIdentifier: $0.editorIdentifier
+                )
+            )
+        }
         inputMonitor?.insertText(acceptance.accepted)
         buffer.apply(.insert(acceptance.accepted))
         onSuggestionAccepted(acceptance.accepted)
+        if let personalizationCapture {
+            onPersonalizationCapture(personalizationCapture)
+        }
 
         var consumption = suggestionConsumption
             ?? SuggestionConsumption(suggestion: suggestion)
