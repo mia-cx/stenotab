@@ -335,7 +335,8 @@ private actor PersonalizationModelWorker {
     }
 
     func prepare() async throws -> PersonalLanguageModel {
-        if let stored = try await database.loadLanguageModel() {
+        if let stored = try await database.loadLanguageModel(),
+           !stored.requiresRebuild {
             model = stored
         } else {
             _ = try await rebuildLanguageModel()

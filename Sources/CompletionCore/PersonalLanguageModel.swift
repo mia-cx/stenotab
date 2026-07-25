@@ -83,7 +83,14 @@ public struct PersonalVocabularyEntry:
 }
 
 public struct PersonalLanguageModel: Codable, Sendable, Equatable {
-    private struct TokenEvidence: Codable, Sendable, Equatable {
+    private static let currentProjectionVersion = 2
+
+    private struct WordOccurrence {
+        let display: String
+        let range: Range<String.Index>
+    }
+
+    private struct WordEvidence: Codable, Sendable, Equatable {
         var positive = 0.0
         var reversions = 0.0
         var accepted = 0.0
@@ -113,8 +120,13 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
     public var minimumWinningMargin: Double
     public var recencyHalfLife: TimeInterval
 
-    private var vocabulary: [String: TokenEvidence]
+    private var projectionVersion: Int?
+    private var vocabulary: [String: WordEvidence]
     private var transitions: [String: [String: CandidateEvidence]]
+
+    public var requiresRebuild: Bool {
+        projectionVersion != Self.currentProjectionVersion
+    }
 
     public init(
         maximumNGramLength: Int = 5,
@@ -126,6 +138,7 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         self.minimumEvidence = minimumEvidence
         self.minimumWinningMargin = minimumWinningMargin
         self.recencyHalfLife = recencyHalfLife
+        projectionVersion = Self.currentProjectionVersion
         vocabulary = [:]
         transitions = [:]
     }
@@ -137,11 +150,11 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         context: PersonalizationContext,
         at date: Date = Date()
     ) {
-        let insertedTokens = Self.tokens(in: insertedText)
-        guard !insertedTokens.isEmpty else { return }
-        let precedingTokens = Self.tokens(in: precedingText)
-        let combined = precedingTokens + insertedTokens
-        let insertedStart = precedingTokens.count
+        let insertedWords = Self.words(in: insertedText)
+        guard !insertedWords.isEmpty else { return }
+        let precedingWords = Self.words(in: precedingText)
+        let combined = precedingWords + insertedWords
+        let insertedStart = precedingWords.count
         let scopeKeys = Self.scopeKeys(for: context)
 
         for index in insertedStart..<combined.count {
@@ -175,34 +188,32 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
     }
 
     public mutating func ingest(_ episode: WritingEpisodeCapture) {
-        for edit in episode.edits
-        where edit.provenance == .directlyTyped
-            && !edit.insertedText.isEmpty {
-            let fieldBefore = edit.fieldBefore ?? episode.initialField
-            let prefix = Self.prefix(
-                of: fieldBefore.text,
-                throughUTF16: min(
-                    edit.selectionBefore.location,
-                    fieldBefore.text.utf16.count
-                )
-            )
-            learn(
-                insertedText: edit.insertedText,
-                precedingText: prefix,
-                signal: .directlyTyped,
-                context: episode.context,
-                at: edit.endedAt
-            )
+        guard episode.edits.contains(where: {
+            $0.provenance == .directlyTyped
+        }) else {
+            return
         }
+        learnFieldChange(
+            before: episode.initialField.text,
+            after: episode.finalField.text,
+            signal: .directlyTyped,
+            context: episode.context,
+            at: episode.endedAt,
+            excludeUnterminatedTrailingWord: episode.boundary == .idle
+        )
     }
 
     public mutating func ingest(_ capture: AcceptedSuggestionCapture) {
-        learn(
-            insertedText: capture.insertion,
-            precedingText: Self.prefix(
-                of: capture.field.text,
-                throughUTF16: capture.field.selection.location
-            ),
+        guard let fieldAfter = Self.replacing(
+            capture.field.selection,
+            in: capture.field.text,
+            with: capture.insertion
+        ) else {
+            return
+        }
+        learnFieldChange(
+            before: capture.field.text,
+            after: fieldAfter,
             signal: .acceptedSuggestion,
             context: capture.context,
             at: capture.capturedAt
@@ -217,12 +228,16 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         case .reverted:
             signal = .revertedSuggestion
         }
-        learn(
-            insertedText: feedback.affectedText,
-            precedingText: Self.prefix(
-                of: feedback.field.text,
-                throughUTF16: feedback.field.selection.location
-            ),
+        guard let fieldAfter = Self.replacing(
+            feedback.field.selection,
+            in: feedback.field.text,
+            with: feedback.affectedText
+        ) else {
+            return
+        }
+        learnFieldChange(
+            before: feedback.field.text,
+            after: fieldAfter,
             signal: signal,
             context: feedback.context,
             at: feedback.capturedAt
@@ -240,7 +255,7 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         let contextText = fragment.map {
             String(prefix.dropLast($0.count))
         } ?? prefix
-        var contextTokens = Self.tokens(in: contextText)
+        var contextWords = Self.words(in: contextText)
         var generated: [String] = []
         var firstScore: ScoredCandidate?
         var currentFragment = fragment
@@ -248,7 +263,7 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         for _ in 0..<maximumTokens {
             guard
                 let candidate = bestCandidate(
-                    contextTokens: contextTokens,
+                    contextWords: contextWords,
                     fragment: currentFragment,
                     context: context,
                     at: date,
@@ -261,13 +276,13 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
                 firstScore = candidate
             }
             generated.append(candidate.display)
-            contextTokens.append(candidate.display)
+            contextWords.append(candidate.display)
             currentFragment = nil
         }
 
         guard let firstScore, !generated.isEmpty else { return nil }
         let insertion = Self.insertion(
-            generatedTokens: generated,
+            generatedWords: generated,
             fragment: fragment,
             prefix: prefix
         )
@@ -323,7 +338,7 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         at date: Date
     ) {
         guard Self.isWordToken(display) else { return }
-        var evidence = vocabulary[normalized] ?? TokenEvidence()
+        var evidence = vocabulary[normalized] ?? WordEvidence()
         evidence.positive += signal.positiveWeight
         evidence.reversions += signal.reversionWeight
         if signal == .acceptedSuggestion {
@@ -337,6 +352,69 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         }
         evidence.lastSeen = max(evidence.lastSeen, date)
         vocabulary[normalized] = evidence
+    }
+
+    private mutating func learnFieldChange(
+        before: String,
+        after: String,
+        signal: PersonalizationLearningSignal,
+        context: PersonalizationContext,
+        at date: Date,
+        excludeUnterminatedTrailingWord: Bool = false
+    ) {
+        let words = Self.wordOccurrences(in: after)
+        guard
+            !words.isEmpty,
+            let changedRange = Self.changedRange(
+                before: before,
+                after: after
+            )
+        else {
+            return
+        }
+        let trailingWordIsUnterminated =
+            excludeUnterminatedTrailingWord
+            && after.last.map(Self.isWordContinuation) == true
+        let affectedIndices = words.indices.filter {
+            let intersects = Self.intersects(
+                words[$0].range,
+                changedRange: changedRange
+            )
+            let isUnterminatedTail =
+                trailingWordIsUnterminated && $0 == words.count - 1
+            return intersects && !isUnterminatedTail
+        }
+        guard !affectedIndices.isEmpty else { return }
+        let scopeKeys = Self.scopeKeys(for: context)
+
+        for index in affectedIndices {
+            let displayWord = words[index].display
+            let normalized = Self.normalize(displayWord)
+            updateVocabulary(
+                normalized: normalized,
+                display: displayWord,
+                signal: signal,
+                at: date
+            )
+
+            let maximumContext = min(
+                maximumNGramLength - 1,
+                index
+            )
+            for contextLength in 0...maximumContext {
+                let contextStart = index - contextLength
+                let key = Self.contextKey(
+                    words[contextStart..<index].map(\.display)
+                )
+                updateTransition(
+                    contextKey: key,
+                    candidate: normalized,
+                    signal: signal,
+                    scopeKeys: scopeKeys,
+                    at: date
+                )
+            }
+        }
     }
 
     private mutating func updateTransition(
@@ -368,7 +446,7 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
     }
 
     private func bestCandidate(
-        contextTokens: [String],
+        contextWords: [String],
         fragment: String?,
         context: PersonalizationContext,
         at date: Date,
@@ -377,7 +455,7 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         let normalizedFragment = fragment.map(Self.normalize)
         let maximumContext = min(
             maximumNGramLength - 1,
-            contextTokens.count
+            contextWords.count
         )
         let scopeKeys = Self.scopeKeys(for: context)
         var candidates: [String: CandidateEvidence] = [:]
@@ -390,7 +468,7 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
                 by: -1
             ) {
             let key = Self.contextKey(
-                Array(contextTokens.suffix(length))
+                Array(contextWords.suffix(length))
             )
             let matching = (transitions[key] ?? [:]).filter {
                 normalizedFragment.map($0.key.hasPrefix) ?? true
@@ -480,52 +558,115 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
     }
 
     private static func insertion(
-        generatedTokens: [String],
+        generatedWords: [String],
         fragment: String?,
         prefix: String
     ) -> String {
         var result = ""
-        for (index, token) in generatedTokens.enumerated() {
+        for (index, word) in generatedWords.enumerated() {
             if index == 0, let fragment {
-                guard token.count >= fragment.count else { return "" }
-                result += String(token.dropFirst(fragment.count))
+                guard word.count >= fragment.count else { return "" }
+                result += String(word.dropFirst(fragment.count))
                 continue
             }
-            if isPunctuation(token) {
-                result += token
-            } else if index == 0, prefix.last?.isWhitespace == true {
-                result += token
+            if index == 0, prefix.last?.isWhitespace == true {
+                result += word
             } else {
-                result += " " + token
+                result += " " + word
             }
         }
         return result
     }
 
-    private static func tokens(in text: String) -> [String] {
-        var result: [String] = []
-        var word = ""
-        func flushWord() {
-            if !word.isEmpty {
-                result.append(word)
-                word = ""
+    private static func words(in text: String) -> [String] {
+        wordOccurrences(in: text).map(\.display)
+    }
+
+    private static func wordOccurrences(
+        in text: String
+    ) -> [WordOccurrence] {
+        var result: [WordOccurrence] = []
+        var cursor = text.startIndex
+
+        while cursor < text.endIndex {
+            while cursor < text.endIndex, text[cursor].isWhitespace {
+                cursor = text.index(after: cursor)
             }
+            guard cursor < text.endIndex else { break }
+
+            let chunkStart = cursor
+            while cursor < text.endIndex, !text[cursor].isWhitespace {
+                cursor = text.index(after: cursor)
+            }
+            let chunkEnd = cursor
+            var wordStart = chunkStart
+            var wordEnd = chunkEnd
+
+            while wordStart < wordEnd,
+                  !isWordCharacter(text[wordStart]) {
+                wordStart = text.index(after: wordStart)
+            }
+            while wordStart < wordEnd {
+                let previous = text.index(before: wordEnd)
+                guard !isWordCharacter(text[previous]) else { break }
+                wordEnd = previous
+            }
+            guard wordStart < wordEnd else { continue }
+
+            result.append(
+                WordOccurrence(
+                    display: String(text[wordStart..<wordEnd]),
+                    range: wordStart..<wordEnd
+                )
+            )
+        }
+        return result
+    }
+
+    private static func changedRange(
+        before: String,
+        after: String
+    ) -> Range<String.Index>? {
+        guard before != after else { return nil }
+        let beforeCharacters = Array(before)
+        let afterCharacters = Array(after)
+        var prefixCount = 0
+        while prefixCount < beforeCharacters.count,
+              prefixCount < afterCharacters.count,
+              beforeCharacters[prefixCount] == afterCharacters[prefixCount] {
+            prefixCount += 1
         }
 
-        for character in text {
-            if isWordCharacter(character)
-                || ((!word.isEmpty) && (character == "'" || character == "’"
-                    || character == "-")) {
-                word.append(character)
-            } else {
-                flushWord()
-                if isPunctuation(String(character)) {
-                    result.append(String(character))
-                }
-            }
+        var suffixCount = 0
+        while suffixCount < beforeCharacters.count - prefixCount,
+              suffixCount < afterCharacters.count - prefixCount,
+              beforeCharacters[beforeCharacters.count - suffixCount - 1]
+                == afterCharacters[afterCharacters.count - suffixCount - 1] {
+            suffixCount += 1
         }
-        flushWord()
-        return result
+
+        let start = after.index(
+            after.startIndex,
+            offsetBy: prefixCount
+        )
+        let end = after.index(
+            after.endIndex,
+            offsetBy: -suffixCount
+        )
+        return start..<end
+    }
+
+    private static func intersects(
+        _ wordRange: Range<String.Index>,
+        changedRange: Range<String.Index>
+    ) -> Bool {
+        if changedRange.isEmpty {
+            return wordRange.lowerBound <= changedRange.lowerBound
+                && changedRange.lowerBound <= wordRange.upperBound
+        }
+        return wordRange.overlaps(changedRange)
+            || wordRange.upperBound == changedRange.lowerBound
+            || wordRange.lowerBound == changedRange.upperBound
     }
 
     private static func trailingWordFragment(in text: String) -> String? {
@@ -575,19 +716,30 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         }
     }
 
-    private static func isPunctuation(_ token: String) -> Bool {
-        [".", ",", "!", "?", ";", ":"].contains(token)
+    private static func isWordContinuation(_ character: Character) -> Bool {
+        isWordCharacter(character)
+            || character == "'"
+            || character == "’"
+            || character == "-"
     }
 
-    private static func prefix(
-        of text: String,
-        throughUTF16 location: Int
-    ) -> String {
-        guard location >= 0, location <= text.utf16.count else {
-            return text
-        }
+    private static func replacing(
+        _ selection: UTF16Selection,
+        in text: String,
+        with insertion: String
+    ) -> String? {
+        guard selection.isValid(for: text) else { return nil }
         let utf16 = text.utf16
-        let index = utf16.index(utf16.startIndex, offsetBy: location)
-        return String(decoding: utf16[..<index], as: UTF16.self)
+        let lowerBound = utf16.index(
+            utf16.startIndex,
+            offsetBy: selection.location
+        )
+        let upperBound = utf16.index(
+            lowerBound,
+            offsetBy: selection.length
+        )
+        return String(decoding: utf16[..<lowerBound], as: UTF16.self)
+            + insertion
+            + String(decoding: utf16[upperBound...], as: UTF16.self)
     }
 }

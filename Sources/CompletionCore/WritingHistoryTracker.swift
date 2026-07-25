@@ -129,9 +129,11 @@ public struct WritingHistoryTracker: Sendable {
         if !active.currentField.text.isEmpty,
            field.text.isEmpty,
            !active.edits.isEmpty {
-            active.currentField = field
-            self.active = active
-            let completed = finalize(boundary: .cleared, at: date)
+            let completed = makeCapture(
+                from: active,
+                boundary: .cleared,
+                at: date
+            )
             start(
                 field: field,
                 context: context,

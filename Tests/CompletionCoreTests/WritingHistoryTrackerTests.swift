@@ -225,4 +225,45 @@ final class WritingHistoryTrackerTests: XCTestCase {
         XCTAssertEqual(episode.edits[0].insertedText, "")
         XCTAssertEqual(episode.edits[0].deletedText, "i")
     }
+
+    func testClearingFieldPreservesCompletedEditorText() throws {
+        let date = Date(timeIntervalSince1970: 500)
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        var tracker = WritingHistoryTracker()
+        _ = tracker.observe(
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            context: context,
+            at: date
+        )
+        tracker.recordInsertion(
+            "finished message",
+            provenance: .directlyTyped,
+            fieldBefore: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            fieldAfter: CapturedFieldState(
+                text: "finished message",
+                selection: UTF16Selection(location: 16, length: 0)
+            ),
+            at: date.addingTimeInterval(0.1)
+        )
+
+        let completed = try XCTUnwrap(
+            tracker.observe(
+                field: CapturedFieldState(
+                    text: "",
+                    selection: UTF16Selection(location: 0, length: 0)
+                ),
+                context: context,
+                at: date.addingTimeInterval(0.2)
+            )
+        )
+
+        XCTAssertEqual(completed.boundary, .cleared)
+        XCTAssertEqual(completed.finalField.text, "finished message")
+    }
 }

@@ -5,7 +5,7 @@
 `PersonalLanguageModel` is an encrypted, rebuildable projection of the
 canonical event corpus. It learns:
 
-- personal words and preferred capitalization;
+- complete whitespace-delimited editor words and preferred capitalization;
 - one-to-five-token transitions;
 - recency;
 - application, website, input-kind, and language scope evidence;
@@ -16,6 +16,16 @@ Direct typing contributes `1.0` evidence, exact typed-through suggestions
 `1.5`, and accepted suggestions `2.5`. A reversion subtracts four times its
 count during ranking. These are policy values, not schema, and can be tuned
 without migrating the corpus.
+
+Keyboard-event fragments are never vocabulary entries. Input events identify
+that an editor changed, but the projection extracts affected complete words
+from the reconstructed editor text. Surrounding punctuation is discarded;
+internal punctuation such as apostrophes and hyphens remains part of the word.
+
+The raw vocabulary table is not appended to the model prompt. It powers local
+partial-word and phrase completion, and can provide aggregate evidence to the
+automatic voice assessment. Prompt-time personalization comes from retrieved
+full examples and the compact voice assessment instead.
 
 ## Local completion
 
