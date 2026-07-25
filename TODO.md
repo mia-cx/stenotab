@@ -9,10 +9,11 @@ non-obvious. Newest first.
 QLoRA adapter can be extended instead of rebuilt, and so old episodes can be
 reclaimed for space.
 
-Not yet designed against the real schema — the episode types are still moving.
-Do this after rebasing onto Codex's personalization work and reading the actual
-shape of `WritingHistoryTracker` / `AcceptedSuggestionCapture` /
-`CompletionFeedbackKind`.
+`CompletionEpisodeCapture` now provides the stable episode ID, exact hydrated
+model input, streamed suggestion revisions, literal acceptance spans, typed
+through text, final field, and outcome. The optional training subsystem should
+consume that public shape rather than depending on its deduplicated SQLite
+storage representation.
 
 ### A boolean "used" flag is the wrong model
 
@@ -24,6 +25,21 @@ deliberately. What matters is *which adapter* consumed it.
 Record the relationship, not a flag: `(episodeID, adapterID)`, or a per-run
 selection list. `AdapterManifest.corpusRevision` already exists as the field to
 hang this off.
+
+Each committed training run should record:
+
+- adapter/checkpoint ID and parent checkpoint ID;
+- base-model repository, revision, and quantization identity;
+- training recipe and dataset-selection policy versions;
+- every selected completion-episode ID and its immutable content fingerprint;
+- run state (`prepared`, `training`, `committed`, or `failed`);
+- start/end time and resulting adapter path/fingerprint; and
+- evaluation metrics used to accept or reject the checkpoint.
+
+Only mark the selection as consumed when the adapter and ledger entry have been
+saved atomically. Failed or interrupted runs leave those episodes eligible for
+retry. Compatibility includes the base-model revision, quantization, adapter
+architecture, and training-recipe version.
 
 ### Use a monotonic sequence for the watermark, timestamps for retention
 
@@ -62,6 +78,11 @@ safe.
    "delete my data" means both things to a user. Privacy-motivated deletion has
    to invalidate or retrain the adapter as well, otherwise the promise is not
    kept. Worth surfacing in the UI as two distinct actions.
+
+An edited, deleted, or excluded source episode should mark every affected
+adapter lineage stale. Rebuild from the remaining eligible corpus rather than
+silently extending weights that still contain deleted data. Preserve enough
+provenance for the UI to explain which corpus and lineage produced an adapter.
 
 For space specifically: the heavy fields are the complete field snapshots and
 any OCR context, not the text targets. Prefer dropping those first and keeping

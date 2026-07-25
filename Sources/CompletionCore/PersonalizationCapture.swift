@@ -104,6 +104,7 @@ public struct AcceptedSuggestionCapture: Codable, Sendable, Equatable {
     public let field: CapturedFieldState
     public let insertion: String
     public let acceptanceScope: SuggestionAcceptance.Scope
+    public let completionEpisodeID: UUID?
     public let context: PersonalizationContext
     public let capturedAt: Date
 
@@ -112,6 +113,7 @@ public struct AcceptedSuggestionCapture: Codable, Sendable, Equatable {
         field: CapturedFieldState,
         insertion: String,
         acceptanceScope: SuggestionAcceptance.Scope,
+        completionEpisodeID: UUID? = nil,
         context: PersonalizationContext,
         capturedAt: Date
     ) {
@@ -119,6 +121,7 @@ public struct AcceptedSuggestionCapture: Codable, Sendable, Equatable {
         self.field = field
         self.insertion = insertion
         self.acceptanceScope = acceptanceScope
+        self.completionEpisodeID = completionEpisodeID
         self.context = context
         self.capturedAt = capturedAt
     }
@@ -131,6 +134,7 @@ public enum PersonalizationCapture {
         selection: UTF16Selection,
         insertion: String,
         acceptanceScope: SuggestionAcceptance.Scope,
+        completionEpisodeID: UUID? = nil,
         context: PersonalizationContext,
         capturedAt: Date = Date()
     ) -> AcceptedSuggestionCapture? {
@@ -150,6 +154,7 @@ public enum PersonalizationCapture {
             ),
             insertion: insertion,
             acceptanceScope: acceptanceScope,
+            completionEpisodeID: completionEpisodeID,
             context: context,
             capturedAt: capturedAt
         )

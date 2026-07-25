@@ -43,24 +43,58 @@ public struct PersonalizationStorageStatistics: Sendable, Equatable {
 }
 
 public struct PersonalizationCorpusExport: Codable, Sendable, Equatable {
+    private enum CodingKeys: String, CodingKey {
+        case formatVersion
+        case exportedAt
+        case acceptedSuggestions
+        case completionFeedback
+        case writingEpisodes
+        case completionEpisodes
+    }
+
     public let formatVersion: Int
     public let exportedAt: Date
     public let acceptedSuggestions: [AcceptedSuggestionCapture]
     public let completionFeedback: [CompletionFeedbackCapture]
     public let writingEpisodes: [WritingEpisodeCapture]
+    public let completionEpisodes: [CompletionEpisodeCapture]
 
     public init(
-        formatVersion: Int = 1,
+        formatVersion: Int = 2,
         exportedAt: Date,
         acceptedSuggestions: [AcceptedSuggestionCapture],
         completionFeedback: [CompletionFeedbackCapture],
-        writingEpisodes: [WritingEpisodeCapture]
+        writingEpisodes: [WritingEpisodeCapture],
+        completionEpisodes: [CompletionEpisodeCapture]
     ) {
         self.formatVersion = formatVersion
         self.exportedAt = exportedAt
         self.acceptedSuggestions = acceptedSuggestions
         self.completionFeedback = completionFeedback
         self.writingEpisodes = writingEpisodes
+        self.completionEpisodes = completionEpisodes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        formatVersion = try container.decode(Int.self, forKey: .formatVersion)
+        exportedAt = try container.decode(Date.self, forKey: .exportedAt)
+        acceptedSuggestions = try container.decode(
+            [AcceptedSuggestionCapture].self,
+            forKey: .acceptedSuggestions
+        )
+        completionFeedback = try container.decode(
+            [CompletionFeedbackCapture].self,
+            forKey: .completionFeedback
+        )
+        writingEpisodes = try container.decode(
+            [WritingEpisodeCapture].self,
+            forKey: .writingEpisodes
+        )
+        completionEpisodes = try container.decodeIfPresent(
+            [CompletionEpisodeCapture].self,
+            forKey: .completionEpisodes
+        ) ?? []
     }
 }
 
@@ -87,9 +121,11 @@ public actor PersonalizationDatabase {
     private static let acceptedSuggestionKind = "accepted_suggestion"
     private static let completionFeedbackKind = "completion_feedback"
     private static let writingEpisodeKind = "writing_episode"
+    private static let completionEpisodeKind = "completion_episode"
     private static let languageModelProjection = "personal_language_model"
     private static let voiceAssessmentProjection = "voice_assessment"
     private static let keyVersion = 1
+    private static let textChunkByteCount = 256
 
     private let connection: SQLiteConnection
     private let keyData: Data
@@ -160,6 +196,97 @@ public actor PersonalizationDatabase {
         )
     }
 
+    public func record(_ episode: CompletionEpisodeCapture) throws {
+        try connection.transaction {
+            var referencedChunks = Set<Data>()
+            let initialText = episode.invocation.field.text
+            let initialTextReference = try storedTextReference(
+                for: initialText,
+                referencedChunks: &referencedChunks
+            )
+            let promptInput = textBeforeSelection(
+                in: episode.invocation.field
+            )
+            let promptInputReference = try promptInput.map {
+                if $0 == initialText {
+                    return initialTextReference
+                }
+                return try storedTextReference(
+                    for: $0,
+                    referencedChunks: &referencedChunks
+                )
+            }
+            let storedPrompt = try storedPrompt(
+                episode.invocation.prompt,
+                promptInput: promptInput,
+                promptInputReference: promptInputReference,
+                referencedChunks: &referencedChunks
+            )
+            var previousSuggestion = ""
+            let storedRevisions = episode.suggestionRevisions.map {
+                let stored = StoredCompletionSuggestionRevision(
+                    textDelta: StoredTextDelta(
+                        from: previousSuggestion,
+                        to: $0.text
+                    ),
+                    isFinal: $0.isFinal,
+                    observedAt: $0.observedAt
+                )
+                previousSuggestion = $0.text
+                return stored
+            }
+            let storedEpisode = StoredCompletionEpisode(
+                storageVersion:
+                    StoredCompletionEpisode.currentStorageVersion,
+                id: episode.id,
+                invocation: StoredCompletionInvocation(
+                    id: episode.invocation.id,
+                    field: StoredCompletionField(
+                        text: initialTextReference,
+                        selection: episode.invocation.field.selection
+                    ),
+                    prompt: storedPrompt,
+                    generation: episode.invocation.generation,
+                    context: episode.invocation.context,
+                    startedAt: episode.invocation.startedAt
+                ),
+                suggestionRevisions: storedRevisions,
+                acceptances: episode.acceptances,
+                typedThroughText: episode.typedThroughText,
+                resolution: episode.resolution,
+                finalFieldTextDelta: StoredTextDelta(
+                    from: initialText,
+                    to: episode.finalField.text
+                ),
+                finalFieldSelection: episode.finalField.selection,
+                actualInsertedText: episode.actualInsertedText,
+                endedAt: episode.endedAt
+            )
+            let payload = try encoder.encode(storedEpisode)
+            try insertEvent(
+                id: episode.id,
+                kind: Self.completionEpisodeKind,
+                capturedAt: episode.endedAt,
+                payload: payload,
+                context: episode.invocation.context
+            )
+            for chunkHMAC in referencedChunks {
+                try connection.execute(
+                    """
+                    INSERT OR IGNORE INTO event_text_chunk (
+                        event_id,
+                        chunk_hmac
+                    ) VALUES (?, ?)
+                    """,
+                    bindings: [
+                        .text(episode.id.uuidString),
+                        .blob(chunkHMAC),
+                    ]
+                )
+            }
+        }
+    }
+
     private func recordEvent<Payload: Encodable>(
         id: UUID,
         kind: String,
@@ -168,6 +295,24 @@ public actor PersonalizationDatabase {
         context: PersonalizationContext
     ) throws {
         let payload = try encoder.encode(value)
+        try connection.transaction {
+            try insertEvent(
+                id: id,
+                kind: kind,
+                capturedAt: capturedAt,
+                payload: payload,
+                context: context
+            )
+        }
+    }
+
+    private func insertEvent(
+        id: UUID,
+        kind: String,
+        capturedAt: Date,
+        payload: Data,
+        context: PersonalizationContext
+    ) throws {
         let sealedPayload = try PersonalizationCryptography.seal(
             payload,
             keyData: keyData
@@ -176,45 +321,260 @@ public actor PersonalizationDatabase {
             for: payload,
             keyData: keyData
         )
+        try connection.execute(
+            """
+            INSERT INTO personalization_event (
+                id,
+                kind,
+                captured_at_ms,
+                payload_sealed,
+                payload_hmac,
+                key_version
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            bindings: [
+                .text(id.uuidString),
+                .text(kind),
+                .integer(
+                    Int64(capturedAt.timeIntervalSince1970 * 1_000)
+                ),
+                .blob(sealedPayload),
+                .blob(payloadHMAC),
+                .integer(Int64(Self.keyVersion)),
+            ]
+        )
 
-        try connection.transaction {
+        for scope in scopes(from: context) {
+            let scopeID = try upsertScope(scope)
             try connection.execute(
                 """
-                INSERT INTO personalization_event (
-                    id,
-                    kind,
-                    captured_at_ms,
-                    payload_sealed,
-                    payload_hmac,
-                    key_version
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO event_scope (event_id, scope_id)
+                VALUES (?, ?)
                 """,
                 bindings: [
                     .text(id.uuidString),
-                    .text(kind),
-                    .integer(
-                        Int64(capturedAt.timeIntervalSince1970 * 1_000)
-                    ),
-                    .blob(sealedPayload),
-                    .blob(payloadHMAC),
-                    .integer(Int64(Self.keyVersion))
+                    .integer(scopeID),
                 ]
             )
+        }
+    }
 
-            for scope in scopes(from: context) {
-                let scopeID = try upsertScope(scope)
-                try connection.execute(
-                    """
-                    INSERT OR IGNORE INTO event_scope (event_id, scope_id)
-                    VALUES (?, ?)
-                    """,
-                    bindings: [
-                        .text(id.uuidString),
-                        .integer(scopeID)
-                    ]
+    private func storedPrompt(
+        _ prompt: CapturedCompletionPrompt,
+        promptInput: String?,
+        promptInputReference: StoredTextReference?,
+        referencedChunks: inout Set<Data>
+    ) throws -> StoredCompletionPrompt {
+        StoredCompletionPrompt(
+            transport: prompt.transport,
+            systemMessage: try storedPromptTextReference(
+                for: prompt.systemMessage,
+                promptInput: promptInput,
+                promptInputReference: promptInputReference,
+                referencedChunks: &referencedChunks
+            ),
+            userMessage: try storedPromptTextReference(
+                for: prompt.userMessage,
+                promptInput: promptInput,
+                promptInputReference: promptInputReference,
+                referencedChunks: &referencedChunks
+            ),
+            textPrompt: try storedPromptTextReference(
+                for: prompt.textPrompt,
+                promptInput: promptInput,
+                promptInputReference: promptInputReference,
+                referencedChunks: &referencedChunks
+            )
+        )
+    }
+
+    private func storedPromptTextReference(
+        for text: String?,
+        promptInput: String?,
+        promptInputReference: StoredTextReference?,
+        referencedChunks: inout Set<Data>
+    ) throws -> StoredTextReference? {
+        guard let text else { return nil }
+        let reusableSuffix: (String, StoredTextReference)?
+        if
+            let promptInput,
+            !promptInput.isEmpty,
+            let promptInputReference
+        {
+            reusableSuffix = (promptInput, promptInputReference)
+        } else {
+            reusableSuffix = nil
+        }
+        return try storedTextReference(
+            for: text,
+            reusingSuffix: reusableSuffix,
+            referencedChunks: &referencedChunks
+        )
+    }
+
+    private func storedTextReference(
+        for text: String,
+        reusingSuffix: (String, StoredTextReference)? = nil,
+        referencedChunks: inout Set<Data>
+    ) throws -> StoredTextReference {
+        if
+            let (suffix, suffixReference) = reusingSuffix,
+            text.hasSuffix(suffix)
+        {
+            let prefix = String(text.dropLast(suffix.count))
+            let prefixReference = try storedTextReference(
+                for: prefix,
+                referencedChunks: &referencedChunks
+            )
+            referencedChunks.formUnion(suffixReference.chunkHMACs)
+            return StoredTextReference(
+                chunkHMACs:
+                    prefixReference.chunkHMACs
+                    + suffixReference.chunkHMACs,
+                utf8ByteCount: text.utf8.count
+            )
+        }
+
+        var chunkHMACs: [Data] = []
+        let components = text.components(separatedBy: "\n\n")
+        for (index, component) in components.enumerated() {
+            chunkHMACs.append(
+                contentsOf: try storeTextBytes(
+                    Data(component.utf8),
+                    referencedChunks: &referencedChunks
+                )
+            )
+            if index < components.count - 1 {
+                chunkHMACs.append(
+                    contentsOf: try storeTextBytes(
+                        Data("\n\n".utf8),
+                        referencedChunks: &referencedChunks
+                    )
                 )
             }
         }
+        return StoredTextReference(
+            chunkHMACs: chunkHMACs,
+            utf8ByteCount: text.utf8.count
+        )
+    }
+
+    private func storeTextBytes(
+        _ bytes: Data,
+        referencedChunks: inout Set<Data>
+    ) throws -> [Data] {
+        guard !bytes.isEmpty else { return [] }
+        var chunkHMACs: [Data] = []
+        var offset = 0
+        while offset < bytes.count {
+            let end = min(
+                offset + Self.textChunkByteCount,
+                bytes.count
+            )
+            let chunk = Data(bytes[offset..<end])
+            let chunkHMAC = try PersonalizationCryptography.payloadHMAC(
+                for: chunk,
+                keyData: keyData
+            )
+            let existing = try connection.query(
+                """
+                SELECT 1
+                FROM personalization_text_chunk
+                WHERE chunk_hmac = ?
+                LIMIT 1
+                """,
+                bindings: [.blob(chunkHMAC)]
+            )
+            if existing.isEmpty {
+                let sealed = try PersonalizationCryptography.seal(
+                    chunk,
+                    keyData: keyData
+                )
+                try connection.execute(
+                    """
+                    INSERT INTO personalization_text_chunk (
+                        chunk_hmac,
+                        payload_sealed,
+                        plaintext_byte_count,
+                        key_version
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    bindings: [
+                        .blob(chunkHMAC),
+                        .blob(sealed),
+                        .integer(Int64(chunk.count)),
+                        .integer(Int64(Self.keyVersion)),
+                    ]
+                )
+            }
+            chunkHMACs.append(chunkHMAC)
+            referencedChunks.insert(chunkHMAC)
+            offset = end
+        }
+        return chunkHMACs
+    }
+
+    private func loadText(
+        _ reference: StoredTextReference,
+        chunkCache: inout [Data: Data]
+    ) throws -> String {
+        var bytes = Data()
+        for chunkHMAC in reference.chunkHMACs {
+            let chunk: Data
+            if let cached = chunkCache[chunkHMAC] {
+                chunk = cached
+            } else {
+                let row = try connection.query(
+                    """
+                    SELECT payload_sealed, plaintext_byte_count
+                    FROM personalization_text_chunk
+                    WHERE chunk_hmac = ?
+                    """,
+                    bindings: [.blob(chunkHMAC)]
+                ).first
+                guard
+                    let sealed = row?.blob(at: 0),
+                    let expectedByteCount = row?.integer(at: 1)
+                else {
+                    throw PersonalizationPersistenceError.database(
+                        "Missing completion episode text chunk"
+                    )
+                }
+                chunk = try PersonalizationCryptography.open(
+                    sealed,
+                    keyData: keyData
+                )
+                guard chunk.count == Int(expectedByteCount) else {
+                    throw PersonalizationPersistenceError.database(
+                        "Completion episode text chunk size mismatch"
+                    )
+                }
+                chunkCache[chunkHMAC] = chunk
+            }
+            bytes.append(chunk)
+        }
+        guard
+            bytes.count == reference.utf8ByteCount,
+            let text = String(data: bytes, encoding: .utf8)
+        else {
+            throw PersonalizationPersistenceError.database(
+                "Invalid completion episode text reference"
+            )
+        }
+        return text
+    }
+
+    private func textBeforeSelection(
+        in field: CapturedFieldState
+    ) -> String? {
+        guard field.selection.isValid(for: field.text) else {
+            return nil
+        }
+        let utf16 = Array(field.text.utf16)
+        return String(
+            decoding: utf16[..<field.selection.location],
+            as: UTF16.self
+        )
     }
 
     public func acceptedSuggestions(
@@ -244,6 +604,65 @@ public actor PersonalizationDatabase {
             kind: Self.completionFeedbackKind,
             as: CompletionFeedbackCapture.self
         )
+    }
+
+    public func completionEpisodes(
+        limit: Int? = nil
+    ) throws -> [CompletionEpisodeCapture] {
+        let order = limit == nil ? "ASC" : "DESC"
+        let limitClause = limit.map { " LIMIT \(max(0, $0))" } ?? ""
+        let rows = try connection.query(
+            """
+            SELECT payload_sealed
+            FROM personalization_event
+            WHERE kind = ?
+            ORDER BY sequence \(order)\(limitClause)
+            """,
+            bindings: [.text(Self.completionEpisodeKind)]
+        )
+        var chunkCache: [Data: Data] = [:]
+        let episodes = try rows.map { row in
+            guard let sealedPayload = row.blob(at: 0) else {
+                throw PersonalizationPersistenceError.database(
+                    "Invalid completion episode row"
+                )
+            }
+            let payload = try PersonalizationCryptography.open(
+                sealedPayload,
+                keyData: keyData
+            )
+            if
+                let header = try? decoder.decode(
+                    StoredCompletionEpisodeHeader.self,
+                    from: payload
+                )
+            {
+                guard
+                    header.storageVersion
+                        == StoredCompletionEpisode.currentStorageVersion
+                else {
+                    throw PersonalizationPersistenceError.database(
+                        "Unsupported completion episode storage version "
+                            + "\(header.storageVersion)"
+                    )
+                }
+                let stored = try decoder.decode(
+                    StoredCompletionEpisode.self,
+                    from: payload
+                )
+                return try stored.hydrated { reference in
+                    try loadText(
+                        reference,
+                        chunkCache: &chunkCache
+                    )
+                }
+            }
+            return try decoder.decode(
+                CompletionEpisodeCapture.self,
+                from: payload
+            )
+        }
+        return limit == nil ? episodes : Array(episodes.reversed())
     }
 
     private func decodedEvents<Value: Decodable>(
@@ -290,7 +709,8 @@ public actor PersonalizationDatabase {
             exportedAt: date,
             acceptedSuggestions: try acceptedSuggestions(),
             completionFeedback: try completionFeedback(),
-            writingEpisodes: try writingEpisodes()
+            writingEpisodes: try writingEpisodes(),
+            completionEpisodes: try completionEpisodes()
         )
     }
 
@@ -503,6 +923,9 @@ public actor PersonalizationDatabase {
             try connection.execute("DELETE FROM event_scope")
             try connection.execute("DELETE FROM personalization_event")
             try connection.execute("DELETE FROM personalization_scope")
+            try connection.execute(
+                "DELETE FROM personalization_text_chunk"
+            )
             try connection.execute("DELETE FROM projection_checkpoint")
             try connection.execute("DELETE FROM personalization_projection")
         }
@@ -515,6 +938,7 @@ public actor PersonalizationDatabase {
                 bindings: [.text(id.uuidString)]
             )
             try pruneUnusedScopes()
+            try pruneUnusedTextChunks()
         }
     }
 
@@ -544,8 +968,31 @@ public actor PersonalizationDatabase {
             )
             let deleted = connection.changedRowCount
             try pruneUnusedScopes()
+            try pruneUnusedTextChunks()
             return deleted
         }
+    }
+
+    public func completionEpisodeStorageStatistics() throws
+        -> CompletionEpisodeStorageStatistics
+    {
+        let uniqueChunks = try connection.query(
+            "SELECT COUNT(*) FROM personalization_text_chunk"
+        ).first?.integer(at: 0) ?? 0
+        let references = try connection.query(
+            "SELECT COUNT(*) FROM event_text_chunk"
+        ).first?.integer(at: 0) ?? 0
+        let bytes = try connection.query(
+            """
+            SELECT COALESCE(SUM(LENGTH(payload_sealed)), 0)
+            FROM personalization_text_chunk
+            """
+        ).first?.integer(at: 0) ?? 0
+        return CompletionEpisodeStorageStatistics(
+            uniqueTextChunkCount: Int(uniqueChunks),
+            textChunkReferenceCount: Int(references),
+            encryptedTextChunkBytes: Int(bytes)
+        )
     }
 
     public func storageStatistics() throws
@@ -570,6 +1017,13 @@ public actor PersonalizationDatabase {
                             0
                         )
                         FROM personalization_projection
+                    )
+                    + (
+                        SELECT COALESCE(
+                            SUM(LENGTH(payload_sealed)),
+                            0
+                        )
+                        FROM personalization_text_chunk
                     )
                 ),
                 MIN(captured_at_ms),
@@ -611,6 +1065,7 @@ public actor PersonalizationDatabase {
                         )
                     ]
                 )
+                try pruneUnusedTextChunks()
             }
 
             if let maximumBytes = policy.maximumEncryptedBytes {
@@ -633,11 +1088,13 @@ public actor PersonalizationDatabase {
                             """,
                             bindings: [.text(id)]
                         )
+                        try pruneUnusedTextChunks()
                         payloadBytes = try encryptedPayloadBytes()
                     }
                 }
             }
             try pruneUnusedScopes()
+            try pruneUnusedTextChunks()
         }
         return countBefore - (try eventCount())
     }
@@ -668,6 +1125,13 @@ public actor PersonalizationDatabase {
                         )
                         FROM personalization_projection
                     )
+                    + (
+                        SELECT COALESCE(
+                            SUM(LENGTH(payload_sealed)),
+                            0
+                        )
+                        FROM personalization_text_chunk
+                    )
                 """
             ).first?.integer(at: 0) ?? 0
         )
@@ -678,6 +1142,18 @@ public actor PersonalizationDatabase {
             """
             DELETE FROM personalization_scope
             WHERE id NOT IN (SELECT DISTINCT scope_id FROM event_scope)
+            """
+        )
+    }
+
+    private func pruneUnusedTextChunks() throws {
+        try connection.execute(
+            """
+            DELETE FROM personalization_text_chunk
+            WHERE chunk_hmac NOT IN (
+                SELECT DISTINCT chunk_hmac
+                FROM event_text_chunk
+            )
             """
         )
     }
@@ -774,6 +1250,22 @@ public actor PersonalizationDatabase {
 
         CREATE INDEX IF NOT EXISTS personalization_event_kind_time
         ON personalization_event(kind, captured_at_ms DESC);
+
+        CREATE TABLE IF NOT EXISTS personalization_text_chunk (
+            chunk_hmac BLOB PRIMARY KEY,
+            payload_sealed BLOB NOT NULL,
+            plaintext_byte_count INTEGER NOT NULL,
+            key_version INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS event_text_chunk (
+            event_id TEXT NOT NULL
+                REFERENCES personalization_event(id) ON DELETE CASCADE,
+            chunk_hmac BLOB NOT NULL
+                REFERENCES personalization_text_chunk(chunk_hmac)
+                    ON DELETE CASCADE,
+            PRIMARY KEY(event_id, chunk_hmac)
+        );
 
         CREATE TABLE IF NOT EXISTS event_scope (
             event_id TEXT NOT NULL

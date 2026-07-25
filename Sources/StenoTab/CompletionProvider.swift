@@ -1,6 +1,13 @@
 import Foundation
 import CompletionCore
 
+struct CompletionInvocationSeed: Sendable {
+    let id: UUID
+    let field: CapturedFieldState
+    let context: PersonalizationContext
+    let startedAt: Date
+}
+
 struct CompletionRequest: Sendable {
     let id: UInt64
     let prefix: String
@@ -9,21 +16,25 @@ struct CompletionRequest: Sendable {
     let promptConfiguration: PromptConfiguration
     let partialWordFragment: String?
     let partialWordCandidates: [String]
+    let invocationSeed: CompletionInvocationSeed?
 }
 
 struct CompletionResponse: Sendable {
     let requestID: UInt64
     let text: String?
     let isFinal: Bool
+    let invocation: CompletionInvocationCapture?
 
     init(
         requestID: UInt64,
         text: String?,
-        isFinal: Bool = true
+        isFinal: Bool = true,
+        invocation: CompletionInvocationCapture? = nil
     ) {
         self.requestID = requestID
         self.text = text
         self.isFinal = isFinal
+        self.invocation = invocation
     }
 }
 
@@ -93,6 +104,11 @@ struct HeuristicCompletionProvider: CompletionProvider {
 }
 
 struct OpenAICompatibleCompletionProvider: CompletionProvider {
+    private struct PreparedRequest {
+        let urlRequest: URLRequest
+        let invocation: CompletionInvocationCapture?
+    }
+
     let endpoint: URL
     let apiKey: String?
     let model: String
@@ -111,12 +127,13 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
     func stream(
         _ request: CompletionRequest
     ) async -> AsyncStream<CompletionResponse> {
-        let urlRequest = makeURLRequest(for: request, stream: true)
+        let prepared = makeURLRequest(for: request, stream: true)
         return AsyncStream { continuation in
             let producer = Task {
                 await performStreamingRequest(
-                    urlRequest,
+                    prepared.urlRequest,
                     completionRequest: request,
+                    invocation: prepared.invocation,
                     continuation: continuation
                 )
                 continuation.finish()
@@ -130,7 +147,7 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
     private func makeURLRequest(
         for request: CompletionRequest,
         stream: Bool
-    ) -> URLRequest {
+    ) -> PreparedRequest {
         let resource = switch apiStyle {
         case .textCompletions, .gemmaChatPrefill:
             "completions"
@@ -155,6 +172,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
             urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
 
+        let capturedPrompt: CapturedCompletionPrompt
+        let stopSequences: [String]
         switch apiStyle {
         case .textCompletions:
             let prompt = CompletionPrompt.compose(
@@ -173,20 +192,31 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                     stream: stream
                 )
             )
+            capturedPrompt = CapturedCompletionPrompt(
+                transport: .textCompletion,
+                textPrompt: prompt
+            )
+            stopSequences = []
         case .gemmaChatPrefill:
+            let prompt = GemmaAssistantPrefill.prompt(
+                prefix: String(request.prefix.suffix(1_500)),
+                suffix: String(request.suffix.prefix(300))
+            )
             urlRequest.httpBody = try? JSONEncoder().encode(
                 TextCompletionBody(
                     model: model,
-                    prompt: GemmaAssistantPrefill.prompt(
-                        prefix: String(request.prefix.suffix(1_500)),
-                        suffix: String(request.suffix.prefix(300))
-                    ),
+                    prompt: prompt,
                     maxTokens: 16,
                     temperature: 0,
                     stop: ["<turn|>"],
                     stream: stream
                 )
             )
+            capturedPrompt = CapturedCompletionPrompt(
+                transport: .assistantPrefill,
+                textPrompt: prompt
+            )
+            stopSequences = ["<turn|>"]
         case .chatCompletions:
             let prompt = CompletionPrompt.compose(
                 prefix: String(request.prefix.suffix(1_500)),
@@ -210,13 +240,42 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                     stream: stream
                 )
             )
+            capturedPrompt = CapturedCompletionPrompt(
+                transport: .chatCompletion,
+                systemMessage: prompt.systemMessage,
+                userMessage: prompt.userMessage
+            )
+            stopSequences = []
         }
-        return urlRequest
+        let providerKind = isLocalHost
+            ? "local-openai-compatible"
+            : "openai-compatible"
+        let invocation = request.invocationSeed.map {
+            CompletionInvocationCapture(
+                id: $0.id,
+                field: $0.field,
+                prompt: capturedPrompt,
+                generation: CompletionGenerationMetadata(
+                    providerKind: providerKind,
+                    modelIdentifier: model,
+                    maximumTokens: 16,
+                    temperature: 0,
+                    stopSequences: stopSequences
+                ),
+                context: $0.context,
+                startedAt: $0.startedAt
+            )
+        }
+        return PreparedRequest(
+            urlRequest: urlRequest,
+            invocation: invocation
+        )
     }
 
     private func performStreamingRequest(
         _ urlRequest: URLRequest,
         completionRequest request: CompletionRequest,
+        invocation: CompletionInvocationCapture?,
         continuation: AsyncStream<CompletionResponse>.Continuation
     ) async {
         do {
@@ -228,7 +287,11 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                 httpResponse.statusCode == 200
             else {
                 continuation.yield(
-                    CompletionResponse(requestID: request.id, text: nil)
+                    CompletionResponse(
+                        requestID: request.id,
+                        text: nil,
+                        invocation: invocation
+                    )
                 )
                 return
             }
@@ -243,7 +306,11 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                     data.append(byte)
                 }
                 continuation.yield(
-                    decodeOneShot(data, request: request)
+                    decodeOneShot(
+                        data,
+                        request: request,
+                        invocation: invocation
+                    )
                 )
                 return
             }
@@ -270,7 +337,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                         CompletionResponse(
                             requestID: request.id,
                             text: text,
-                            isFinal: event.isFinished
+                            isFinal: event.isFinished,
+                            invocation: invocation
                         )
                     )
                 } else if event.isFinished {
@@ -278,7 +346,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                         CompletionResponse(
                             requestID: request.id,
                             text: lastPublishedText,
-                            isFinal: true
+                            isFinal: true,
+                            invocation: invocation
                         )
                     )
                 }
@@ -292,7 +361,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                     CompletionResponse(
                         requestID: request.id,
                         text: lastPublishedText,
-                        isFinal: true
+                        isFinal: true,
+                        invocation: invocation
                     )
                 )
             }
@@ -301,14 +371,19 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
         } catch {
             guard !Task.isCancelled else { return }
             continuation.yield(
-                CompletionResponse(requestID: request.id, text: nil)
+                CompletionResponse(
+                    requestID: request.id,
+                    text: nil,
+                    invocation: invocation
+                )
             )
         }
     }
 
     private func decodeOneShot(
         _ data: Data,
-        request: CompletionRequest
+        request: CompletionRequest,
+        invocation: CompletionInvocationCapture?
     ) -> CompletionResponse {
         let payload = try? JSONDecoder().decode(
             CompletionPayload.self,
@@ -321,7 +396,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
             requestID: request.id,
             text: rawText.flatMap {
                 sanitizedText($0, request: request)
-            }
+            },
+            invocation: invocation
         )
     }
 

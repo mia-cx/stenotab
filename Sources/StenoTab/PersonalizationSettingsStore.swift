@@ -61,6 +61,8 @@ final class PersonalizationSettingsStore: ObservableObject {
     @Published private(set) var recentEpisodes: [WritingEpisodeCapture] = []
     @Published private(set) var recentAcceptedSuggestions:
         [AcceptedSuggestionCapture] = []
+    @Published private(set) var recentCompletionEpisodes:
+        [CompletionEpisodeCapture] = []
     @Published private(set) var operationError: String?
     @Published private(set) var languageModel = PersonalLanguageModel()
     @Published private(set) var voiceAssessment: VoiceAssessment?
@@ -116,6 +118,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 recentAcceptedSuggestions =
                     try await database.acceptedSuggestions(limit: 20)
+                recentCompletionEpisodes =
+                    try await database.completionEpisodes(limit: 20)
                 operationError = nil
             } catch {
                 operationError = String(describing: error)
@@ -133,6 +137,7 @@ final class PersonalizationSettingsStore: ObservableObject {
                 encryptedPayloadBytes = 0
                 recentEpisodes = []
                 recentAcceptedSuggestions = []
+                recentCompletionEpisodes = []
                 operationError = nil
             } catch {
                 operationError = String(describing: error)
@@ -189,6 +194,22 @@ final class PersonalizationSettingsStore: ObservableObject {
             do {
                 languageModel = try await modelWorker.record(
                     feedback,
+                    retentionPolicy: policy
+                )
+                refresh()
+            } catch {
+                operationError = String(describing: error)
+            }
+        }
+    }
+
+    func record(_ episode: CompletionEpisodeCapture) {
+        guard collectionEnabled, let modelWorker else { return }
+        let policy = retentionPolicy
+        Task {
+            do {
+                languageModel = try await modelWorker.record(
+                    episode,
                     retentionPolicy: policy
                 )
                 refresh()
@@ -395,6 +416,18 @@ private actor PersonalizationModelWorker {
         try await database.record(feedback)
         model.ingest(feedback)
         try await database.saveLanguageModel(model)
+        let removed = try await database.enforceRetention(retentionPolicy)
+        if removed > 0 {
+            return try await rebuild()
+        }
+        return model
+    }
+
+    func record(
+        _ episode: CompletionEpisodeCapture,
+        retentionPolicy: PersonalizationRetentionPolicy
+    ) async throws -> PersonalLanguageModel {
+        try await database.record(episode)
         let removed = try await database.enforceRetention(retentionPolicy)
         if removed > 0 {
             return try await rebuild()

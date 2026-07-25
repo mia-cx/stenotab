@@ -187,9 +187,10 @@ private struct PersonalizationSettingsView: View {
                             Text("Learn from my writing")
                                 .font(.headline)
                             Text(
-                                "Store accepted completions and their full "
-                                + "input context locally in encrypted form. "
-                                + "Turning this off stops new collection."
+                                "Store model inputs, suggestion outcomes, "
+                                + "accepted completions, and writing history "
+                                + "locally in encrypted form. Turning this "
+                                + "off stops new collection."
                             )
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -439,6 +440,40 @@ private struct PersonalizationSettingsView: View {
                     }
                 }
 
+                if !store.recentCompletionEpisodes.isEmpty {
+                    SettingsSection(title: "Recent Completion Outcomes") {
+                        ForEach(
+                            Array(
+                                store.recentCompletionEpisodes.reversed()
+                            ),
+                            id: \.id
+                        ) { episode in
+                            CompletionEpisodeHistoryRow(
+                                episode: episode,
+                                delete: {
+                                    store.deleteEvent(id: episode.id)
+                                },
+                                deleteApplication: {
+                                    guard let bundleIdentifier =
+                                        episode.invocation.context
+                                            .applicationBundleIdentifier
+                                    else {
+                                        return
+                                    }
+                                    store.deleteApplicationHistory(
+                                        bundleIdentifier:
+                                            bundleIdentifier
+                                    )
+                                }
+                            )
+                            if episode.id
+                                != store.recentCompletionEpisodes.first?.id {
+                                Divider()
+                            }
+                        }
+                    }
+                }
+
                 if !store.recentAcceptedSuggestions.isEmpty {
                     SettingsSection(title: "Recent Accepted Suggestions") {
                         ForEach(
@@ -515,6 +550,105 @@ private struct PersonalizationSettingsView: View {
                 store.report(error: error)
             }
         }
+    }
+}
+
+private struct CompletionEpisodeHistoryRow: View {
+    let episode: CompletionEpisodeCapture
+    let delete: () -> Void
+    let deleteApplication: () -> Void
+    @State private var showsModelInput = false
+
+    private var finalSuggestion: String {
+        episode.suggestionRevisions.last?.text ?? ""
+    }
+
+    private var modelInput: String {
+        let prompt = episode.invocation.prompt
+        return [
+            prompt.systemMessage.map { "System:\n\($0)" },
+            prompt.userMessage.map { "User:\n\($0)" },
+            prompt.textPrompt.map { "Prompt:\n\($0)" },
+        ]
+        .compactMap { $0 }
+        .joined(separator: "\n\n")
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(episode.invocation.field.text)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if !finalSuggestion.isEmpty {
+                    Text("Suggested: “\(finalSuggestion)”")
+                        .lineLimit(2)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                if let actualInsertedText = episode.actualInsertedText {
+                    Text("Outcome: “\(actualInsertedText)”")
+                        .lineLimit(2)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+
+                HStack(spacing: 6) {
+                    Text(episode.invocation.generation.modelIdentifier)
+                    Text("•")
+                    Text(
+                        episode.resolution.rawValue.replacingOccurrences(
+                            of: "_",
+                            with: " "
+                        )
+                    )
+                    Text("•")
+                    Text(episode.endedAt, style: .relative)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+                if !modelInput.isEmpty {
+                    DisclosureGroup(
+                        "Model input",
+                        isExpanded: $showsModelInput
+                    ) {
+                        Text(modelInput)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                            .frame(
+                                maxWidth: .infinity,
+                                alignment: .leading
+                            )
+                            .padding(.top, 4)
+                    }
+                    .font(.caption)
+                }
+            }
+
+            Menu {
+                Button("Delete This Record", role: .destructive) {
+                    delete()
+                }
+                if episode.invocation.context
+                    .applicationBundleIdentifier != nil
+                {
+                    Button(
+                        "Delete All from This App",
+                        role: .destructive
+                    ) {
+                        deleteApplication()
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+        .padding(.vertical, 4)
     }
 }
 

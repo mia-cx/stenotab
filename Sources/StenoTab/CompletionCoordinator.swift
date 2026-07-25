@@ -36,6 +36,8 @@ final class CompletionCoordinator: NSObject {
         @MainActor (WritingEpisodeCapture) -> Void
     private let onCompletionFeedback:
         @MainActor (CompletionFeedbackCapture) -> Void
+    private let onCompletionEpisode:
+        @MainActor (CompletionEpisodeCapture) -> Void
     private let personalCompletion:
         @MainActor (String, PersonalizationContext) -> PersonalCompletion?
     private let personalizationPromptContext:
@@ -72,11 +74,19 @@ final class CompletionCoordinator: NSObject {
     private var refillTask: Task<Void, Never>?
     private var refillKey: RefillKey?
     private var awaitedRefillKey: RefillKey?
-    private var prefetchedRefill: (key: RefillKey, text: String)?
+    private var prefetchedRefill:
+        (
+            key: RefillKey,
+            text: String,
+            requestID: UInt64,
+            invocation: CompletionInvocationCapture?
+        )?
     private var refillRequestID: UInt64 = 0
     private var consecutiveSnapshotFailures = 0
     private var writingHistoryTracker = WritingHistoryTracker()
     private var completionReversionTracker = CompletionReversionTracker()
+    private var completionEpisodeTracker = CompletionEpisodeTracker()
+    private var activeCompletionEpisodeRequestID: UInt64?
     private var typedSuggestionOrigin: CapturedFieldState?
 
     private lazy var requestPump = LatestStreamPump<
@@ -114,6 +124,9 @@ final class CompletionCoordinator: NSObject {
         onCompletionFeedback: @escaping @MainActor (
             CompletionFeedbackCapture
         ) -> Void = { _ in },
+        onCompletionEpisode: @escaping @MainActor (
+            CompletionEpisodeCapture
+        ) -> Void = { _ in },
         personalCompletion: @escaping @MainActor (
             String,
             PersonalizationContext
@@ -132,6 +145,7 @@ final class CompletionCoordinator: NSObject {
         self.onPersonalizationCapture = onPersonalizationCapture
         self.onWritingEpisode = onWritingEpisode
         self.onCompletionFeedback = onCompletionFeedback
+        self.onCompletionEpisode = onCompletionEpisode
         self.personalCompletion = personalCompletion
         self.personalizationPromptContext = personalizationPromptContext
         super.init()
@@ -309,6 +323,7 @@ final class CompletionCoordinator: NSObject {
 
             switch outcome {
             case let .matched(remaining):
+                recordCompletionEpisodeTypedThrough(text)
                 suggestion = remaining
                 overlay.consume(
                     matchedText: text,
@@ -320,6 +335,7 @@ final class CompletionCoordinator: NSObject {
                 )
                 return
             case .awaitingStream:
+                recordCompletionEpisodeTypedThrough(text)
                 suggestion = nil
                 overlay.hide()
                 scheduleCaretReanchor(
@@ -328,16 +344,29 @@ final class CompletionCoordinator: NSObject {
                 )
                 return
             case .waitingForWhitespace:
+                recordCompletionEpisodeTypedThrough(text)
                 recordTypedSuggestionMatch(from: consumption)
-                suggestion = nil
-                overlay.hide()
+                clearSuggestion(
+                    resolution:
+                        completionEpisodeTracker
+                        .completedSuggestionResolution
+                        ?? .typedThrough
+                )
                 return
             case .triggerInference:
-                clearSuggestion()
+                clearSuggestion(
+                    resolution: completionEpisodeTracker.hasAcceptedText
+                        ? .partiallyAccepted
+                        : .rejected
+                )
                 scheduleCompletion()
                 return
             case .diverged:
-                clearSuggestion()
+                clearSuggestion(
+                    resolution: completionEpisodeTracker.hasAcceptedText
+                        ? .partiallyAccepted
+                        : .rejected
+                )
                 scheduleCompletion()
                 return
             }
@@ -631,6 +660,17 @@ final class CompletionCoordinator: NSObject {
             ? incompleteWordFragment(in: prefix)
             : nil
         let configuration = promptConfiguration()
+        let invocationSeed = snapshot.map {
+            CompletionInvocationSeed(
+                id: UUID(),
+                field: CapturedFieldState(
+                    text: $0.fieldText,
+                    selection: $0.selection
+                ),
+                context: personalizationContext(for: $0),
+                startedAt: Date()
+            )
+        }
         return CompletionRequest(
             id: id,
             prefix: prefix,
@@ -651,7 +691,8 @@ final class CompletionCoordinator: NSObject {
             partialWordFragment: fragment,
             partialWordCandidates: fragment.map {
                 completionCandidates(for: $0)
-            } ?? []
+            } ?? [],
+            invocationSeed: invocationSeed
         )
     }
 
@@ -816,9 +857,26 @@ final class CompletionCoordinator: NSObject {
             return
         }
 
+        if
+            let invocation = response.invocation,
+            completionEpisodeTracker.activeInvocationID != invocation.id
+        {
+            finalizeCompletionEpisode(resolution: .superseded)
+            completionEpisodeTracker.begin(invocation)
+            activeCompletionEpisodeRequestID = response.requestID
+        }
+
         guard let text = response.text, !text.isEmpty else {
+            if response.isFinal, response.invocation != nil {
+                finalizeCompletionEpisode(resolution: .failed)
+            }
             return
         }
+        completionEpisodeTracker.observeSuggestion(
+            text,
+            isFinal: response.isFinal,
+            at: Date()
+        )
 
         let outcome: SuggestionConsumption.Outcome
         if
@@ -859,10 +917,18 @@ final class CompletionCoordinator: NSObject {
             if let suggestionConsumption {
                 recordTypedSuggestionMatch(from: suggestionConsumption)
             }
-            suggestion = nil
-            overlay.hide()
+            clearSuggestion(
+                resolution:
+                    completionEpisodeTracker
+                    .completedSuggestionResolution
+                    ?? .typedThrough
+            )
         case .triggerInference, .diverged:
-            clearSuggestion()
+            clearSuggestion(
+                resolution: completionEpisodeTracker.hasAcceptedText
+                    ? .partiallyAccepted
+                    : .rejected
+            )
             scheduleCompletion()
         }
     }
@@ -962,6 +1028,13 @@ final class CompletionCoordinator: NSObject {
             scope: scope
         )
         guard !acceptance.accepted.isEmpty else { return false }
+        if activeCompletionEpisodeRequestID == suggestionRequestID {
+            completionEpisodeTracker.recordAcceptance(
+                acceptance.accepted,
+                scope: scope,
+                at: Date()
+            )
+        }
         typedSuggestionOrigin = nil
         let snapshotBeforeAcceptance = accessibility.snapshot() ?? lastSnapshot
         let personalizationCapture = snapshotBeforeAcceptance.flatMap {
@@ -970,6 +1043,8 @@ final class CompletionCoordinator: NSObject {
                 selection: $0.selection,
                 insertion: acceptance.accepted,
                 acceptanceScope: scope,
+                completionEpisodeID:
+                    completionEpisodeTracker.activeInvocationID,
                 context: personalizationContext(for: $0)
             )
         }
@@ -1038,12 +1113,17 @@ final class CompletionCoordinator: NSObject {
                 previousSnapshot: snapshotBeforeAcceptance
             )
         case .waitingForWhitespace:
-            clearSuggestion()
+            clearSuggestion(
+                resolution:
+                    completionEpisodeTracker
+                    .completedSuggestionResolution
+                    ?? .accepted
+            )
             if !promoteOrAwaitRefill(for: buffer.prefix) {
                 scheduleCompletion()
             }
         case .triggerInference, .diverged:
-            clearSuggestion()
+            clearSuggestion(resolution: .partiallyAccepted)
             scheduleCompletion()
         }
         scheduleWhitespaceCalibration(
@@ -1275,13 +1355,23 @@ final class CompletionCoordinator: NSObject {
             return
         }
 
-        prefetchedRefill = (key, text)
+        prefetchedRefill = (
+            key,
+            text,
+            response.requestID,
+            response.invocation
+        )
         if
             awaitedRefillKey == key,
             buffer.prefix == key.prefix,
             lastSnapshot?.editorIdentifier == key.editorIdentifier
         {
-            presentRefill(text, for: key)
+            presentRefill(
+                text,
+                requestID: response.requestID,
+                invocation: response.invocation,
+                for: key
+            )
         }
     }
 
@@ -1298,12 +1388,22 @@ final class CompletionCoordinator: NSObject {
 
         awaitedRefillKey = key
         if let prefetchedRefill, prefetchedRefill.key == key {
-            presentRefill(prefetchedRefill.text, for: key)
+            presentRefill(
+                prefetchedRefill.text,
+                requestID: prefetchedRefill.requestID,
+                invocation: prefetchedRefill.invocation,
+                for: key
+            )
         }
         return true
     }
 
-    private func presentRefill(_ text: String, for key: RefillKey) {
+    private func presentRefill(
+        _ text: String,
+        requestID: UInt64,
+        invocation: CompletionInvocationCapture?,
+        for key: RefillKey
+    ) {
         guard
             buffer.prefix == key.prefix,
             buffer.suffix == key.suffix,
@@ -1317,9 +1417,22 @@ final class CompletionCoordinator: NSObject {
         refillKey = nil
         awaitedRefillKey = nil
         prefetchedRefill = nil
+        if let invocation {
+            finalizeCompletionEpisode(resolution: .superseded)
+            completionEpisodeTracker.begin(invocation)
+            completionEpisodeTracker.observeSuggestion(
+                text,
+                isFinal: true,
+                at: Date()
+            )
+            activeCompletionEpisodeRequestID = requestID
+        }
         suggestion = text
         suggestionConsumption = SuggestionConsumption(suggestion: text)
-        suggestionRequestID = nil
+        suggestionRequestID = requestID
+        typedSuggestionOrigin =
+            invocation?.field
+            ?? currentCapturedField()
 
         if
             let snapshot = accessibility.snapshot(),
@@ -1477,11 +1590,43 @@ final class CompletionCoordinator: NSObject {
         return combinedWidth - contextWidth
     }
 
-    private func clearSuggestion(resetConsumption: Bool = true) {
+    private func recordCompletionEpisodeTypedThrough(_ text: String) {
+        guard activeCompletionEpisodeRequestID == suggestionRequestID else {
+            return
+        }
+        completionEpisodeTracker.recordTypedThrough(text)
+    }
+
+    private func finalizeCompletionEpisode(
+        resolution: CompletionEpisodeResolution
+    ) {
+        guard
+            let finalField =
+                currentCapturedField()
+                ?? completionEpisodeTracker.activeInitialField,
+            let episode = completionEpisodeTracker.finalize(
+                resolution: resolution,
+                finalField: finalField,
+                at: Date()
+            )
+        else {
+            completionEpisodeTracker.discard()
+            activeCompletionEpisodeRequestID = nil
+            return
+        }
+        activeCompletionEpisodeRequestID = nil
+        onCompletionEpisode(episode)
+    }
+
+    private func clearSuggestion(
+        resetConsumption: Bool = true,
+        resolution: CompletionEpisodeResolution = .superseded
+    ) {
         debounceTask?.cancel()
         caretReanchorTask?.cancel()
         suggestion = nil
         if resetConsumption {
+            finalizeCompletionEpisode(resolution: resolution)
             suggestionConsumption = nil
             suggestionRequestID = nil
             typedSuggestionOrigin = nil

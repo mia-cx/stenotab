@@ -81,6 +81,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             onCompletionFeedback: { [weak self] feedback in
                 self?.recordCompletionFeedback(feedback)
             },
+            onCompletionEpisode: { [weak self] episode in
+                self?.recordCompletionEpisode(episode)
+            },
             personalCompletion: { [personalizationSettings] prefix, context in
                 personalizationSettings.personalCompletion(
                     for: prefix,
@@ -330,6 +333,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         _ feedback: CompletionFeedbackCapture
     ) {
         personalizationSettings.record(feedback)
+    }
+
+    private func recordCompletionEpisode(
+        _ episode: CompletionEpisodeCapture
+    ) {
+        personalizationSettings.record(episode)
     }
 
     private func observeCalendarDayChanges() {

@@ -316,7 +316,10 @@ Benchmark fixtures can be inspected with:
 
 Design notes for local personalization live in
 [`docs/LOCAL_HISTORY_RETRIEVAL.md`](docs/LOCAL_HISTORY_RETRIEVAL.md) and
-[`docs/LOCAL_VOCABULARY.md`](docs/LOCAL_VOCABULARY.md).
+[`docs/LOCAL_VOCABULARY.md`](docs/LOCAL_VOCABULARY.md). Exact model inputs,
+streamed suggestions, acceptance/rejection outcomes, and resulting editor text
+are described in
+[`docs/COMPLETION_EPISODES.md`](docs/COMPLETION_EPISODES.md).
 
 ## Contributing
 

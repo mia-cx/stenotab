@@ -4,6 +4,14 @@ import Foundation
 import XCTest
 
 final class PersonalizationDatabaseTests: XCTestCase {
+    private struct LegacyPersonalizationCorpusExport: Codable {
+        let formatVersion: Int
+        let exportedAt: Date
+        let acceptedSuggestions: [AcceptedSuggestionCapture]
+        let completionFeedback: [CompletionFeedbackCapture]
+        let writingEpisodes: [WritingEpisodeCapture]
+    }
+
     func testKeychainProviderReturnsStable64ByteKey() throws {
         let provider = KeychainPersonalizationKeyProvider(
             service: "cx.mia.stenotab.tests.\(UUID().uuidString)",
@@ -75,6 +83,179 @@ final class PersonalizationDatabaseTests: XCTestCase {
         let deletedCaptures = try await database.acceptedSuggestions()
         XCTAssertEqual(deletedEventCount, 0)
         XCTAssertEqual(deletedCaptures, [])
+    }
+
+    func testCompletionEpisodeRoundTripsEncryptedAndAppearsInExport()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let date = Date(timeIntervalSince1970: 321)
+        let invocation = CompletionInvocationCapture(
+            id: UUID(
+                uuidString: "2AE7CE10-339F-4B88-90CE-C14C55072291"
+            )!,
+            field: CapturedFieldState(
+                text: "private input",
+                selection: UTF16Selection(location: 13, length: 0)
+            ),
+            prompt: CapturedCompletionPrompt(
+                transport: .textCompletion,
+                textPrompt:
+                    "SECRET OCR CONTEXT\n\nMy writing:\n§private input"
+            ),
+            generation: CompletionGenerationMetadata(
+                providerKind: "local",
+                modelIdentifier: "gemma-4-e2b",
+                maximumTokens: 16,
+                temperature: 0,
+                stopSequences: []
+            ),
+            context: PersonalizationContext(
+                applicationBundleIdentifier: "com.example.Editor",
+                inputKind: "message",
+                editorIdentifier: "editor"
+            ),
+            startedAt: date
+        )
+        let episode = CompletionEpisodeCapture(
+            id: invocation.id,
+            invocation: invocation,
+            suggestionRevisions: [
+                CompletionSuggestionRevision(
+                    text: " suggestion",
+                    isFinal: true,
+                    observedAt: date.addingTimeInterval(0.1)
+                )
+            ],
+            acceptances: [],
+            acceptedText: "",
+            typedThroughText: "",
+            resolution: .rejected,
+            finalField: CapturedFieldState(
+                text: "private input outcome",
+                selection: UTF16Selection(location: 21, length: 0)
+            ),
+            actualInsertedText: " outcome",
+            endedAt: date.addingTimeInterval(0.2)
+        )
+
+        try await fixture.database.record(episode)
+
+        let storedEpisodes =
+            try await fixture.database.completionEpisodes()
+        XCTAssertEqual(
+            storedEpisodes,
+            [episode]
+        )
+        let export = try await fixture.database.exportCorpus(at: date)
+        XCTAssertEqual(export.completionEpisodes, [episode])
+        let raw = try Data(
+            contentsOf: fixture.directory.appending(
+                path: "personalization.sqlite"
+            )
+        )
+        XCTAssertNil(raw.range(of: Data("SECRET OCR CONTEXT".utf8)))
+        XCTAssertNil(raw.range(of: Data("private input outcome".utf8)))
+    }
+
+    func testCorpusExportDecodesVersionOneWithoutCompletionEpisodes()
+        throws
+    {
+        let legacy = LegacyPersonalizationCorpusExport(
+            formatVersion: 1,
+            exportedAt: Date(timeIntervalSince1970: 654),
+            acceptedSuggestions: [],
+            completionFeedback: [],
+            writingEpisodes: []
+        )
+
+        let encoded = try JSONEncoder().encode(legacy)
+        let decoded = try JSONDecoder().decode(
+            PersonalizationCorpusExport.self,
+            from: encoded
+        )
+
+        XCTAssertEqual(decoded.formatVersion, 1)
+        XCTAssertEqual(decoded.completionEpisodes, [])
+    }
+
+    func testCompletionEpisodeTextIsDeduplicatedAndGarbageCollected()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let sharedInput = String(
+            repeating:
+                "This is a long existing input whose unchanged history "
+                + "should not be encrypted again for every suggestion. "
+                + "Café, naïef, 日本語, 👨‍👩‍👧‍👦. ",
+            count: 24
+        )
+        let first = makeCompletionEpisode(
+            id: UUID(),
+            input: sharedInput,
+            suggestion: "first suggestion",
+            outcome: " first outcome",
+            date: Date(timeIntervalSince1970: 700)
+        )
+        let second = makeCompletionEpisode(
+            id: UUID(),
+            input: sharedInput + " first outcome",
+            suggestion: "second suggestion",
+            outcome: " second outcome",
+            date: Date(timeIntervalSince1970: 701)
+        )
+
+        try await fixture.database.record(first)
+        let afterFirst =
+            try await fixture.database.completionEpisodeStorageStatistics()
+        try await fixture.database.record(second)
+        let afterSecond =
+            try await fixture.database.completionEpisodeStorageStatistics()
+        let overallStorage =
+            try await fixture.database.storageStatistics()
+
+        let storedEpisodes =
+            try await fixture.database.completionEpisodes()
+        XCTAssertEqual(storedEpisodes, [first, second])
+        XCTAssertGreaterThan(
+            afterSecond.textChunkReferenceCount,
+            afterSecond.uniqueTextChunkCount
+        )
+        XCTAssertLessThan(
+            afterSecond.encryptedTextChunkBytes,
+            afterFirst.encryptedTextChunkBytes * 2
+        )
+        XCTAssertGreaterThan(
+            overallStorage.encryptedPayloadBytes,
+            afterSecond.encryptedTextChunkBytes
+        )
+
+        try await fixture.database.deleteEvent(id: first.id)
+        let episodesAfterDeletingFirst =
+            try await fixture.database.completionEpisodes()
+        XCTAssertEqual(episodesAfterDeletingFirst, [second])
+        let storageAfterDeletingFirst =
+            try await fixture.database.completionEpisodeStorageStatistics()
+        XCTAssertGreaterThan(
+            storageAfterDeletingFirst.uniqueTextChunkCount,
+            0
+        )
+
+        let expired = try await fixture.database.enforceRetention(
+            PersonalizationRetentionPolicy(
+                maximumAge: 1,
+                maximumEncryptedBytes: nil
+            ),
+            now: Date(timeIntervalSince1970: 800)
+        )
+        XCTAssertEqual(expired, 1)
+        let afterDeletingBoth =
+            try await fixture.database.completionEpisodeStorageStatistics()
+        XCTAssertEqual(afterDeletingBoth.uniqueTextChunkCount, 0)
+        XCTAssertEqual(afterDeletingBoth.textChunkReferenceCount, 0)
+        XCTAssertEqual(afterDeletingBoth.encryptedTextChunkBytes, 0)
     }
 
     func testWritingEpisodesCanBeInspectedAndDeletedByRecordOrScope()
@@ -446,6 +627,75 @@ final class PersonalizationDatabaseTests: XCTestCase {
             startedAt: date,
             endedAt: date,
             boundary: .idle
+        )
+    }
+
+    private func makeCompletionEpisode(
+        id: UUID,
+        input: String,
+        suggestion: String,
+        outcome: String,
+        date: Date
+    ) -> CompletionEpisodeCapture {
+        let finalText = input + outcome
+        let invocation = CompletionInvocationCapture(
+            id: id,
+            field: CapturedFieldState(
+                text: input,
+                selection: UTF16Selection(
+                    location: input.utf16.count,
+                    length: 0
+                )
+            ),
+            prompt: CapturedCompletionPrompt(
+                transport: .textCompletion,
+                textPrompt:
+                    "Stable OCR and clipboard context.\n\n"
+                    + "My writing:\n§"
+                    + input
+            ),
+            generation: CompletionGenerationMetadata(
+                providerKind: "local-openai-compatible",
+                modelIdentifier: "gemma-4-e2b",
+                maximumTokens: 16,
+                temperature: 0,
+                stopSequences: []
+            ),
+            context: PersonalizationContext(
+                applicationBundleIdentifier: "com.example.Editor",
+                inputKind: "document",
+                editorIdentifier: "editor"
+            ),
+            startedAt: date
+        )
+        return CompletionEpisodeCapture(
+            id: id,
+            invocation: invocation,
+            suggestionRevisions: [
+                CompletionSuggestionRevision(
+                    text: String(suggestion.prefix(5)),
+                    isFinal: false,
+                    observedAt: date
+                ),
+                CompletionSuggestionRevision(
+                    text: suggestion,
+                    isFinal: true,
+                    observedAt: date.addingTimeInterval(0.05)
+                ),
+            ],
+            acceptances: [],
+            acceptedText: "",
+            typedThroughText: "",
+            resolution: .rejected,
+            finalField: CapturedFieldState(
+                text: finalText,
+                selection: UTF16Selection(
+                    location: finalText.utf16.count,
+                    length: 0
+                )
+            ),
+            actualInsertedText: outcome,
+            endedAt: date.addingTimeInterval(0.1)
         )
     }
 }
