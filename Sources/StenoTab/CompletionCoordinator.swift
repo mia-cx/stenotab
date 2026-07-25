@@ -38,6 +38,11 @@ final class CompletionCoordinator: NSObject {
         @MainActor (CompletionFeedbackCapture) -> Void
     private let personalCompletion:
         @MainActor (String, PersonalizationContext) -> PersonalCompletion?
+    private let personalizationPromptContext:
+        @MainActor (
+            String,
+            PersonalizationContext
+        ) async -> PersonalizationPromptContext
     private var inputMonitor: GlobalInputMonitor?
     private var reconciliationTimer: Timer?
     private var debounceTask: Task<Void, Never>?
@@ -112,7 +117,11 @@ final class CompletionCoordinator: NSObject {
         personalCompletion: @escaping @MainActor (
             String,
             PersonalizationContext
-        ) -> PersonalCompletion? = { _, _ in nil }
+        ) -> PersonalCompletion? = { _, _ in nil },
+        personalizationPromptContext: @escaping @MainActor (
+            String,
+            PersonalizationContext
+        ) async -> PersonalizationPromptContext = { _, _ in .empty }
     ) {
         self.provider = provider
         self.promptConfiguration = promptConfiguration
@@ -124,6 +133,7 @@ final class CompletionCoordinator: NSObject {
         self.onWritingEpisode = onWritingEpisode
         self.onCompletionFeedback = onCompletionFeedback
         self.personalCompletion = personalCompletion
+        self.personalizationPromptContext = personalizationPromptContext
         super.init()
     }
 
@@ -500,16 +510,31 @@ final class CompletionCoordinator: NSObject {
         debounceTask?.cancel()
         newestRequestID &+= 1
         preparedRequestSnapshot = nil
-        let request = makeRequest(
-            id: newestRequestID,
-            prefix: buffer.prefix,
-            suffix: buffer.suffix,
-            snapshot: lastSnapshot
-        )
+        let requestID = newestRequestID
+        let prefix = buffer.prefix
+        let suffix = buffer.suffix
+        let snapshot = lastSnapshot
 
         debounceTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(45))
             guard !Task.isCancelled, let self else { return }
+            let learnedContext: PersonalizationPromptContext
+            if let snapshot {
+                learnedContext = await self.personalizationPromptContext(
+                    prefix,
+                    self.personalizationContext(for: snapshot)
+                )
+            } else {
+                learnedContext = .empty
+            }
+            guard !Task.isCancelled else { return }
+            let request = self.makeRequest(
+                id: requestID,
+                prefix: prefix,
+                suffix: suffix,
+                snapshot: snapshot,
+                personalization: learnedContext
+            )
             guard self.prepare(request) else { return }
             await self.requestPump.submit(request)
         }
@@ -562,6 +587,7 @@ final class CompletionCoordinator: NSObject {
         prefix: String,
         suffix: String,
         snapshot: EditorSnapshot?,
+        personalization: PersonalizationPromptContext = .empty,
         detectPartialWord: Bool = true
     ) -> CompletionRequest {
         let fragment = detectPartialWord
@@ -579,7 +605,10 @@ final class CompletionCoordinator: NSObject {
                 ocrContent: ocrContent(for: snapshot),
                 clipboardContent: clipboardContent(
                     configuration: configuration
-                )
+                ),
+                inputHistory: personalization.frecentExamples,
+                relevantInputHistory: personalization.relevantExamples,
+                voiceAssessment: personalization.voiceAssessment
             ),
             promptConfiguration: configuration,
             partialWordFragment: fragment,
@@ -1005,17 +1034,25 @@ final class CompletionCoordinator: NSObject {
 
         cancelRefill()
         refillRequestID &+= 1
-        let request = makeRequest(
-            id: refillRequestID,
-            prefix: key.prefix,
-            suffix: key.suffix,
-            snapshot: snapshot,
-            detectPartialWord: false
-        )
+        let requestID = refillRequestID
         refillKey = key
         refillTask = Task { [weak self, provider] in
+            guard let self else { return }
+            let learnedContext = await self.personalizationPromptContext(
+                key.prefix,
+                self.personalizationContext(for: snapshot)
+            )
+            guard !Task.isCancelled else { return }
+            let request = self.makeRequest(
+                id: requestID,
+                prefix: key.prefix,
+                suffix: key.suffix,
+                snapshot: snapshot,
+                personalization: learnedContext,
+                detectPartialWord: false
+            )
             let response = await provider.complete(request)
-            guard !Task.isCancelled, let self else { return }
+            guard !Task.isCancelled else { return }
             self.receiveRefill(response, for: key)
         }
     }

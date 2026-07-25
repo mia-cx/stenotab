@@ -64,6 +64,25 @@ public struct PersonalizationCorpusExport: Codable, Sendable, Equatable {
     }
 }
 
+public struct StoredPersonalizationEmbedding: Sendable, Equatable {
+    public let eventID: UUID
+    public let modelIdentifier: String
+    public let vector: [Double]
+    public let createdAt: Date
+
+    public init(
+        eventID: UUID,
+        modelIdentifier: String,
+        vector: [Double],
+        createdAt: Date
+    ) {
+        self.eventID = eventID
+        self.modelIdentifier = modelIdentifier
+        self.vector = vector
+        self.createdAt = createdAt
+    }
+}
+
 public actor PersonalizationDatabase {
     private static let acceptedSuggestionKind = "accepted_suggestion"
     private static let completionFeedbackKind = "completion_feedback"
@@ -320,6 +339,94 @@ public actor PersonalizationDatabase {
             PersonalLanguageModel.self,
             from: payload
         )
+    }
+
+    public func saveEmbedding(
+        eventID: UUID,
+        modelIdentifier: String,
+        vector: [Double],
+        at date: Date = Date()
+    ) throws {
+        guard !vector.isEmpty else { return }
+        let payload = try encoder.encode(vector)
+        let sealed = try PersonalizationCryptography.seal(
+            payload,
+            keyData: keyData
+        )
+        try connection.execute(
+            """
+            INSERT INTO personalization_embedding (
+                event_id,
+                model_identifier,
+                dimension,
+                vector_sealed,
+                created_at_ms
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
+                model_identifier = excluded.model_identifier,
+                dimension = excluded.dimension,
+                vector_sealed = excluded.vector_sealed,
+                created_at_ms = excluded.created_at_ms
+            """,
+            bindings: [
+                .text(eventID.uuidString),
+                .text(modelIdentifier),
+                .integer(Int64(vector.count)),
+                .blob(sealed),
+                .integer(Int64(date.timeIntervalSince1970 * 1_000))
+            ]
+        )
+    }
+
+    public func embeddings(
+        modelIdentifier: String? = nil
+    ) throws -> [StoredPersonalizationEmbedding] {
+        let predicate = modelIdentifier == nil
+            ? ""
+            : " WHERE model_identifier = ?"
+        let bindings = modelIdentifier.map { [SQLiteBinding.text($0)] } ?? []
+        let rows = try connection.query(
+            """
+            SELECT event_id, model_identifier, dimension,
+                   vector_sealed, created_at_ms
+            FROM personalization_embedding\(predicate)
+            ORDER BY created_at_ms ASC
+            """,
+            bindings: bindings
+        )
+        return try rows.map { row in
+            guard
+                let eventIDText = row.text(at: 0),
+                let eventID = UUID(uuidString: eventIDText),
+                let storedModel = row.text(at: 1),
+                let dimension = row.integer(at: 2),
+                let sealed = row.blob(at: 3),
+                let milliseconds = row.integer(at: 4)
+            else {
+                throw PersonalizationPersistenceError.database(
+                    "Invalid personalization embedding row"
+                )
+            }
+            let payload = try PersonalizationCryptography.open(
+                sealed,
+                keyData: keyData
+            )
+            let vector = try decoder.decode([Double].self, from: payload)
+            guard vector.count == Int(dimension) else {
+                throw PersonalizationPersistenceError.database(
+                    "Personalization embedding dimension mismatch"
+                )
+            }
+            return StoredPersonalizationEmbedding(
+                eventID: eventID,
+                modelIdentifier: storedModel,
+                vector: vector,
+                createdAt: Date(
+                    timeIntervalSince1970:
+                        TimeInterval(milliseconds) / 1_000
+                )
+            )
+        }
     }
 
     public func eventCount() throws -> Int {
@@ -593,6 +700,18 @@ public actor PersonalizationDatabase {
             payload_sealed BLOB NOT NULL,
             updated_at_ms INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS personalization_embedding (
+            event_id TEXT PRIMARY KEY
+                REFERENCES personalization_event(id) ON DELETE CASCADE,
+            model_identifier TEXT NOT NULL,
+            dimension INTEGER NOT NULL,
+            vector_sealed BLOB NOT NULL,
+            created_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS personalization_embedding_model
+        ON personalization_embedding(model_identifier);
         """
 }
 

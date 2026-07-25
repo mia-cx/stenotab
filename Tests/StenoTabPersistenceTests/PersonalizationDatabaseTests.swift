@@ -242,6 +242,59 @@ final class PersonalizationDatabaseTests: XCTestCase {
         )
     }
 
+    func testEmbeddingRoundTripsEncryptedAndFollowsEventDeletion()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let eventID = UUID()
+        let capture = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                id: eventID,
+                fieldText: "semantic private source",
+                selection: UTF16Selection(location: 23, length: 0),
+                insertion: " material",
+                acceptanceScope: .nextWord,
+                context: PersonalizationContext(
+                    applicationBundleIdentifier: "com.example.Editor",
+                    editorIdentifier: "editor"
+                )
+            )
+        )
+        try await fixture.database.record(capture)
+        try await fixture.database.saveEmbedding(
+            eventID: eventID,
+            modelIdentifier: "test-embedding-v1",
+            vector: [0.125, -0.75, 0.5],
+            at: Date(timeIntervalSince1970: 2_000)
+        )
+
+        let storedEmbeddings = try await fixture.database.embeddings()
+        XCTAssertEqual(
+            storedEmbeddings,
+            [
+                StoredPersonalizationEmbedding(
+                    eventID: eventID,
+                    modelIdentifier: "test-embedding-v1",
+                    vector: [0.125, -0.75, 0.5],
+                    createdAt: Date(timeIntervalSince1970: 2_000)
+                )
+            ]
+        )
+        let raw = try Data(
+            contentsOf: fixture.directory.appending(
+                path: "personalization.sqlite"
+            )
+        )
+        XCTAssertNil(
+            raw.range(of: Data("[0.125,-0.75,0.5]".utf8))
+        )
+
+        try await fixture.database.deleteEvent(id: eventID)
+        let deletedEmbeddings = try await fixture.database.embeddings()
+        XCTAssertEqual(deletedEmbeddings, [])
+    }
+
     private func makeDatabase() throws -> (
         database: PersonalizationDatabase,
         directory: URL

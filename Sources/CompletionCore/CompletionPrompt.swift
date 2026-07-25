@@ -376,10 +376,20 @@ public enum CompletionPrompt {
         to sections: inout [String]
     ) {
         guard let value = bounded(value, limit: limit) else { return }
+        let separator = value.contains(
+            PersonalizationExample.promptRecordSeparator
+        )
+            ? PersonalizationExample.promptRecordSeparator
+            : "\n\n"
         let examples = value
-            .components(separatedBy: "\n\n")
+            .components(separatedBy: separator)
             .compactMap(nonempty)
-            .map { examplePrefix + $0 }
+            .map { example in
+                if example.contains("\n\(examplePrefix)") {
+                    return example
+                }
+                return examplePrefix + example
+            }
         guard !examples.isEmpty else { return }
         sections.append(
             title + "\n\n" + examples.joined(separator: "\n\n")

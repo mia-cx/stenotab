@@ -1,5 +1,6 @@
 import CompletionCore
 import Foundation
+import NaturalLanguage
 import StenoTabPersistence
 
 @MainActor
@@ -258,11 +259,35 @@ final class PersonalizationSettingsStore: ObservableObject {
         guard useLocalCompletions else { return nil }
         return languageModel.completion(for: prefix, context: context)
     }
+
+    func promptContext(
+        for prefix: String,
+        context: PersonalizationContext
+    ) async -> PersonalizationPromptContext {
+        guard collectionEnabled, let modelWorker else { return .empty }
+        do {
+            return try await modelWorker.promptContext(
+                for: prefix,
+                context: context
+            )
+        } catch {
+            operationError = String(describing: error)
+            return .empty
+        }
+    }
 }
 
 private actor PersonalizationModelWorker {
+    private struct EmbeddedText {
+        let modelIdentifier: String
+        let vector: [Double]
+    }
+
     private let database: PersonalizationDatabase
     private var model = PersonalLanguageModel()
+    private var examples: [PersonalizationExample] = []
+    private var semanticExamples: [PersonalizationExample] = []
+    private var embeddings: [UUID: StoredPersonalizationEmbedding] = [:]
 
     init(database: PersonalizationDatabase) {
         self.database = database
@@ -271,9 +296,11 @@ private actor PersonalizationModelWorker {
     func prepare() async throws -> PersonalLanguageModel {
         if let stored = try await database.loadLanguageModel() {
             model = stored
-            return model
+        } else {
+            _ = try await rebuildLanguageModel()
         }
-        return try await rebuild()
+        try await reloadRetrievalIndex()
+        return model
     }
 
     func record(
@@ -282,6 +309,10 @@ private actor PersonalizationModelWorker {
         try await database.record(capture)
         model.ingest(capture)
         try await database.saveLanguageModel(model)
+        let example = PersonalizationExample(capture)
+        examples.append(example)
+        semanticExamples.append(example)
+        try await embedIfNeeded(example)
         return model
     }
 
@@ -296,6 +327,9 @@ private actor PersonalizationModelWorker {
         if removed > 0 {
             return try await rebuild()
         }
+        examples.append(
+            contentsOf: PersonalizationExample.directlyTyped(from: episode)
+        )
         return model
     }
 
@@ -334,10 +368,66 @@ private actor PersonalizationModelWorker {
     func deleteAll() async throws -> PersonalLanguageModel {
         try await database.deleteAll()
         model = PersonalLanguageModel()
+        examples = []
+        semanticExamples = []
+        embeddings = [:]
         return model
     }
 
+    func promptContext(
+        for prefix: String,
+        context: PersonalizationContext
+    ) async throws -> PersonalizationPromptContext {
+        let frecent = FrecentExampleRetriever.retrieve(
+            from: examples,
+            context: context,
+            limit: 5
+        )
+        guard let query = embedding(for: prefix) else {
+            return PersonalizationPromptContext(
+                frecentExamples:
+                    PersonalizationExample.promptValue(from: frecent)
+            )
+        }
+        let candidateVectors = Dictionary(
+            uniqueKeysWithValues: embeddings.compactMap {
+                eventID, stored -> (UUID, [Double])? in
+                guard stored.modelIdentifier == query.modelIdentifier else {
+                    return nil
+                }
+                return (eventID, stored.vector)
+            }
+        )
+        let frecentIDs = Set(frecent.map(\.id))
+        let relevant = SemanticExampleRetriever.retrieve(
+            from: semanticExamples.filter {
+                !frecentIDs.contains($0.id)
+            },
+            vectors: candidateVectors,
+            queryVector: query.vector,
+            context: context,
+            limit: 5,
+            minimumSimilarity: 0.25
+        )
+        return PersonalizationPromptContext(
+            frecentExamples: PersonalizationExample.promptValue(
+                from: frecent
+            ),
+            relevantExamples: PersonalizationExample.promptValue(
+                from: relevant
+            )
+        )
+    }
+
     private func rebuild() async throws -> PersonalLanguageModel {
+        _ = try await rebuildLanguageModel()
+        try await reloadRetrievalIndex()
+        return model
+    }
+
+    private func rebuildLanguageModel() async throws
+        -> PersonalLanguageModel
+    {
         var rebuilt = PersonalLanguageModel()
         for episode in try await database.writingEpisodes() {
             rebuilt.ingest(episode)
@@ -351,5 +441,66 @@ private actor PersonalizationModelWorker {
         model = rebuilt
         try await database.saveLanguageModel(model)
         return model
+    }
+
+    private func reloadRetrievalIndex() async throws {
+        let accepted = try await database.acceptedSuggestions()
+        let episodes = try await database.writingEpisodes()
+        semanticExamples = accepted.map(PersonalizationExample.init)
+        examples = semanticExamples
+            + episodes.flatMap(PersonalizationExample.directlyTyped)
+        embeddings = Dictionary(
+            uniqueKeysWithValues: try await database.embeddings().map {
+                ($0.eventID, $0)
+            }
+        )
+        for example in semanticExamples {
+            try await embedIfNeeded(example)
+        }
+    }
+
+    private func embedIfNeeded(
+        _ example: PersonalizationExample
+    ) async throws {
+        guard embeddings[example.id] == nil else { return }
+        guard let embedded = embedding(for: example.inputText) else {
+            return
+        }
+        let stored = StoredPersonalizationEmbedding(
+            eventID: example.id,
+            modelIdentifier: embedded.modelIdentifier,
+            vector: embedded.vector,
+            createdAt: Date()
+        )
+        try await database.saveEmbedding(
+            eventID: stored.eventID,
+            modelIdentifier: stored.modelIdentifier,
+            vector: stored.vector,
+            at: stored.createdAt
+        )
+        embeddings[example.id] = stored
+    }
+
+    private func embedding(for text: String) -> EmbeddedText? {
+        let source = String(text.suffix(1_500))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else { return nil }
+        let language =
+            NLLanguageRecognizer.dominantLanguage(for: source) ?? .english
+        guard
+            let sentenceEmbedding =
+                NLEmbedding.sentenceEmbedding(for: language)
+                    ?? NLEmbedding.sentenceEmbedding(for: .english),
+            let vector = sentenceEmbedding.vector(for: source),
+            !vector.isEmpty
+        else {
+            return nil
+        }
+        return EmbeddedText(
+            modelIdentifier:
+                "apple-natural-language:\(language.rawValue):"
+                + "\(sentenceEmbedding.dimension)",
+            vector: vector
+        )
     }
 }

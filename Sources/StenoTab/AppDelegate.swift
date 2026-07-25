@@ -86,6 +86,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                     for: prefix,
                     context: context
                 )
+            },
+            personalizationPromptContext: {
+                [personalizationSettings] prefix, context in
+                await personalizationSettings.promptContext(
+                    for: prefix,
+                    context: context
+                )
             }
         )
         self.coordinator = coordinator

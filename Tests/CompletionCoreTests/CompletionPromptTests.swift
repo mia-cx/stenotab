@@ -263,6 +263,37 @@ final class CompletionPromptTests: XCTestCase {
         )
     }
 
+    func testRetrievedTextInsertionPairsAreNotPrefixedOrSplitAgain() {
+        var configuration = PromptConfiguration.defaults
+        configuration.voice.includeInputHistory = true
+        let example = PersonalizationExample(
+            id: UUID(),
+            inputText: "can you open a pull req",
+            insertion: "uest for this",
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date(),
+            source: .acceptedSuggestion
+        )
+
+        let prompt = CompletionPrompt.base(
+            prefix: "sure",
+            suffix: "",
+            context: CompletionContext(
+                inputHistory: PersonalizationExample.promptValue(
+                    from: [example]
+                )
+            ),
+            configuration: configuration
+        )
+
+        XCTAssertTrue(prompt.contains(example.promptText))
+        XCTAssertFalse(prompt.contains("§Text:"))
+        XCTAssertEqual(
+            prompt.components(separatedBy: example.promptText).count,
+            2
+        )
+    }
+
     func testEveryBaseFramingToggleControlsOnlyItsOwnComponent() {
         let context = CompletionContext(
             applicationName: "Safari",
