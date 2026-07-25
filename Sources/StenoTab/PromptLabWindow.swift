@@ -7,6 +7,7 @@ struct SettingsActions {
     let openAccessibilitySettings: @MainActor () -> Void
     let requestScreenRecordingPermission: @MainActor () -> Void
     let openScreenRecordingSettings: @MainActor () -> Void
+    let openClipboardSettings: @MainActor () -> Void
     let openKeyboardSettings: @MainActor () -> Void
 }
 
@@ -20,6 +21,7 @@ final class SettingsWindowController: NSWindowController {
         launchAtLoginSettingsStore: LaunchAtLoginSettingsStore,
         systemTextSuggestionSettingsStore:
             SystemTextSuggestionSettingsStore,
+        clipboardAccessStore: ClipboardAccessStore,
         actions: SettingsActions
     ) {
         let rootView = SettingsRootView(
@@ -30,6 +32,7 @@ final class SettingsWindowController: NSWindowController {
             launchAtLoginSettingsStore: launchAtLoginSettingsStore,
             systemTextSuggestionSettingsStore:
                 systemTextSuggestionSettingsStore,
+            clipboardAccessStore: clipboardAccessStore,
             actions: actions
         )
         let hostingController = NSHostingController(rootView: rootView)
@@ -75,6 +78,7 @@ private struct SettingsRootView: View {
     @ObservedObject var launchAtLoginSettingsStore: LaunchAtLoginSettingsStore
     @ObservedObject var systemTextSuggestionSettingsStore:
         SystemTextSuggestionSettingsStore
+    @ObservedObject var clipboardAccessStore: ClipboardAccessStore
     let actions: SettingsActions
     @State private var selection: SettingsPage? = .setup
 
@@ -109,14 +113,53 @@ private struct SettingsRootView: View {
                     providerStore: providerSettingsStore
                 )
             case .contextPrivacy:
-                ContextPrivacyView(store: promptStore)
+                ContextPrivacyView(
+                    store: promptStore,
+                    clipboardEnabled: clipboardEnabled
+                )
             case .promptLab:
-                PromptLabView(store: promptStore)
+                PromptLabView(
+                    store: promptStore,
+                    clipboardEnabled: clipboardEnabled
+                )
             case .appSettings:
                 AppSettingsView(store: applicationPolicyStore)
             }
         }
         .frame(minWidth: 820, minHeight: 620)
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification
+            )
+        ) { _ in
+            clipboardAccessStore.refresh()
+        }
+    }
+
+    private var clipboardEnabled: Binding<Bool> {
+        Binding(
+            get: {
+                promptStore.configuration.context.includeClipboard
+            },
+            set: { isEnabled in
+                guard isEnabled else {
+                    promptStore.configuration.context.includeClipboard = false
+                    return
+                }
+
+                switch clipboardAccessStore.state.enableAction {
+                case .enable:
+                    promptStore.configuration.context.includeClipboard = true
+                case .requestAccess:
+                    let state = clipboardAccessStore.requestAccess()
+                    promptStore.configuration.context.includeClipboard =
+                        state != .denied
+                case .openSettings:
+                    promptStore.configuration.context.includeClipboard = false
+                    actions.openClipboardSettings()
+                }
+            }
+        )
     }
 }
 
@@ -174,6 +217,7 @@ private struct SetupSettingsView: View {
 
 private struct ContextPrivacyView: View {
     @ObservedObject var store: PromptSettingsStore
+    let clipboardEnabled: Binding<Bool>
 
     private var configuration: Binding<PromptConfiguration> {
         $store.configuration
@@ -204,16 +248,17 @@ private struct ContextPrivacyView: View {
                         title: "Clipboard contents",
                         detail:
                             "Read up to 2,000 characters of text from the "
-                            + "clipboard when requesting a completion. Off by "
-                            + "default and never retained by StenoTab.",
-                        isOn: configuration.context.includeClipboard
+                            + "clipboard as read-only model context. StenoTab "
+                            + "never inserts clipboard contents. Off by "
+                            + "default and never retained.",
+                        isOn: clipboardEnabled
                     )
                     Divider()
                     ContextPrivacyToggleRow(
                         title: "Snapshots / OCR",
                         detail:
                             "Capture the focused app window when an editor "
-                            + "gains focus or a new typing burst begins. Text "
+                            + "gains focus. Text "
                             + "is recognized locally and kept only in memory.",
                         isOn: configuration.context.includeOCR
                     )
@@ -1265,6 +1310,7 @@ private enum PromptPreviewStyle: String, CaseIterable, Identifiable {
 
 private struct PromptLabView: View {
     @ObservedObject var store: PromptSettingsStore
+    let clipboardEnabled: Binding<Bool>
     @State private var previewStyle = PromptPreviewStyle.textCompletion
 
     private var configuration: Binding<PromptConfiguration> {
@@ -1477,8 +1523,10 @@ private struct PromptLabView: View {
             Divider()
             PromptToggleRow(
                 title: "Clipboard contents",
-                detail: "Include text currently on the clipboard. Off by default.",
-                isOn: configuration.context.includeClipboard,
+                detail:
+                    "Include clipboard text as read-only model context. "
+                    + "Clipboard contents are never inserted.",
+                isOn: clipboardEnabled,
                 debugMode: store.configuration.debugMode,
                 framing: configuration.baseFraming.clipboardHeading,
                 dynamicValue: "CLIPBOARD_CONTENT",

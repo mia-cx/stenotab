@@ -1,47 +1,14 @@
 import CoreGraphics
 import Foundation
 
-public enum OCRCaptureReason: Sendable {
-    case focusChanged
-    case typingBurstStarted
-}
-
 public enum OCRCapturePolicy {
-    public static let typingBurstInterval: TimeInterval = 1.5
-    public static let typingRefreshAge: TimeInterval = 2
-
-    public static func beginsTypingBurst(
-        previousInsertionAt: Date?,
-        now: Date
-    ) -> Bool {
-        guard let previousInsertionAt else { return true }
-        return now.timeIntervalSince(previousInsertionAt)
-            >= typingBurstInterval
-    }
-
-    public static func shouldCapture(
-        reason: OCRCaptureReason,
+    public static func shouldCaptureFocusedEditor(
         editorIdentifier: String,
-        cachedEditorIdentifier: String?,
-        cachedAt: Date?,
-        inFlightEditorIdentifier: String?,
-        now: Date
+        lastFocusedEditorIdentifier: String?,
+        inFlightEditorIdentifier: String?
     ) -> Bool {
-        if inFlightEditorIdentifier == editorIdentifier {
-            return false
-        }
-        switch reason {
-        case .focusChanged:
-            return true
-        case .typingBurstStarted:
-            guard
-                cachedEditorIdentifier == editorIdentifier,
-                let cachedAt
-            else {
-                return true
-            }
-            return now.timeIntervalSince(cachedAt) >= typingRefreshAge
-        }
+        lastFocusedEditorIdentifier != editorIdentifier
+            && inFlightEditorIdentifier != editorIdentifier
     }
 }
 
@@ -140,6 +107,10 @@ public enum OCRContextText {
     ) -> String? {
         guard characterLimit > 0 else { return nil }
         let normalizedEditorText = normalizedForComparison(editorText)
+        let normalizedEditorLines = editorText
+            .split(whereSeparator: \.isNewline)
+            .map { normalizedForComparison(String($0)) }
+            .filter { $0.count >= 3 }
         var seen = Set<String>()
         var kept: [String] = []
         var usedCharacters = 0
@@ -156,8 +127,14 @@ public enum OCRContextText {
 
             let comparison = normalizedForComparison(line)
             guard seen.insert(comparison).inserted else { continue }
-            if normalizedEditorText.count >= 8,
-               comparison == normalizedEditorText {
+            let echoesEditorText = comparison.count >= 3
+                && (
+                    normalizedEditorText.contains(comparison)
+                        || normalizedEditorLines.contains(where: {
+                            comparison.contains($0)
+                        })
+                )
+            if echoesEditorText {
                 continue
             }
 

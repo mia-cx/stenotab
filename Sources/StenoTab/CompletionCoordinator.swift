@@ -7,7 +7,6 @@ import OSLog
 final class CompletionCoordinator: NSObject {
     private struct CachedOCRContext {
         let editorIdentifier: String
-        let capturedAt: Date
         let text: String?
     }
 
@@ -38,7 +37,7 @@ final class CompletionCoordinator: NSObject {
     private var ocrCaptureEditorIdentifier: String?
     private var ocrCaptureRequestID: UInt64 = 0
     private var cachedOCRContext: CachedOCRContext?
-    private var lastInsertionAt: Date?
+    private var lastOCRFocusedEditorIdentifier: String?
 
     private var buffer = ShadowTextBuffer()
     private var lastSnapshot: EditorSnapshot?
@@ -113,7 +112,7 @@ final class CompletionCoordinator: NSObject {
                 self?.acceptSuggestion(scope: scope) ?? false
             },
             onFocus: { [weak self] in
-                self?.reconcile()
+                self?.reconcile(captureFocusedEditor: true)
             }
         )
         inputMonitor = monitor
@@ -226,28 +225,8 @@ final class CompletionCoordinator: NSObject {
             clearSuggestion()
             return
         }
-        let now = Date()
-        let beginsTypingBurst: Bool
-        if case let .insert(text) = mutation, !text.isEmpty {
-            beginsTypingBurst = OCRCapturePolicy.beginsTypingBurst(
-                previousInsertionAt: lastInsertionAt,
-                now: now
-            )
-            lastInsertionAt = now
-        } else {
-            beginsTypingBurst = false
-        }
-
         let snapshotBeforeMutation = lastSnapshot
         buffer.apply(mutation)
-        if beginsTypingBurst, let snapshot = lastSnapshot {
-            requestOCRContext(
-                for: snapshot,
-                reason: .typingBurstStarted,
-                editorText: buffer.prefix + buffer.suffix,
-                now: now
-            )
-        }
 
         if case let .insert(text) = mutation,
            var consumption = suggestionConsumption {
@@ -298,7 +277,7 @@ final class CompletionCoordinator: NSObject {
         }
     }
 
-    private func reconcile() {
+    private func reconcile(captureFocusedEditor: Bool = false) {
         guard enabled else {
             clearOCRContext()
             clearSuggestion()
@@ -310,12 +289,18 @@ final class CompletionCoordinator: NSObject {
             clearSuggestion()
             return
         }
+        let frontmostProcessID = NSWorkspace.shared.frontmostApplication?
+            .processIdentifier
+        if lastSnapshot?.processID != frontmostProcessID {
+            lastOCRFocusedEditorIdentifier = nil
+        }
         guard let snapshot = accessibility.snapshot() else {
+            if captureFocusedEditor {
+                lastOCRFocusedEditorIdentifier = nil
+            }
             consecutiveSnapshotFailures += 1
-            let frontmostPID = NSWorkspace.shared.frontmostApplication?
-                .processIdentifier
             let frontmostMatches = lastSnapshot.map {
-                $0.processID == frontmostPID
+                $0.processID == frontmostProcessID
             } ?? false
             if SnapshotFailurePolicy.shouldClearSuggestion(
                 consecutiveFailures: consecutiveSnapshotFailures,
@@ -341,14 +326,14 @@ final class CompletionCoordinator: NSObject {
         updateTypographyScale(from: previousSnapshot, to: snapshot)
         lastSnapshot = snapshot
         if focusChanged {
-            lastInsertionAt = nil
             if cachedOCRContext?.editorIdentifier
                 != snapshot.editorIdentifier {
                 cachedOCRContext = nil
             }
+        }
+        if captureFocusedEditor {
             requestOCRContext(
                 for: snapshot,
-                reason: .focusChanged,
                 editorText: snapshot.prefix + snapshot.suffix
             )
         }
@@ -536,9 +521,7 @@ final class CompletionCoordinator: NSObject {
 
     private func requestOCRContext(
         for snapshot: EditorSnapshot,
-        reason: OCRCaptureReason,
-        editorText: String,
-        now: Date = Date()
+        editorText: String
     ) {
         let configuration = promptConfiguration()
         guard configuration.context.includeOCR else {
@@ -560,17 +543,16 @@ final class CompletionCoordinator: NSObject {
             clearOCRContext()
             return
         }
-        guard OCRCapturePolicy.shouldCapture(
-            reason: reason,
+        guard OCRCapturePolicy.shouldCaptureFocusedEditor(
             editorIdentifier: snapshot.editorIdentifier,
-            cachedEditorIdentifier: cachedOCRContext?.editorIdentifier,
-            cachedAt: cachedOCRContext?.capturedAt,
-            inFlightEditorIdentifier: ocrCaptureEditorIdentifier,
-            now: now
+            lastFocusedEditorIdentifier:
+                lastOCRFocusedEditorIdentifier,
+            inFlightEditorIdentifier: ocrCaptureEditorIdentifier
         ) else {
             return
         }
 
+        lastOCRFocusedEditorIdentifier = snapshot.editorIdentifier
         ocrCaptureTask?.cancel()
         ocrCaptureRequestID &+= 1
         let requestID = ocrCaptureRequestID
@@ -610,7 +592,6 @@ final class CompletionCoordinator: NSObject {
             self.ocrCaptureEditorIdentifier = nil
             self.cachedOCRContext = CachedOCRContext(
                 editorIdentifier: target.editorIdentifier,
-                capturedAt: Date(),
                 text: text
             )
             self.ocrLogger.notice(
@@ -635,7 +616,7 @@ final class CompletionCoordinator: NSObject {
         ocrCaptureEditorIdentifier = nil
         ocrCaptureRequestID &+= 1
         cachedOCRContext = nil
-        lastInsertionAt = nil
+        lastOCRFocusedEditorIdentifier = nil
     }
 
     private func incompleteWordFragment(in prefix: String) -> String? {
@@ -811,7 +792,7 @@ final class CompletionCoordinator: NSObject {
         )
         guard !acceptance.accepted.isEmpty else { return false }
         let snapshotBeforeAcceptance = accessibility.snapshot() ?? lastSnapshot
-        inputMonitor?.paste(acceptance.accepted)
+        inputMonitor?.insertText(acceptance.accepted)
         buffer.apply(.insert(acceptance.accepted))
         onSuggestionAccepted(acceptance.accepted)
 

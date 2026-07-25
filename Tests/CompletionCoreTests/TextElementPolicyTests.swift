@@ -32,4 +32,31 @@ final class TextElementPolicyTests: XCTestCase {
             )
         )
     }
+
+    func testOnlyTheFocusedRootOrExplicitlyFocusedDescendantIsEligible() {
+        XCTAssertTrue(
+            TextElementPolicy.isEligibleFocusedCandidate(
+                isFocusedRoot: true,
+                focusedAttribute: nil
+            )
+        )
+        XCTAssertTrue(
+            TextElementPolicy.isEligibleFocusedCandidate(
+                isFocusedRoot: false,
+                focusedAttribute: true
+            )
+        )
+        XCTAssertFalse(
+            TextElementPolicy.isEligibleFocusedCandidate(
+                isFocusedRoot: false,
+                focusedAttribute: false
+            )
+        )
+        XCTAssertFalse(
+            TextElementPolicy.isEligibleFocusedCandidate(
+                isFocusedRoot: false,
+                focusedAttribute: nil
+            )
+        )
+    }
 }

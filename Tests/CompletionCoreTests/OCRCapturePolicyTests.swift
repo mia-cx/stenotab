@@ -2,75 +2,26 @@ import CompletionCore
 import XCTest
 
 final class OCRCapturePolicyTests: XCTestCase {
-    func testFocusAlwaysRefreshesUnlessSameEditorIsAlreadyInFlight() {
-        let now = Date(timeIntervalSince1970: 100)
-
+    func testCapturesOnlyWhenADifferentEditorReceivesFocus() {
         XCTAssertTrue(
-            OCRCapturePolicy.shouldCapture(
-                reason: .focusChanged,
+            OCRCapturePolicy.shouldCaptureFocusedEditor(
                 editorIdentifier: "editor-a",
-                cachedEditorIdentifier: "editor-a",
-                cachedAt: now,
-                inFlightEditorIdentifier: nil,
-                now: now
+                lastFocusedEditorIdentifier: nil,
+                inFlightEditorIdentifier: nil
             )
         )
         XCTAssertFalse(
-            OCRCapturePolicy.shouldCapture(
-                reason: .focusChanged,
+            OCRCapturePolicy.shouldCaptureFocusedEditor(
                 editorIdentifier: "editor-a",
-                cachedEditorIdentifier: nil,
-                cachedAt: nil,
-                inFlightEditorIdentifier: "editor-a",
-                now: now
-            )
-        )
-    }
-
-    func testTypingBurstReusesFreshFocusCaptureAndRefreshesStaleCapture() {
-        let now = Date(timeIntervalSince1970: 100)
-
-        XCTAssertFalse(
-            OCRCapturePolicy.shouldCapture(
-                reason: .typingBurstStarted,
-                editorIdentifier: "editor-a",
-                cachedEditorIdentifier: "editor-a",
-                cachedAt: now.addingTimeInterval(-1),
-                inFlightEditorIdentifier: nil,
-                now: now
-            )
-        )
-        XCTAssertTrue(
-            OCRCapturePolicy.shouldCapture(
-                reason: .typingBurstStarted,
-                editorIdentifier: "editor-a",
-                cachedEditorIdentifier: "editor-a",
-                cachedAt: now.addingTimeInterval(-3),
-                inFlightEditorIdentifier: nil,
-                now: now
-            )
-        )
-    }
-
-    func testTypingBurstBoundaryUsesIdleInterval() {
-        let now = Date(timeIntervalSince1970: 100)
-
-        XCTAssertTrue(
-            OCRCapturePolicy.beginsTypingBurst(
-                previousInsertionAt: nil,
-                now: now
+                lastFocusedEditorIdentifier: "editor-a",
+                inFlightEditorIdentifier: nil
             )
         )
         XCTAssertFalse(
-            OCRCapturePolicy.beginsTypingBurst(
-                previousInsertionAt: now.addingTimeInterval(-1),
-                now: now
-            )
-        )
-        XCTAssertTrue(
-            OCRCapturePolicy.beginsTypingBurst(
-                previousInsertionAt: now.addingTimeInterval(-2),
-                now: now
+            OCRCapturePolicy.shouldCaptureFocusedEditor(
+                editorIdentifier: "editor-a",
+                lastFocusedEditorIdentifier: nil,
+                inFlightEditorIdentifier: "editor-a"
             )
         )
     }
@@ -138,6 +89,26 @@ final class OCRCapturePolicyTests: XCTestCase {
             ),
             """
             Alex: can you look at this tomorrow?
+            Other visible context
+            """
+        )
+    }
+
+    func testOCRTextDropsWrappedAndPartialEditorEchoes() {
+        XCTAssertEqual(
+            OCRContextText.compose(
+                recognizedLines: [
+                    "Alex: what changed in the latest build?",
+                    "I think the prompt is",
+                    "still repeating my input",
+                    "repeating my input",
+                    "Other visible context",
+                ],
+                editorText:
+                    "I think the prompt is\nstill repeating my input"
+            ),
+            """
+            Alex: what changed in the latest build?
             Other visible context
             """
         )

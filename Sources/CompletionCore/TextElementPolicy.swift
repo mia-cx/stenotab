@@ -18,4 +18,11 @@ public enum TextElementPolicy {
     ) -> Bool {
         appIsWebBacked && (rootIsWebContainer || !rootIsUsable)
     }
+
+    public static func isEligibleFocusedCandidate(
+        isFocusedRoot: Bool,
+        focusedAttribute: Bool?
+    ) -> Bool {
+        isFocusedRoot || focusedAttribute == true
+    }
 }

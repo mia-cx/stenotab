@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     private let launchAtLoginSettings = LaunchAtLoginSettingsStore()
     private let systemTextSuggestionSettings =
         SystemTextSuggestionSettingsStore()
+    private let clipboardAccess = ClipboardAccessStore()
     private var settingsWindowController: SettingsWindowController?
     private var dailyAcceptanceCounter = DailyAcceptanceCounter(
         count: 0,
@@ -323,6 +324,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                 launchAtLoginSettingsStore: launchAtLoginSettings,
                 systemTextSuggestionSettingsStore:
                     systemTextSuggestionSettings,
+                clipboardAccessStore: clipboardAccess,
                 actions: SettingsActions(
                     requestAccessibilityPermission: {
                         [weak coordinator] in
@@ -339,6 +341,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                     openScreenRecordingSettings: {
                         [weak coordinator] in
                         coordinator?.openScreenRecordingSettings()
+                    },
+                    openClipboardSettings: {
+                        guard let url = URL(
+                            string:
+                                "x-apple.systempreferences:"
+                                + "com.apple.settings.PrivacySecurity.extension"
+                                + "?Privacy_Pasteboard"
+                        ) else {
+                            return
+                        }
+                        NSWorkspace.shared.open(url)
                     },
                     openKeyboardSettings: {
                         guard let url = URL(

@@ -167,7 +167,7 @@ final class AccessibilityReader {
         if appIsWebBacked,
            let cachedWebTextElement,
            isUsableTextElement(cachedWebTextElement),
-           boolAttribute(kAXFocusedAttribute, from: cachedWebTextElement) != false {
+           boolAttribute(kAXFocusedAttribute, from: cachedWebTextElement) == true {
             return cachedWebTextElement
         }
 
@@ -198,7 +198,14 @@ final class AccessibilityReader {
             let identity = elementIdentity(candidate)
             guard visited.insert(identity).inserted else { continue }
 
-            if isUsableTextElement(candidate) {
+            let isFocusedRoot = CFEqual(candidate, root)
+                && !rootIsWebContainer
+            if isUsableTextElement(candidate),
+               TextElementPolicy.isEligibleFocusedCandidate(
+                    isFocusedRoot: isFocusedRoot,
+                    focusedAttribute:
+                        boolAttribute(kAXFocusedAttribute, from: candidate)
+               ) {
                 let score = textElementScore(candidate)
                 if best == nil || score > best!.score {
                     best = (candidate, score)
@@ -211,7 +218,7 @@ final class AccessibilityReader {
             }
         }
 
-        let result = best?.element ?? (rootIsUsable ? root : nil)
+        let result = best?.element
         if appIsWebBacked {
             cachedWebTextElement = result
         }

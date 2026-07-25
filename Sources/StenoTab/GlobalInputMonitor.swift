@@ -1,4 +1,3 @@
-import AppKit
 import CompletionCore
 @preconcurrency import CoreGraphics
 
@@ -66,37 +65,26 @@ final class GlobalInputMonitor {
     }
 
     @MainActor
-    func paste(_ text: String) {
-        let pasteboard = NSPasteboard.general
-        let oldString = pasteboard.string(forType: .string)
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-
+    func insertText(_ text: String) {
+        guard !text.isEmpty else { return }
+        let codeUnits = Array(text.utf16)
         let source = CGEventSource(stateID: .hidSystemState)
-        let keyDown = CGEvent(
-            keyboardEventSource: source,
-            virtualKey: 9,
-            keyDown: true
-        )
-        let keyUp = CGEvent(
-            keyboardEventSource: source,
-            virtualKey: 9,
-            keyDown: false
-        )
-        for event in [keyDown, keyUp] {
-            event?.flags = .maskCommand
-            event?.setIntegerValueField(
-                .eventSourceUserData,
-                value: Self.syntheticMarker
-            )
-            event?.post(tap: .cghidEventTap)
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            if let oldString {
-                pasteboard.setString(oldString, forType: .string)
+        codeUnits.withUnsafeBufferPointer { buffer in
+            for keyDown in [true, false] {
+                let event = CGEvent(
+                    keyboardEventSource: source,
+                    virtualKey: 0,
+                    keyDown: keyDown
+                )
+                event?.keyboardSetUnicodeString(
+                    stringLength: buffer.count,
+                    unicodeString: buffer.baseAddress
+                )
+                event?.setIntegerValueField(
+                    .eventSourceUserData,
+                    value: Self.syntheticMarker
+                )
+                event?.post(tap: .cghidEventTap)
             }
         }
     }
