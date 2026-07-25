@@ -487,12 +487,30 @@ final class CompletionCoordinator: NSObject {
             clearSuggestion()
             return
         }
-        if let snapshot = lastSnapshot,
-           let completion = personalCompletion(
+        if let candidateSnapshot = lastSnapshot,
+           let candidate = personalCompletion(
                 buffer.prefix,
-                personalizationContext(for: snapshot)
+                personalizationContext(for: candidateSnapshot)
            ),
-           completion.confidence >= 0.7 {
+           candidate.confidence >= 0.7 {
+            let expectedPrefix = buffer.prefix
+            let expectedSuffix = buffer.suffix
+            guard let snapshot = prepareCurrentPresentation(
+                expectedPrefix: expectedPrefix,
+                expectedSuffix: expectedSuffix
+            ) else {
+                return
+            }
+            guard
+                let completion = personalCompletion(
+                    expectedPrefix,
+                    personalizationContext(for: snapshot)
+                ),
+                completion.confidence >= 0.7
+            else {
+                scheduleModelCompletion()
+                return
+            }
             debounceTask?.cancel()
             newestRequestID &+= 1
             preparedRequestSnapshot = nil
@@ -507,6 +525,10 @@ final class CompletionCoordinator: NSObject {
             return
         }
 
+        scheduleModelCompletion()
+    }
+
+    private func scheduleModelCompletion() {
         debounceTask?.cancel()
         newestRequestID &+= 1
         preparedRequestSnapshot = nil
@@ -541,13 +563,27 @@ final class CompletionCoordinator: NSObject {
     }
 
     private func prepare(_ request: CompletionRequest) -> Bool {
+        guard let snapshot = prepareCurrentPresentation(
+            expectedPrefix: request.prefix,
+            expectedSuffix: request.suffix
+        ) else {
+            return false
+        }
+        preparedRequestSnapshot = (request.id, snapshot)
+        return true
+    }
+
+    private func prepareCurrentPresentation(
+        expectedPrefix: String,
+        expectedSuffix: String
+    ) -> EditorSnapshot? {
         guard policyAllowsCurrentApplication() else {
             invalidatePendingCompletion()
             clearSuggestion()
-            return false
+            return nil
         }
         guard let snapshot = accessibility.snapshot() ?? lastSnapshot else {
-            return false
+            return nil
         }
 
         let previousSnapshot = lastSnapshot
@@ -564,10 +600,12 @@ final class CompletionCoordinator: NSObject {
         lastSnapshot = snapshot
         prepareOverlay(for: snapshot)
 
-        guard
-            snapshot.prefix == request.prefix,
-            snapshot.suffix == request.suffix
-        else {
+        guard CompletionPresentationPolicy.isCurrent(
+            expectedPrefix: expectedPrefix,
+            expectedSuffix: expectedSuffix,
+            observedPrefix: snapshot.prefix,
+            observedSuffix: snapshot.suffix
+        ) else {
             let contentChanged = buffer.reconcile(
                 prefix: snapshot.prefix,
                 suffix: snapshot.suffix
@@ -575,11 +613,10 @@ final class CompletionCoordinator: NSObject {
             if contentChanged {
                 scheduleCompletion()
             }
-            return false
+            return nil
         }
 
-        preparedRequestSnapshot = (request.id, snapshot)
-        return true
+        return snapshot
     }
 
     private func makeRequest(

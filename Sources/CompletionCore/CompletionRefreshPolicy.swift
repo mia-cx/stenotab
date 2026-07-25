@@ -22,6 +22,18 @@ public enum CompletionRefreshPolicy {
     }
 }
 
+public enum CompletionPresentationPolicy {
+    public static func isCurrent(
+        expectedPrefix: String,
+        expectedSuffix: String,
+        observedPrefix: String,
+        observedSuffix: String
+    ) -> Bool {
+        observedPrefix == expectedPrefix
+            && observedSuffix == expectedSuffix
+    }
+}
+
 public enum SnapshotFailurePolicy {
     public static func shouldClearSuggestion(
         consecutiveFailures: Int,

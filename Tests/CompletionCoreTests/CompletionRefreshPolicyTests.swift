@@ -2,6 +2,25 @@ import CompletionCore
 import XCTest
 
 final class CompletionRefreshPolicyTests: XCTestCase {
+    func testPresentationRequiresFreshSnapshotMatchingCurrentText() {
+        XCTAssertFalse(
+            CompletionPresentationPolicy.isCurrent(
+                expectedPrefix: "i still wouldve",
+                expectedSuffix: "",
+                observedPrefix: "i still",
+                observedSuffix: ""
+            )
+        )
+        XCTAssertTrue(
+            CompletionPresentationPolicy.isCurrent(
+                expectedPrefix: "i still wouldve",
+                expectedSuffix: "",
+                observedPrefix: "i still wouldve",
+                observedSuffix: ""
+            )
+        )
+    }
+
     func testRequiresThreeNonWhitespaceCharacters() {
         XCTAssertFalse(CompletionRequestPolicy.shouldRequest(prefix: ""))
         XCTAssertFalse(CompletionRequestPolicy.shouldRequest(prefix: " \n\t"))

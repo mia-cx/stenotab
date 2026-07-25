@@ -727,33 +727,6 @@ private struct ContextPrivacyView: View {
                     )
                 }
 
-                SettingsSection(title: "Processing & Retention") {
-                    PrivacyExplanationRow(
-                        icon: "desktopcomputer",
-                        title: "Processed locally",
-                        detail:
-                            "The currently exposed Local provider runs through "
-                            + "llama.cpp on this Mac. Enabled context does not "
-                            + "leave the Mac."
-                    )
-                    Divider()
-                    PrivacyExplanationRow(
-                        icon: "clock.arrow.circlepath",
-                        title: "Ephemeral completion context",
-                        detail:
-                            "Input and clipboard context are assembled in "
-                            + "memory for the current request. StenoTab does "
-                            + "not add them to typing history or persist them."
-                    )
-                    Divider()
-                    PrivacyExplanationRow(
-                        icon: "lock.shield",
-                        title: "Secure fields stay excluded",
-                        detail:
-                            "Password and other secure text fields remain "
-                            + "excluded regardless of these settings."
-                    )
-                }
             }
             .padding(.horizontal, 28)
             .padding(.top, 22)
@@ -801,29 +774,6 @@ private struct ContextPrivacyToggleRow: View {
                 .controlSize(.mini)
                 .disabled(!isEnabled)
                 .frame(width: 54, alignment: .trailing)
-        }
-        .padding(.vertical, 3)
-    }
-}
-
-private struct PrivacyExplanationRow: View {
-    let icon: String
-    let title: String
-    let detail: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.headline)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 3)
     }
