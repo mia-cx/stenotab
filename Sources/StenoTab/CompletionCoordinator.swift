@@ -270,14 +270,42 @@ final class CompletionCoordinator: NSObject {
                 let snapshot = accessibility.snapshot(),
                 snapshot.editorIdentifier == lastSnapshot?.editorIdentifier
             {
+                let observedField = capturedField(from: snapshot)
+                let authoritativeBaselineField =
+                    completionEpisodeAuthoritativeBaselineField
+                let reconciliationDecision =
+                    CompletionEpisodeReconciliationPolicy.decision(
+                        previousEditorIdentifier:
+                            lastSnapshot?.editorIdentifier,
+                        observedEditorIdentifier:
+                            snapshot.editorIdentifier,
+                        authoritativeBaselineField:
+                            authoritativeBaselineField,
+                        expectedField: completionEpisodeExpectedField,
+                        observedField: observedField,
+                        requiresPostEventObservation:
+                            completionEpisodeRequiresPostEventObservation,
+                        observationDeadlineExceeded:
+                            completionEpisodeObservationDeadlineExceeded
+                    )
                 lastSnapshot = snapshot
                 _ = buffer.reconcile(
                     prefix: snapshot.prefix,
                     suffix: snapshot.suffix
                 )
-                finalizePendingCompletionEpisodeIfNeeded(
-                    finalField: capturedField(from: snapshot)
-                )
+                switch reconciliationDecision {
+                case .waitForAuthoritativeChange,
+                    .discardUnobservedAndReconcile:
+                    discardPendingCompletionEpisode()
+                case .finalizeFromAuthoritativeBaselineAndReconcile:
+                    finalizePendingCompletionEpisodeIfNeeded(
+                        finalField: authoritativeBaselineField
+                    )
+                case .reconcile:
+                    finalizePendingCompletionEpisodeIfNeeded(
+                        finalField: observedField
+                    )
+                }
             } else {
                 discardPendingCompletionEpisode()
             }
@@ -653,6 +681,10 @@ final class CompletionCoordinator: NSObject {
             finalizePendingCompletionEpisodeIfNeeded(
                 finalField: authoritativeBaselineField
             )
+        } else {
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: capturedField(from: snapshot)
+            )
         }
         if focusChanged {
             invalidatePendingCompletion()
@@ -940,6 +972,10 @@ final class CompletionCoordinator: NSObject {
         {
             finalizePendingCompletionEpisodeIfNeeded(
                 finalField: authoritativeBaselineField
+            )
+        } else {
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: capturedField(from: snapshot)
             )
         }
         if focusChanged {
