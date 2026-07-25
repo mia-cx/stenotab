@@ -260,6 +260,78 @@ private struct PersonalizationSettingsView: View {
                     .padding(.vertical, 3)
                 }
 
+                SettingsSection(title: "Automatic Voice Profile") {
+                    HStack(alignment: .top, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            if let assessment = store.voiceAssessment {
+                                Text(assessment.summary)
+                                    .textSelection(.enabled)
+                                    .frame(
+                                        maxWidth: .infinity,
+                                        alignment: .leading
+                                    )
+                                Text(
+                                    "Based on \(assessment.sampleCount) recent "
+                                        + "writing samples • updated "
+                                        + assessment.generatedAt
+                                            .formatted(.relative(presentation: .named))
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            } else {
+                                Text(
+                                    "StenoTab will summarize observable traits "
+                                        + "such as sentence length, casing, "
+                                        + "punctuation, contractions, and "
+                                        + "technical vocabulary after at least "
+                                        + "10 writing events."
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(
+                                    horizontal: false,
+                                    vertical: true
+                                )
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Button("Reassess") {
+                            store.reassessVoice()
+                        }
+                        .disabled(store.storedEventCount < 10)
+                    }
+                }
+
+                if !store.vocabularyEntries.isEmpty {
+                    SettingsSection(title: "Learned Vocabulary") {
+                        ForEach(store.vocabularyEntries) { entry in
+                            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                Text(entry.preferredCasing)
+                                    .font(.headline)
+                                    .textSelection(.enabled)
+                                Spacer()
+                                Text(
+                                    entry.positiveEvidence.formatted(
+                                        .number.precision(
+                                            .fractionLength(0...1)
+                                        )
+                                    )
+                                    + " evidence"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                Text(entry.lastSeen, style: .relative)
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            if entry.id != store.vocabularyEntries.last?.id {
+                                Divider()
+                            }
+                        }
+                    }
+                }
+
                 SettingsSection(title: "Retention") {
                     LabeledContent("Keep history") {
                         Picker(
@@ -366,6 +438,40 @@ private struct PersonalizationSettingsView: View {
                         }
                     }
                 }
+
+                if !store.recentAcceptedSuggestions.isEmpty {
+                    SettingsSection(title: "Recent Accepted Suggestions") {
+                        ForEach(
+                            Array(
+                                store.recentAcceptedSuggestions.reversed()
+                            ),
+                            id: \.id
+                        ) { capture in
+                            AcceptedSuggestionHistoryRow(
+                                capture: capture,
+                                delete: {
+                                    store.deleteEvent(id: capture.id)
+                                },
+                                deleteApplication: {
+                                    guard let bundleIdentifier =
+                                        capture.context
+                                            .applicationBundleIdentifier
+                                    else {
+                                        return
+                                    }
+                                    store.deleteApplicationHistory(
+                                        bundleIdentifier:
+                                            bundleIdentifier
+                                    )
+                                }
+                            )
+                            if capture.id
+                                != store.recentAcceptedSuggestions.first?.id {
+                                Divider()
+                            }
+                        }
+                    }
+                }
             }
             .padding(.horizontal, 28)
             .padding(.top, 22)
@@ -409,6 +515,54 @@ private struct PersonalizationSettingsView: View {
                 store.report(error: error)
             }
         }
+    }
+}
+
+private struct AcceptedSuggestionHistoryRow: View {
+    let capture: AcceptedSuggestionCapture
+    let delete: () -> Void
+    let deleteApplication: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(capture.field.text + capture.insertion)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 6) {
+                    Text(
+                        capture.context.applicationBundleIdentifier
+                            ?? "Unknown application"
+                    )
+                    Text("•")
+                    Text("inserted “\(capture.insertion)”")
+                    Text("•")
+                    Text(capture.capturedAt, style: .relative)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+
+            Menu {
+                Button("Delete This Record", role: .destructive) {
+                    delete()
+                }
+                if capture.context.applicationBundleIdentifier != nil {
+                    Button(
+                        "Delete All from This App",
+                        role: .destructive
+                    ) {
+                        deleteApplication()
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+        .padding(.vertical, 4)
     }
 }
 

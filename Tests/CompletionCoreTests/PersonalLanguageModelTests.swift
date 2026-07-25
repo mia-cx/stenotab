@@ -2,6 +2,33 @@ import XCTest
 @testable import CompletionCore
 
 final class PersonalLanguageModelTests: XCTestCase {
+    func testVocabularyEntriesExposePreferredCasingAndFeedbackEvidence() {
+        var model = PersonalLanguageModel()
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        model.learn(
+            insertedText: "StenoTab",
+            precedingText: "use ",
+            signal: .acceptedSuggestion,
+            context: context,
+            at: Date(timeIntervalSince1970: 100)
+        )
+        model.learn(
+            insertedText: "stenotab",
+            precedingText: "open ",
+            signal: .directlyTyped,
+            context: context,
+            at: Date(timeIntervalSince1970: 200)
+        )
+
+        let entry = model.vocabularyEntries(limit: 1).first
+
+        XCTAssertEqual(entry?.normalized, "stenotab")
+        XCTAssertEqual(entry?.preferredCasing, "StenoTab")
+        XCTAssertEqual(entry?.positiveEvidence, 3.5)
+        XCTAssertEqual(entry?.acceptedCount, 1)
+        XCTAssertEqual(entry?.lastSeen, Date(timeIntervalSince1970: 200))
+    }
+
     func testLearnsPartialWordAndPhraseFromRepeatedPersonalText() throws {
         let date = Date(timeIntervalSince1970: 1_000)
         var model = PersonalLanguageModel()

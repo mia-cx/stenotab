@@ -51,6 +51,37 @@ public struct PersonalCompletion: Codable, Sendable, Equatable {
     }
 }
 
+public struct PersonalVocabularyEntry:
+    Sendable, Equatable, Identifiable
+{
+    public var id: String { normalized }
+    public let normalized: String
+    public let preferredCasing: String
+    public let positiveEvidence: Double
+    public let reversionEvidence: Double
+    public let acceptedCount: Double
+    public let typedMatchCount: Double
+    public let lastSeen: Date
+
+    public init(
+        normalized: String,
+        preferredCasing: String,
+        positiveEvidence: Double,
+        reversionEvidence: Double,
+        acceptedCount: Double,
+        typedMatchCount: Double,
+        lastSeen: Date
+    ) {
+        self.normalized = normalized
+        self.preferredCasing = preferredCasing
+        self.positiveEvidence = positiveEvidence
+        self.reversionEvidence = reversionEvidence
+        self.acceptedCount = acceptedCount
+        self.typedMatchCount = typedMatchCount
+        self.lastSeen = lastSeen
+    }
+}
+
 public struct PersonalLanguageModel: Codable, Sendable, Equatable {
     private struct TokenEvidence: Codable, Sendable, Equatable {
         var positive = 0.0
@@ -251,6 +282,38 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             evidence: firstScore.netEvidence,
             source: .personalLanguageModel
         )
+    }
+
+    public func vocabularyEntries(
+        limit: Int = 100
+    ) -> [PersonalVocabularyEntry] {
+        guard limit > 0 else { return [] }
+        return vocabulary.map { normalized, evidence in
+            PersonalVocabularyEntry(
+                normalized: normalized,
+                preferredCasing: preferredCasing(for: normalized),
+                positiveEvidence: evidence.positive,
+                reversionEvidence: evidence.reversions,
+                acceptedCount: evidence.accepted,
+                typedMatchCount: evidence.typedMatches,
+                lastSeen: evidence.lastSeen
+            )
+        }
+        .sorted {
+            let lhsNet =
+                $0.positiveEvidence - $0.reversionEvidence * 4
+            let rhsNet =
+                $1.positiveEvidence - $1.reversionEvidence * 4
+            if lhsNet == rhsNet {
+                if $0.lastSeen == $1.lastSeen {
+                    return $0.normalized < $1.normalized
+                }
+                return $0.lastSeen > $1.lastSeen
+            }
+            return lhsNet > rhsNet
+        }
+        .prefix(limit)
+        .map(\.self)
     }
 
     private mutating func updateVocabulary(

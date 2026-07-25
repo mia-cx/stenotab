@@ -295,6 +295,33 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(deletedEmbeddings, [])
     }
 
+    func testVoiceAssessmentProjectionRoundTripsEncrypted() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let assessment = VoiceAssessment(
+            summary: "I use PrivateCamelCase and short replies.",
+            sampleCount: 25,
+            sourceEventCount: 30,
+            generatedAt: Date(timeIntervalSince1970: 3_000)
+        )
+
+        try await fixture.database.saveVoiceAssessment(
+            assessment,
+            at: assessment.generatedAt
+        )
+
+        let stored = try await fixture.database.loadVoiceAssessment()
+        XCTAssertEqual(stored, assessment)
+        let raw = try Data(
+            contentsOf: fixture.directory.appending(
+                path: "personalization.sqlite"
+            )
+        )
+        XCTAssertNil(
+            raw.range(of: Data("PrivateCamelCase".utf8))
+        )
+    }
+
     private func makeDatabase() throws -> (
         database: PersonalizationDatabase,
         directory: URL

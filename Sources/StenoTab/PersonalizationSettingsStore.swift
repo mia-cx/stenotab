@@ -59,8 +59,11 @@ final class PersonalizationSettingsStore: ObservableObject {
     @Published private(set) var storedEventCount = 0
     @Published private(set) var encryptedPayloadBytes = 0
     @Published private(set) var recentEpisodes: [WritingEpisodeCapture] = []
+    @Published private(set) var recentAcceptedSuggestions:
+        [AcceptedSuggestionCapture] = []
     @Published private(set) var operationError: String?
     @Published private(set) var languageModel = PersonalLanguageModel()
+    @Published private(set) var voiceAssessment: VoiceAssessment?
 
     private let defaults: UserDefaults
     private var database: PersonalizationDatabase?
@@ -92,6 +95,7 @@ final class PersonalizationSettingsStore: ObservableObject {
         Task {
             do {
                 languageModel = try await worker.prepare()
+                voiceAssessment = await worker.voiceAssessmentSnapshot()
                 refresh()
             } catch {
                 operationError = String(describing: error)
@@ -110,6 +114,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                 recentEpisodes = try await database.writingEpisodes(
                     limit: 20
                 )
+                recentAcceptedSuggestions =
+                    try await database.acceptedSuggestions(limit: 20)
                 operationError = nil
             } catch {
                 operationError = String(describing: error)
@@ -122,9 +128,11 @@ final class PersonalizationSettingsStore: ObservableObject {
         Task {
             do {
                 languageModel = try await modelWorker.deleteAll()
+                voiceAssessment = nil
                 storedEventCount = 0
                 encryptedPayloadBytes = 0
                 recentEpisodes = []
+                recentAcceptedSuggestions = []
                 operationError = nil
             } catch {
                 operationError = String(describing: error)
@@ -141,6 +149,8 @@ final class PersonalizationSettingsStore: ObservableObject {
         Task {
             do {
                 languageModel = try await modelWorker.record(capture)
+                voiceAssessment =
+                    await modelWorker.voiceAssessmentSnapshot()
                 didRecordEvent()
             } catch {
                 operationError = String(describing: error)
@@ -163,6 +173,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                     episode,
                     retentionPolicy: policy
                 )
+                voiceAssessment =
+                    await modelWorker.voiceAssessmentSnapshot()
                 refresh()
             } catch {
                 operationError = String(describing: error)
@@ -187,6 +199,8 @@ final class PersonalizationSettingsStore: ObservableObject {
         Task {
             do {
                 languageModel = try await modelWorker.deleteEvent(id: id)
+                voiceAssessment =
+                    await modelWorker.voiceAssessmentSnapshot()
                 refresh()
             } catch {
                 operationError = String(describing: error)
@@ -202,6 +216,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                     scopeKind: "application",
                     value: bundleIdentifier
                 )
+                voiceAssessment =
+                    await modelWorker.voiceAssessmentSnapshot()
                 refresh()
             } catch {
                 operationError = String(describing: error)
@@ -241,6 +257,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                 languageModel = try await modelWorker.enforceRetention(
                     policy
                 )
+                voiceAssessment =
+                    await modelWorker.voiceAssessmentSnapshot()
                 refresh()
             } catch {
                 operationError = String(describing: error)
@@ -252,12 +270,28 @@ final class PersonalizationSettingsStore: ObservableObject {
         operationError = String(describing: error)
     }
 
+    func reassessVoice() {
+        guard let modelWorker else { return }
+        Task {
+            do {
+                voiceAssessment = try await modelWorker.reassessVoice()
+                operationError = nil
+            } catch {
+                operationError = String(describing: error)
+            }
+        }
+    }
+
     func personalCompletion(
         for prefix: String,
         context: PersonalizationContext
     ) -> PersonalCompletion? {
         guard useLocalCompletions else { return nil }
         return languageModel.completion(for: prefix, context: context)
+    }
+
+    var vocabularyEntries: [PersonalVocabularyEntry] {
+        languageModel.vocabularyEntries(limit: 30)
     }
 
     func promptContext(
@@ -288,6 +322,9 @@ private actor PersonalizationModelWorker {
     private var examples: [PersonalizationExample] = []
     private var semanticExamples: [PersonalizationExample] = []
     private var embeddings: [UUID: StoredPersonalizationEmbedding] = [:]
+    private var voiceAssessment: VoiceAssessment?
+    private var voiceTexts: [String] = []
+    private var voiceSourceEventCount = 0
 
     init(database: PersonalizationDatabase) {
         self.database = database
@@ -299,7 +336,9 @@ private actor PersonalizationModelWorker {
         } else {
             _ = try await rebuildLanguageModel()
         }
+        voiceAssessment = try await database.loadVoiceAssessment()
         try await reloadRetrievalIndex()
+        try await updateVoiceAssessmentIfNeeded()
         return model
     }
 
@@ -313,6 +352,9 @@ private actor PersonalizationModelWorker {
         examples.append(example)
         semanticExamples.append(example)
         try await embedIfNeeded(example)
+        voiceTexts.append(capture.field.text + capture.insertion)
+        voiceSourceEventCount += 1
+        try await updateVoiceAssessmentIfNeeded()
         return model
     }
 
@@ -330,6 +372,9 @@ private actor PersonalizationModelWorker {
         examples.append(
             contentsOf: PersonalizationExample.directlyTyped(from: episode)
         )
+        voiceTexts.append(episode.finalField.text)
+        voiceSourceEventCount += 1
+        try await updateVoiceAssessmentIfNeeded()
         return model
     }
 
@@ -371,7 +416,19 @@ private actor PersonalizationModelWorker {
         examples = []
         semanticExamples = []
         embeddings = [:]
+        voiceTexts = []
+        voiceSourceEventCount = 0
+        voiceAssessment = nil
         return model
+    }
+
+    func voiceAssessmentSnapshot() -> VoiceAssessment? {
+        voiceAssessment
+    }
+
+    func reassessVoice() async throws -> VoiceAssessment? {
+        try await updateVoiceAssessmentIfNeeded(force: true)
+        return voiceAssessment
     }
 
     func promptContext(
@@ -415,13 +472,15 @@ private actor PersonalizationModelWorker {
             ),
             relevantExamples: PersonalizationExample.promptValue(
                 from: relevant
-            )
+            ),
+            voiceAssessment: voiceAssessment?.summary
         )
     }
 
     private func rebuild() async throws -> PersonalLanguageModel {
         _ = try await rebuildLanguageModel()
         try await reloadRetrievalIndex()
+        try await updateVoiceAssessmentIfNeeded(force: true)
         return model
     }
 
@@ -457,6 +516,13 @@ private actor PersonalizationModelWorker {
         for example in semanticExamples {
             try await embedIfNeeded(example)
         }
+        voiceTexts = Array(
+            (
+                episodes.map(\.finalField.text)
+                    + accepted.map { $0.field.text + $0.insertion }
+            ).suffix(200)
+        )
+        voiceSourceEventCount = episodes.count + accepted.count
     }
 
     private func embedIfNeeded(
@@ -502,5 +568,39 @@ private actor PersonalizationModelWorker {
                 + "\(sentenceEmbedding.dimension)",
             vector: vector
         )
+    }
+
+    private func updateVoiceAssessmentIfNeeded(
+        force: Bool = false
+    ) async throws {
+        let sourceEventCount = voiceSourceEventCount
+        if sourceEventCount < 10 {
+            if force, voiceAssessment != nil {
+                voiceAssessment = nil
+                try await database.deleteVoiceAssessment()
+            }
+            return
+        }
+        guard
+            force
+                || VoiceAssessmentSchedule.shouldAssess(
+                    existing: voiceAssessment,
+                    sourceEventCount: sourceEventCount
+                )
+        else {
+            return
+        }
+        guard
+            let updated = VoiceAssessmentAnalyzer.assess(
+                texts: voiceTexts,
+                sourceEventCount: sourceEventCount
+            )
+        else {
+            voiceAssessment = nil
+            try await database.deleteVoiceAssessment()
+            return
+        }
+        voiceAssessment = updated
+        try await database.saveVoiceAssessment(updated)
     }
 }

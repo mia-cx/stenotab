@@ -88,6 +88,7 @@ public actor PersonalizationDatabase {
     private static let completionFeedbackKind = "completion_feedback"
     private static let writingEpisodeKind = "writing_episode"
     private static let languageModelProjection = "personal_language_model"
+    private static let voiceAssessmentProjection = "voice_assessment"
     private static let keyVersion = 1
 
     private let connection: SQLiteConnection
@@ -216,10 +217,13 @@ public actor PersonalizationDatabase {
         }
     }
 
-    public func acceptedSuggestions() throws -> [AcceptedSuggestionCapture] {
+    public func acceptedSuggestions(
+        limit: Int? = nil
+    ) throws -> [AcceptedSuggestionCapture] {
         try decodedEvents(
             kind: Self.acceptedSuggestionKind,
-            as: AcceptedSuggestionCapture.self
+            as: AcceptedSuggestionCapture.self,
+            limit: limit
         )
     }
 
@@ -338,6 +342,64 @@ public actor PersonalizationDatabase {
         return try decoder.decode(
             PersonalLanguageModel.self,
             from: payload
+        )
+    }
+
+    public func saveVoiceAssessment(
+        _ assessment: VoiceAssessment,
+        at date: Date = Date()
+    ) throws {
+        let payload = try encoder.encode(assessment)
+        let sealed = try PersonalizationCryptography.seal(
+            payload,
+            keyData: keyData
+        )
+        try connection.execute(
+            """
+            INSERT INTO personalization_projection (
+                name,
+                version,
+                payload_sealed,
+                updated_at_ms
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                version = excluded.version,
+                payload_sealed = excluded.payload_sealed,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            bindings: [
+                .text(Self.voiceAssessmentProjection),
+                .integer(1),
+                .blob(sealed),
+                .integer(Int64(date.timeIntervalSince1970 * 1_000))
+            ]
+        )
+    }
+
+    public func loadVoiceAssessment() throws -> VoiceAssessment? {
+        let row = try connection.query(
+            """
+            SELECT payload_sealed
+            FROM personalization_projection
+            WHERE name = ?
+            """,
+            bindings: [.text(Self.voiceAssessmentProjection)]
+        ).first
+        guard let sealed = row?.blob(at: 0) else { return nil }
+        let payload = try PersonalizationCryptography.open(
+            sealed,
+            keyData: keyData
+        )
+        return try decoder.decode(VoiceAssessment.self, from: payload)
+    }
+
+    public func deleteVoiceAssessment() throws {
+        try connection.execute(
+            """
+            DELETE FROM personalization_projection
+            WHERE name = ?
+            """,
+            bindings: [.text(Self.voiceAssessmentProjection)]
         )
     }
 
