@@ -126,11 +126,20 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
         public var focusedActivityPrefix: String
         public var focusedWebsiteConnector: String
         public var focusedApplicationConnector: String
+        public var inputHistoryHeading: String
+        public var seedExamplesHeading: String
         public var relevantInputHistoryHeading: String
+        public var assessmentHeading: String
+        public var customVoiceHeading: String
         public var perspectiveFix: String
+        public var ocrHeading: String
+        public var clipboardHeading: String
         public var finalBoundary: String
         public var writingHeading: String
         public var examplePrefix: String
+        public var beforeCursorHeading: String
+        public var suffixHeading: String
+        public var currentPartHeading: String
 
         public init(
             openingInstruction: String? = nil,
@@ -138,11 +147,20 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
             focusedActivityPrefix: String? = nil,
             focusedWebsiteConnector: String? = nil,
             focusedApplicationConnector: String? = nil,
+            inputHistoryHeading: String? = nil,
+            seedExamplesHeading: String? = nil,
             relevantInputHistoryHeading: String? = nil,
+            assessmentHeading: String? = nil,
+            customVoiceHeading: String? = nil,
             perspectiveFix: String? = nil,
+            ocrHeading: String? = nil,
+            clipboardHeading: String? = nil,
             finalBoundary: String? = nil,
             writingHeading: String? = nil,
-            examplePrefix: String? = nil
+            examplePrefix: String? = nil,
+            beforeCursorHeading: String? = nil,
+            suffixHeading: String? = nil,
+            currentPartHeading: String? = nil
         ) {
             self.openingInstruction =
                 openingInstruction ?? PromptResources.baseOpeningInstruction
@@ -157,17 +175,33 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
             self.focusedApplicationConnector =
                 focusedApplicationConnector
                     ?? PromptResources.baseApplicationConnector
+            self.inputHistoryHeading =
+                inputHistoryHeading ?? PromptResources.inputHistoryHeading
+            self.seedExamplesHeading =
+                seedExamplesHeading ?? PromptResources.seedExamplesHeading
             self.relevantInputHistoryHeading =
                 relevantInputHistoryHeading
                     ?? PromptResources.relevantInputHistoryHeading
+            self.assessmentHeading =
+                assessmentHeading ?? PromptResources.assessmentHeading
+            self.customVoiceHeading =
+                customVoiceHeading ?? PromptResources.customVoiceHeading
             self.perspectiveFix =
                 perspectiveFix ?? PromptResources.basePerspectiveFix
+            self.ocrHeading = ocrHeading ?? PromptResources.ocrHeading
+            self.clipboardHeading =
+                clipboardHeading ?? PromptResources.clipboardHeading
             self.finalBoundary =
                 finalBoundary ?? PromptResources.baseFinalBoundary
             self.writingHeading =
                 writingHeading ?? PromptResources.baseWritingHeading
             self.examplePrefix =
                 examplePrefix ?? PromptResources.baseExamplePrefix
+            self.beforeCursorHeading =
+                beforeCursorHeading ?? PromptResources.baseBeforeCursorHeading
+            self.suffixHeading = suffixHeading ?? PromptResources.suffixHeading
+            self.currentPartHeading =
+                currentPartHeading ?? PromptResources.baseCurrentPartHeading
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -176,11 +210,20 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
             case focusedActivityPrefix
             case focusedWebsiteConnector
             case focusedApplicationConnector
+            case inputHistoryHeading
+            case seedExamplesHeading
             case relevantInputHistoryHeading
+            case assessmentHeading
+            case customVoiceHeading
             case perspectiveFix
+            case ocrHeading
+            case clipboardHeading
             case finalBoundary
             case writingHeading
             case examplePrefix
+            case beforeCursorHeading
+            case suffixHeading
+            case currentPartHeading
         }
 
         public init(from decoder: Decoder) throws {
@@ -206,13 +249,37 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
                     String.self,
                     forKey: .focusedApplicationConnector
                 ),
+                inputHistoryHeading: try container.decodeIfPresent(
+                    String.self,
+                    forKey: .inputHistoryHeading
+                ),
+                seedExamplesHeading: try container.decodeIfPresent(
+                    String.self,
+                    forKey: .seedExamplesHeading
+                ),
                 relevantInputHistoryHeading: try container.decodeIfPresent(
                     String.self,
                     forKey: .relevantInputHistoryHeading
                 ),
+                assessmentHeading: try container.decodeIfPresent(
+                    String.self,
+                    forKey: .assessmentHeading
+                ),
+                customVoiceHeading: try container.decodeIfPresent(
+                    String.self,
+                    forKey: .customVoiceHeading
+                ),
                 perspectiveFix: try container.decodeIfPresent(
                     String.self,
                     forKey: .perspectiveFix
+                ),
+                ocrHeading: try container.decodeIfPresent(
+                    String.self,
+                    forKey: .ocrHeading
+                ),
+                clipboardHeading: try container.decodeIfPresent(
+                    String.self,
+                    forKey: .clipboardHeading
                 ),
                 finalBoundary: try container.decodeIfPresent(
                     String.self,
@@ -225,6 +292,18 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
                 examplePrefix: try container.decodeIfPresent(
                     String.self,
                     forKey: .examplePrefix
+                ),
+                beforeCursorHeading: try container.decodeIfPresent(
+                    String.self,
+                    forKey: .beforeCursorHeading
+                ),
+                suffixHeading: try container.decodeIfPresent(
+                    String.self,
+                    forKey: .suffixHeading
+                ),
+                currentPartHeading: try container.decodeIfPresent(
+                    String.self,
+                    forKey: .currentPartHeading
                 )
             )
         }
@@ -252,58 +331,40 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
                 forKey: .focusedApplicationConnector
             )
             try container.encode(
+                inputHistoryHeading,
+                forKey: .inputHistoryHeading
+            )
+            try container.encode(
+                seedExamplesHeading,
+                forKey: .seedExamplesHeading
+            )
+            try container.encode(
                 relevantInputHistoryHeading,
                 forKey: .relevantInputHistoryHeading
             )
+            try container.encode(
+                assessmentHeading,
+                forKey: .assessmentHeading
+            )
+            try container.encode(
+                customVoiceHeading,
+                forKey: .customVoiceHeading
+            )
             try container.encode(perspectiveFix, forKey: .perspectiveFix)
+            try container.encode(ocrHeading, forKey: .ocrHeading)
+            try container.encode(clipboardHeading, forKey: .clipboardHeading)
             try container.encode(finalBoundary, forKey: .finalBoundary)
             try container.encode(writingHeading, forKey: .writingHeading)
             try container.encode(examplePrefix, forKey: .examplePrefix)
-        }
-    }
-
-    public struct Framing: Codable, Sendable, Equatable {
-        public var contextHeading: String
-        public var applicationPrefix: String
-        public var websitePrefix: String
-        public var inputKindPrefix: String
-        public var ocrHeading: String
-        public var clipboardHeading: String
-        public var inputHistoryHeading: String
-        public var assessmentHeading: String
-        public var customVoiceHeading: String
-        public var suffixHeading: String
-        public var textHeading: String
-
-        public init(
-            contextHeading: String? = nil,
-            applicationPrefix: String? = nil,
-            websitePrefix: String? = nil,
-            inputKindPrefix: String? = nil,
-            ocrHeading: String? = nil,
-            clipboardHeading: String? = nil,
-            inputHistoryHeading: String? = nil,
-            assessmentHeading: String? = nil,
-            customVoiceHeading: String? = nil,
-            suffixHeading: String? = nil,
-            textHeading: String? = nil
-        ) {
-            self.contextHeading = contextHeading ?? PromptResources.contextHeading
-            self.applicationPrefix =
-                applicationPrefix ?? PromptResources.applicationPrefix
-            self.websitePrefix = websitePrefix ?? PromptResources.websitePrefix
-            self.inputKindPrefix = inputKindPrefix ?? PromptResources.inputKindPrefix
-            self.ocrHeading = ocrHeading ?? PromptResources.ocrHeading
-            self.clipboardHeading =
-                clipboardHeading ?? PromptResources.clipboardHeading
-            self.inputHistoryHeading =
-                inputHistoryHeading ?? PromptResources.inputHistoryHeading
-            self.assessmentHeading =
-                assessmentHeading ?? PromptResources.assessmentHeading
-            self.customVoiceHeading =
-                customVoiceHeading ?? PromptResources.customVoiceHeading
-            self.suffixHeading = suffixHeading ?? PromptResources.suffixHeading
-            self.textHeading = textHeading ?? PromptResources.chatTextHeading
+            try container.encode(
+                beforeCursorHeading,
+                forKey: .beforeCursorHeading
+            )
+            try container.encode(suffixHeading, forKey: .suffixHeading)
+            try container.encode(
+                currentPartHeading,
+                forKey: .currentPartHeading
+            )
         }
     }
 
@@ -312,8 +373,6 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
     public var base: BaseOptions
     public var baseFraming: BaseFraming
     public var systemInstruction: String
-    public var completionInstruction: String
-    public var framing: Framing
     public var debugMode: Bool
 
     public init(
@@ -322,8 +381,6 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
         base: BaseOptions = .init(),
         baseFraming: BaseFraming = .init(),
         systemInstruction: String = Self.defaultSystemInstruction,
-        completionInstruction: String = Self.defaultCompletionInstruction,
-        framing: Framing = .init(),
         debugMode: Bool = false
     ) {
         self.context = context
@@ -331,16 +388,11 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
         self.base = base
         self.baseFraming = baseFraming
         self.systemInstruction = systemInstruction
-        self.completionInstruction = completionInstruction
-        self.framing = framing
         self.debugMode = debugMode
     }
 
     public static let defaultSystemInstruction =
         PromptResources.chatSystemInstruction
-
-    public static let defaultCompletionInstruction =
-        PromptResources.chatCompletionInstruction
 
     public static let defaults = PromptConfiguration()
 
@@ -351,8 +403,6 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
         case baseFraming
         case baseCompletionIntention
         case systemInstruction
-        case completionInstruction
-        case framing
         case debugMode
     }
 
@@ -386,14 +436,6 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
             String.self,
             forKey: .systemInstruction
         ) ?? Self.defaultSystemInstruction
-        completionInstruction = try container.decodeIfPresent(
-            String.self,
-            forKey: .completionInstruction
-        ) ?? Self.defaultCompletionInstruction
-        framing = try container.decodeIfPresent(
-            Framing.self,
-            forKey: .framing
-        ) ?? .init()
         debugMode = try container.decodeIfPresent(
             Bool.self,
             forKey: .debugMode
@@ -407,11 +449,6 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
         try container.encode(base, forKey: .base)
         try container.encode(baseFraming, forKey: .baseFraming)
         try container.encode(systemInstruction, forKey: .systemInstruction)
-        try container.encode(
-            completionInstruction,
-            forKey: .completionInstruction
-        )
-        try container.encode(framing, forKey: .framing)
         try container.encode(debugMode, forKey: .debugMode)
     }
 }

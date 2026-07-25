@@ -1354,10 +1354,18 @@ private struct PromptLabView: View {
                 badge: "Source pending",
                 isOn: configuration.voice.includeInputHistory,
                 debugMode: store.configuration.debugMode,
-                framing: configuration.framing.inputHistoryHeading,
+                framing: configuration.baseFraming.inputHistoryHeading,
                 dynamicValue: "FRECENT_EXAMPLES",
                 valueOnNewLine: true
             )
+            if store.configuration.debugMode {
+                DebugFramingEditor(
+                    label: "Bundled seed fallback heading",
+                    text: configuration.baseFraming.seedExamplesHeading,
+                    dynamicValue: "SEED_EXAMPLES",
+                    valueOnNewLine: true
+                )
+            }
             Divider()
             PromptToggleRow(
                 title: "Semantically relevant examples",
@@ -1380,7 +1388,7 @@ private struct PromptLabView: View {
                 badge: "Source pending",
                 isOn: configuration.voice.includePeriodicAssessments,
                 debugMode: store.configuration.debugMode,
-                framing: configuration.framing.assessmentHeading,
+                framing: configuration.baseFraming.assessmentHeading,
                 dynamicValue: "VOICE_ASSESSMENT",
                 valueOnNewLine: true
             )
@@ -1428,7 +1436,7 @@ private struct PromptLabView: View {
                 if store.configuration.debugMode {
                     DebugFramingEditor(
                         label: "Custom personalization heading",
-                        text: configuration.framing.customVoiceHeading,
+                        text: configuration.baseFraming.customVoiceHeading,
                         dynamicValue: "CUSTOM_VOICE",
                         valueOnNewLine: true
                     )
@@ -1462,7 +1470,7 @@ private struct PromptLabView: View {
                     + "window.",
                 isOn: configuration.context.includeOCR,
                 debugMode: store.configuration.debugMode,
-                framing: configuration.framing.ocrHeading,
+                framing: configuration.baseFraming.ocrHeading,
                 dynamicValue: "OCR_CONTENT",
                 valueOnNewLine: true
             )
@@ -1472,7 +1480,7 @@ private struct PromptLabView: View {
                 detail: "Include text currently on the clipboard. Off by default.",
                 isOn: configuration.context.includeClipboard,
                 debugMode: store.configuration.debugMode,
-                framing: configuration.framing.clipboardHeading,
+                framing: configuration.baseFraming.clipboardHeading,
                 dynamicValue: "CLIPBOARD_CONTENT",
                 valueOnNewLine: true
             )
@@ -1510,6 +1518,24 @@ private struct PromptLabView: View {
                     dynamicValue: "USER_INPUT",
                     valueOnNewLine: false
                 )
+                DebugFramingEditor(
+                    label: "Mid-line text before cursor heading",
+                    text: configuration.baseFraming.beforeCursorHeading,
+                    dynamicValue: "TEXT_BEFORE_CURSOR",
+                    valueOnNewLine: true
+                )
+                DebugFramingEditor(
+                    label: "Mid-line text after cursor heading",
+                    text: configuration.baseFraming.suffixHeading,
+                    dynamicValue: "TEXT_AFTER_CURSOR",
+                    valueOnNewLine: true
+                )
+                DebugFramingEditor(
+                    label: "Mid-line current part heading",
+                    text: configuration.baseFraming.currentPartHeading,
+                    dynamicValue: "CURRENT_PART",
+                    valueOnNewLine: true
+                )
             }
         }
     }
@@ -1519,30 +1545,14 @@ private struct PromptLabView: View {
         if store.configuration.debugMode {
             SettingsSection(title: "Chat API") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Completion instruction (Chat API)")
+                    Text("System instruction (Chat API)")
                         .font(.headline)
                     Text(
-                        "Used only by providers with separate system and user "
-                            + "messages. It is not sent to local base models."
+                        "Chat providers receive this separate system message "
+                            + "and the same canonical user prompt shown above."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    TextEditor(text: configuration.completionInstruction)
-                        .font(.system(.body, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .padding(8)
-                        .frame(minHeight: 82)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(Color(nsColor: .textBackgroundColor))
-                        )
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.secondary.opacity(0.22))
-                        }
-
-                    Text("System instruction (Chat API)")
-                        .font(.headline)
                     TextEditor(text: configuration.systemInstruction)
                         .font(.system(.body, design: .monospaced))
                         .scrollContentBackground(.hidden)
@@ -1556,19 +1566,6 @@ private struct PromptLabView: View {
                             RoundedRectangle(cornerRadius: 8)
                                 .stroke(Color.secondary.opacity(0.22))
                         }
-
-                    DebugFramingEditor(
-                        label: "Text heading (Chat API)",
-                        text: configuration.framing.textHeading,
-                        dynamicValue: "USER_TEXT",
-                        valueOnNewLine: true
-                    )
-                    DebugFramingEditor(
-                        label: "Suffix heading",
-                        text: configuration.framing.suffixHeading,
-                        dynamicValue: "TEXT_AFTER_CURSOR",
-                        valueOnNewLine: true
-                    )
                 }
             }
         }

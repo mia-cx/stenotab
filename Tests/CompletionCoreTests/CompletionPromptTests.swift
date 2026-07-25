@@ -12,7 +12,7 @@ final class CompletionPromptTests: XCTestCase {
         XCTAssertFalse(defaults.voice.includePeriodicAssessments)
     }
 
-    func testDefaultChatPromptKeepsContextSeparateFromLiteralUserText() {
+    func testChatAndLocalModelsReceiveTheSameCanonicalUserPrompt() {
         let context = CompletionContext(
             applicationName: "Discord",
             website: nil,
@@ -32,14 +32,14 @@ final class CompletionPromptTests: XCTestCase {
             "Continue the user's current text at the cursor. Match their voice. "
                 + "Produce only text that should be inserted."
         )
-        XCTAssertTrue(
-            composed.userMessage.contains("Application I am typing in: Discord")
-        )
-        XCTAssertTrue(
-            composed.userMessage.contains("Kind of input I am typing in: message box")
-        )
-        XCTAssertTrue(composed.userMessage.hasSuffix("Text to continue:\nDo anyt"))
+        XCTAssertEqual(composed.userMessage, composed.textCompletionPrompt)
+        XCTAssertTrue(composed.userMessage.contains(
+            "I am writing a message in Discord."
+        ))
+        XCTAssertTrue(composed.userMessage.hasSuffix("My writing:\n§Do anyt"))
         XCTAssertFalse(composed.userMessage.contains("private clipboard"))
+        XCTAssertFalse(composed.userMessage.contains("Application I am typing in:"))
+        XCTAssertFalse(composed.userMessage.contains("Text to continue:"))
     }
 
     func testBasePromptUsesFirstPersonContinuationFraming() {
@@ -86,7 +86,6 @@ final class CompletionPromptTests: XCTestCase {
         XCTAssertFalse(prompt.contains("Text to continue:"))
         XCTAssertFalse(prompt.contains("Task:"))
         XCTAssertFalse(prompt.contains("Insertion:"))
-        XCTAssertFalse(prompt.contains(configuration.completionInstruction))
     }
 
     func testBasePromptMatchesWorkshoppedFullSample() {
@@ -379,10 +378,11 @@ final class CompletionPromptTests: XCTestCase {
         )
     }
 
-    func testStructuredFramingChangesChatWhileBaseUsesFirstPersonContext() {
+    func testCanonicalFramingChangesChatAndBaseTogether() {
         var configuration = PromptConfiguration.defaults
-        configuration.framing.applicationPrefix = "Working inside:"
-        configuration.framing.textHeading = "Literal user text:"
+        configuration.baseFraming.focusedActivityPrefix = "I am working"
+        configuration.baseFraming.focusedApplicationConnector = "inside"
+        configuration.baseFraming.writingHeading = "My literal writing:"
 
         let composed = CompletionPrompt.compose(
             prefix: "ship it",
@@ -391,16 +391,14 @@ final class CompletionPromptTests: XCTestCase {
             configuration: configuration
         )
 
-        XCTAssertTrue(composed.userMessage.contains("Working inside: Xcode"))
-        XCTAssertTrue(composed.userMessage.contains("Literal user text:\nship it"))
+        XCTAssertEqual(composed.userMessage, composed.textCompletionPrompt)
+        XCTAssertTrue(composed.userMessage.contains(
+            "I am working inside Xcode."
+        ))
         XCTAssertTrue(
-            composed.textCompletionPrompt.contains("I am writing in Xcode.")
-        )
-        XCTAssertFalse(
-            composed.textCompletionPrompt.contains("Working inside: Xcode")
-        )
-        XCTAssertTrue(
-            composed.textCompletionPrompt.hasSuffix("My writing:\n§ship it")
+            composed.textCompletionPrompt.hasSuffix(
+                "My literal writing:\n§ship it"
+            )
         )
     }
 
@@ -487,7 +485,7 @@ final class CompletionPromptTests: XCTestCase {
         ))
     }
 
-    func testChatPromptDoesNotReceiveLocalBaseModelSeeds() {
+    func testChatPromptUsesTheSameSeedFallbackAsTheCanonicalPrompt() {
         let userMessage = CompletionPrompt.chatUser(
             prefix: "yo what's up",
             suffix: "",
@@ -495,8 +493,8 @@ final class CompletionPromptTests: XCTestCase {
             configuration: .defaults
         )
 
-        XCTAssertFalse(userMessage.contains("Some examples of my writing:"))
-        XCTAssertFalse(userMessage.contains("hey, are you around later?"))
+        XCTAssertTrue(userMessage.contains("Some examples of my writing:"))
+        XCTAssertTrue(userMessage.contains("§hey, are you around later?"))
     }
 
     func testBundledMarkdownProvidesEveryPromptDefault() {
@@ -508,19 +506,14 @@ final class CompletionPromptTests: XCTestCase {
                 + "Produce only text that should be inserted."
         )
         XCTAssertEqual(
-            configuration.completionInstruction,
-            "Continue the following text from the cursor. Match the user's voice. "
-                + "Produce only what should be inserted."
+            configuration.baseFraming.focusedActivityPrefix,
+            "I am writing"
         )
         XCTAssertEqual(
-            configuration.framing.applicationPrefix,
-            "- Application I am typing in:"
-        )
-        XCTAssertEqual(
-            configuration.framing.suffixHeading,
+            configuration.baseFraming.suffixHeading,
             "What comes right after the part I am currently typing:"
         )
-        XCTAssertFalse(configuration.framing.textHeading.hasSuffix("\n"))
+        XCTAssertEqual(configuration.baseFraming.examplePrefix, "§")
 
         let prompt = CompletionPrompt.base(
             prefix: "hello",
@@ -537,7 +530,7 @@ final class CompletionPromptTests: XCTestCase {
     func testPromptOverridesFollowNewDefaultsForUntouchedComponents() throws {
         let originalDefaults = PromptConfiguration.defaults
         var customized = originalDefaults
-        customized.framing.clipboardHeading = "Copied reference:"
+        customized.baseFraming.clipboardHeading = "Copied reference:"
 
         let overrides = PromptConfiguration.Overrides(
             configuration: customized,
@@ -550,12 +543,18 @@ final class CompletionPromptTests: XCTestCase {
         )
 
         var newerDefaults = originalDefaults
-        newerDefaults.framing.applicationPrefix = "I am working in:"
+        newerDefaults.baseFraming.focusedActivityPrefix = "I am composing"
         newerDefaults.systemInstruction = "A newer chat instruction."
         let resolved = restored.applying(to: newerDefaults)
 
-        XCTAssertEqual(resolved.framing.clipboardHeading, "Copied reference:")
-        XCTAssertEqual(resolved.framing.applicationPrefix, "I am working in:")
+        XCTAssertEqual(
+            resolved.baseFraming.clipboardHeading,
+            "Copied reference:"
+        )
+        XCTAssertEqual(
+            resolved.baseFraming.focusedActivityPrefix,
+            "I am composing"
+        )
         XCTAssertEqual(resolved.systemInstruction, "A newer chat instruction.")
     }
 
@@ -589,15 +588,22 @@ final class CompletionPromptTests: XCTestCase {
         configuration.baseFraming.focusedActivityPrefix = "I compose"
         configuration.baseFraming.focusedWebsiteConnector = "at"
         configuration.baseFraming.focusedApplicationConnector = "using"
+        configuration.baseFraming.inputHistoryHeading = "Recent"
+        configuration.baseFraming.seedExamplesHeading = "Seeds"
         configuration.baseFraming.relevantInputHistoryHeading = "Similar"
+        configuration.baseFraming.assessmentHeading = "Assessment"
+        configuration.baseFraming.customVoiceHeading = "About me"
         configuration.baseFraming.perspectiveFix =
             "I will continue as myself."
+        configuration.baseFraming.ocrHeading = "Visible"
+        configuration.baseFraming.clipboardHeading = "Copied reference:"
         configuration.baseFraming.finalBoundary = "Boundary"
         configuration.baseFraming.writingHeading = "Mine:"
         configuration.baseFraming.examplePrefix = "¶"
+        configuration.baseFraming.beforeCursorHeading = "Before"
+        configuration.baseFraming.suffixHeading = "After"
+        configuration.baseFraming.currentPartHeading = "Current"
         configuration.systemInstruction = "System"
-        configuration.completionInstruction = "Complete"
-        configuration.framing.clipboardHeading = "Copied reference:"
         configuration.debugMode = true
 
         let data = try JSONEncoder().encode(configuration)

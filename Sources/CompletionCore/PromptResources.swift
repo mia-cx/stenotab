@@ -1,38 +1,37 @@
 import Foundation
 
 enum PromptResources {
-    static let baseOpeningInstruction = load("Base/opening-instruction")
-    static let baseFocusedContextHeading = load("Base/focused-context-heading")
-    static let basePerspectiveFix = load("Base/perspective-fix")
-    static let baseFinalBoundary = load("Base/final-boundary")
-    static let baseExamplePrefix = load("Base/example-prefix")
-    static let baseWritingHeading = load("Base/writing-heading")
-    static let baseBeforeCursorHeading = load("Base/before-cursor-heading")
-    static let baseCurrentPartHeading = load("Base/current-part-heading")
-    static let seedExamplesHeading = load("Seed/heading")
+    static let baseOpeningInstruction = load("Base/00-opening-instruction")
+    static let baseFocusedContextHeading =
+        load("Base/01-focused-context-heading")
+    static let baseWritingPrefix = load("Base/01a-focused-activity-prefix")
+    static let baseWebsiteConnector =
+        load("Base/01b-focused-website-connector")
+    static let baseApplicationConnector =
+        load("Base/01c-focused-application-connector")
+    static let inputHistoryHeading =
+        load("Base/02-frecent-examples-heading")
+    static let seedExamplesHeading = load("Base/02a-seed-fallback-heading")
+    static let relevantInputHistoryHeading =
+        load("Base/03-relevant-examples-heading")
+    static let assessmentHeading = load("Base/04-assessment-heading")
+    static let customVoiceHeading =
+        load("Base/05-custom-personalization-heading")
+    static let basePerspectiveFix = load("Base/06-perspective-fix")
+    static let ocrHeading = load("Base/07-ocr-heading")
+    static let clipboardHeading = load("Base/08-clipboard-heading")
+    static let baseFinalBoundary = load("Base/09-final-boundary")
+    static let baseWritingHeading = load("Base/10-writing-heading")
+    static let baseExamplePrefix = load("Base/10a-writing-marker")
+    static let baseBeforeCursorHeading =
+        load("Base/10b-midline-before-cursor-heading")
+    static let suffixHeading =
+        load("Base/10c-midline-after-cursor-heading")
+    static let baseCurrentPartHeading =
+        load("Base/10d-midline-current-part-heading")
     static let seedWritingExamples = loadDirectory("Seed/Examples")
 
-    static let contextHeading = load("Context/context-heading")
-    static let applicationPrefix = load("Context/application-prefix")
-    static let websitePrefix = load("Context/website-prefix")
-    static let inputKindPrefix = load("Context/input-kind-prefix")
-    static let baseWritingPrefix = load("Context/base-writing-prefix")
-    static let baseApplicationConnector =
-        load("Context/base-application-connector")
-    static let baseWebsiteConnector =
-        load("Context/base-website-connector")
-    static let ocrHeading = load("Context/ocr-heading")
-    static let clipboardHeading = load("Context/clipboard-heading")
-    static let inputHistoryHeading = load("Context/input-history-heading")
-    static let relevantInputHistoryHeading =
-        load("Context/relevant-input-history-heading")
-    static let assessmentHeading = load("Context/assessment-heading")
-    static let customVoiceHeading = load("Context/custom-voice-heading")
-    static let suffixHeading = load("Context/suffix-heading")
-
-    static let chatSystemInstruction = load("Chat/system-instruction")
-    static let chatCompletionInstruction = load("Chat/completion-instruction")
-    static let chatTextHeading = load("Chat/text-heading")
+    static let chatSystemInstruction = load("Chat/00-system-instruction")
 
     private static func load(_ path: String) -> String {
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)

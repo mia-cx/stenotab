@@ -32,12 +32,6 @@ public struct CompletionContext: Sendable, Equatable {
 }
 
 public enum CompletionPrompt {
-    private static let baseBeforeCursorHeading =
-        PromptResources.baseBeforeCursorHeading
-    private static let baseCurrentPartHeading =
-        PromptResources.baseCurrentPartHeading
-    private static let seedExamplesHeading =
-        PromptResources.seedExamplesHeading
     private static let seedWritingExamples =
         PromptResources.seedWritingExamples
     public static let systemInstruction =
@@ -49,37 +43,17 @@ public enum CompletionPrompt {
         context: CompletionContext,
         configuration: PromptConfiguration
     ) -> ComposedCompletionPrompt {
-        let chatSections = contextSections(
-            context,
-            configuration: configuration,
-            useFirstPersonApplicationContext: false,
-            includeSeedExamples: false
-        )
-        let baseSections = contextSections(
-            context,
-            configuration: configuration,
-            useFirstPersonApplicationContext: true,
-            includeSeedExamples: shouldIncludeSeedExamples(
-                context,
-                configuration: configuration
-            )
-        )
-        let userMessage = chatUser(
+        let canonicalPrompt = base(
             prefix: prefix,
             suffix: suffix,
-            contextSections: chatSections,
+            context: context,
             configuration: configuration
         )
         return ComposedCompletionPrompt(
             systemMessage: nonempty(configuration.systemInstruction)
                 ?? PromptConfiguration.defaultSystemInstruction,
-            userMessage: userMessage,
-            textCompletionPrompt: base(
-                prefix: prefix,
-                suffix: suffix,
-                contextSections: baseSections,
-                configuration: configuration
-            )
+            userMessage: canonicalPrompt,
+            textCompletionPrompt: canonicalPrompt
         )
     }
 
@@ -89,39 +63,12 @@ public enum CompletionPrompt {
         context: CompletionContext,
         configuration: PromptConfiguration = .defaults
     ) -> String {
-        chatUser(
+        base(
             prefix: prefix,
             suffix: suffix,
-            contextSections: contextSections(
-                context,
-                configuration: configuration,
-                useFirstPersonApplicationContext: false,
-                includeSeedExamples: false
-            ),
+            context: context,
             configuration: configuration
         )
-    }
-
-    private static func chatUser(
-        prefix: String,
-        suffix: String,
-        contextSections: [String],
-        configuration: PromptConfiguration
-    ) -> String {
-        var sections = contextSections
-        if !suffix.isEmpty {
-            sections.append(
-                "\(configuration.framing.suffixHeading)\n\(suffix)"
-            )
-        }
-        sections.append(
-            [
-                normalizedInstruction(configuration.completionInstruction),
-                configuration.framing.textHeading,
-                prefix,
-            ].joined(separator: "\n")
-        )
-        return sections.joined(separator: "\n\n")
     }
 
     /// A base causal model is treated as the person doing the writing. The
@@ -139,7 +86,6 @@ public enum CompletionPrompt {
             contextSections: contextSections(
                 context,
                 configuration: configuration,
-                useFirstPersonApplicationContext: true,
                 includeSeedExamples: shouldIncludeSeedExamples(
                     context,
                     configuration: configuration
@@ -188,17 +134,17 @@ public enum CompletionPrompt {
             sections.append(
                 framedLiteralText(
                     prefix,
-                    heading: baseBeforeCursorHeading,
+                    heading: configuration.baseFraming.beforeCursorHeading,
                     examplePrefix: configuration.baseFraming.examplePrefix
                 )
             )
             sections.append(
-                "\(configuration.framing.suffixHeading)\n\(suffix)"
+                "\(configuration.baseFraming.suffixHeading)\n\(suffix)"
             )
             sections.append(
                 framedLiteralText(
                     currentPart(of: prefix),
-                    heading: baseCurrentPartHeading,
+                    heading: configuration.baseFraming.currentPartHeading,
                     examplePrefix: configuration.baseFraming.examplePrefix
                 )
             )
@@ -212,7 +158,7 @@ public enum CompletionPrompt {
         let examples = seedWritingExamples.map {
             configuration.baseFraming.examplePrefix + $0
         }
-        return seedExamplesHeading + "\n\n"
+        return configuration.baseFraming.seedExamplesHeading + "\n\n"
             + examples.joined(separator: "\n\n")
     }
 
@@ -253,43 +199,21 @@ public enum CompletionPrompt {
     private static func contextSections(
         _ context: CompletionContext,
         configuration: PromptConfiguration,
-        useFirstPersonApplicationContext: Bool,
         includeSeedExamples: Bool
     ) -> [String] {
-        var lines: [String] = []
         let options = configuration.context
-        let framing = configuration.framing
-        if options.includeCurrentApplication,
-           let applicationName = bounded(context.applicationName, limit: 200) {
-            lines.append("\(framing.applicationPrefix) \(applicationName)")
-        }
-        if options.includeCurrentWebsite,
-           let website = bounded(context.website, limit: 500) {
-            lines.append("\(framing.websitePrefix) \(website)")
-        }
-        if options.includeInputKind,
-           let inputKind = bounded(context.inputKind, limit: 120) {
-            lines.append("\(framing.inputKindPrefix) \(inputKind)")
-        }
         var sections: [String] = []
-        if useFirstPersonApplicationContext {
-            if
-                configuration.base.includeFocusedContext,
-                let sentence = firstPersonApplicationContext(
-                    context,
-                    configuration: configuration
-                )
-            {
-                sections.append(
-                    configuration.baseFraming.focusedContextHeading
-                        + "\n\n"
-                        + sentence
-                )
-            }
-        } else if !lines.isEmpty {
+        if
+            configuration.base.includeFocusedContext,
+            let sentence = firstPersonApplicationContext(
+                context,
+                configuration: configuration
+            )
+        {
             sections.append(
-                "\(framing.contextHeading)\n"
-                    + lines.joined(separator: "\n")
+                configuration.baseFraming.focusedContextHeading
+                    + "\n\n"
+                    + sentence
             )
         }
         if includeSeedExamples {
@@ -297,12 +221,10 @@ public enum CompletionPrompt {
         }
         if configuration.voice.includeInputHistory {
             appendExamplesSection(
-                title: framing.inputHistoryHeading,
+                title: configuration.baseFraming.inputHistoryHeading,
                 value: context.inputHistory,
                 limit: 3_000,
-                examplePrefix: useFirstPersonApplicationContext
-                    ? configuration.baseFraming.examplePrefix
-                    : "",
+                examplePrefix: configuration.baseFraming.examplePrefix,
                 to: &sections
             )
         }
@@ -312,32 +234,29 @@ public enum CompletionPrompt {
                     configuration.baseFraming.relevantInputHistoryHeading,
                 value: context.relevantInputHistory,
                 limit: 3_000,
-                examplePrefix: useFirstPersonApplicationContext
-                    ? configuration.baseFraming.examplePrefix
-                    : "",
+                examplePrefix: configuration.baseFraming.examplePrefix,
                 to: &sections
             )
         }
         if configuration.voice.includePeriodicAssessments {
             appendOptionalSection(
-                title: framing.assessmentHeading,
+                title: configuration.baseFraming.assessmentHeading,
                 value: context.voiceAssessment,
                 limit: 1_500,
-                valueOnNewParagraph: useFirstPersonApplicationContext,
+                valueOnNewParagraph: true,
                 to: &sections
             )
         }
         if configuration.voice.includeCustomVoice {
             appendOptionalSection(
-                title: framing.customVoiceHeading,
+                title: configuration.baseFraming.customVoiceHeading,
                 value: configuration.voice.customVoice,
                 limit: 2_000,
-                valueOnNewParagraph: useFirstPersonApplicationContext,
+                valueOnNewParagraph: true,
                 to: &sections
             )
         }
         if
-            useFirstPersonApplicationContext,
             configuration.base.includePerspectiveFix,
             let perspectiveFix = nonempty(
                 configuration.baseFraming.perspectiveFix
@@ -347,19 +266,19 @@ public enum CompletionPrompt {
         }
         if options.includeOCR {
             appendOptionalSection(
-                title: framing.ocrHeading,
+                title: configuration.baseFraming.ocrHeading,
                 value: context.ocrContent,
                 limit: 4_000,
-                valueOnNewParagraph: useFirstPersonApplicationContext,
+                valueOnNewParagraph: true,
                 to: &sections
             )
         }
         if options.includeClipboard {
             appendOptionalSection(
-                title: framing.clipboardHeading,
+                title: configuration.baseFraming.clipboardHeading,
                 value: context.clipboardContent,
                 limit: 2_000,
-                valueOnNewParagraph: useFirstPersonApplicationContext,
+                valueOnNewParagraph: true,
                 to: &sections
             )
         }
@@ -483,13 +402,6 @@ public enum CompletionPrompt {
         examplePrefix: String
     ) -> String {
         heading + "\n" + examplePrefix + value
-    }
-
-    private static func normalizedInstruction(
-        _ value: String,
-        fallback: String = PromptConfiguration.defaultCompletionInstruction
-    ) -> String {
-        nonempty(value) ?? fallback
     }
 
     private static func bounded(_ value: String?, limit: Int) -> String? {

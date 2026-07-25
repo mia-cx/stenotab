@@ -24,7 +24,20 @@ final class PromptSettingsStore: ObservableObject {
                 from: data
             )
         {
-            configuration = overrides.applying(to: bundledDefaults)
+            var resolved = overrides.applying(to: bundledDefaults)
+            if let legacy = try? JSONDecoder().decode(
+                LegacyOverrides.self,
+                from: data
+            ) {
+                legacy.applyCanonicalFraming(to: &resolved)
+            }
+            configuration = resolved
+            Self.persist(
+                resolved,
+                relativeTo: bundledDefaults,
+                in: defaults,
+                forKey: storageKey
+            )
         } else if
             let data = defaults.data(forKey: legacyStorageKey),
             let saved = try? JSONDecoder().decode(
@@ -32,9 +45,16 @@ final class PromptSettingsStore: ObservableObject {
                 from: data
             )
         {
-            configuration = Self.migrateLegacyDefaultFraming(saved)
+            var resolved = saved
+            if let legacy = try? JSONDecoder().decode(
+                LegacyOverrides.self,
+                from: data
+            ) {
+                legacy.applyCanonicalFraming(to: &resolved)
+            }
+            configuration = resolved
             Self.persist(
-                configuration,
+                resolved,
                 relativeTo: bundledDefaults,
                 in: defaults,
                 forKey: storageKey
@@ -75,27 +95,40 @@ final class PromptSettingsStore: ObservableObject {
         }
     }
 
-    private static func migrateLegacyDefaultFraming(
-        _ saved: PromptConfiguration
-    ) -> PromptConfiguration {
-        var result = saved
-        let defaults = PromptConfiguration.defaults.framing
-        let replacements: [(WritableKeyPath<PromptConfiguration.Framing, String>, String)] = [
-            (\.contextHeading, "Context:"),
-            (\.applicationPrefix, "- Current application:"),
-            (\.websitePrefix, "- Current website:"),
-            (\.inputKindPrefix, "- Kind of input:"),
-            (\.ocrHeading, "OCR content from snapshot:"),
-            (\.clipboardHeading, "Clipboard content:"),
-            (\.inputHistoryHeading, "Relevant input history:"),
-            (\.assessmentHeading, "User voice assessment:"),
-            (\.customVoiceHeading, "Custom voice:"),
-            (\.suffixHeading, "Text after the cursor:"),
-        ]
-        for (keyPath, legacyDefault) in replacements
-        where result.framing[keyPath: keyPath] == legacyDefault {
-            result.framing[keyPath: keyPath] = defaults[keyPath: keyPath]
+    private struct LegacyOverrides: Decodable {
+        struct Framing: Decodable {
+            var ocrHeading: String?
+            var clipboardHeading: String?
+            var inputHistoryHeading: String?
+            var assessmentHeading: String?
+            var customVoiceHeading: String?
+            var suffixHeading: String?
         }
-        return result
+
+        var framing: Framing?
+
+        func applyCanonicalFraming(
+            to configuration: inout PromptConfiguration
+        ) {
+            guard let framing else { return }
+            if let value = framing.ocrHeading {
+                configuration.baseFraming.ocrHeading = value
+            }
+            if let value = framing.clipboardHeading {
+                configuration.baseFraming.clipboardHeading = value
+            }
+            if let value = framing.inputHistoryHeading {
+                configuration.baseFraming.inputHistoryHeading = value
+            }
+            if let value = framing.assessmentHeading {
+                configuration.baseFraming.assessmentHeading = value
+            }
+            if let value = framing.customVoiceHeading {
+                configuration.baseFraming.customVoiceHeading = value
+            }
+            if let value = framing.suffixHeading {
+                configuration.baseFraming.suffixHeading = value
+            }
+        }
     }
 }

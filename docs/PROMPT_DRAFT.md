@@ -5,6 +5,12 @@ Rewrite the first-person prose here freely. Once the wording feels right, move
 each stable fragment into its corresponding file under
 `Sources/CompletionCore/Resources/Prompts/`.
 
+The canonical runtime fragments live in `Prompts/Base/` and are filename-
+prefixed in composition order (`00`, `01`, `01a`, …, `10d`). Files sharing a
+number are alternatives or subparts of the same composed section. The only
+separate Chat resource is `Chat/00-system-instruction.md`; chat providers use
+the same canonical user prompt as local base models.
+
 ## Context currently available
 
 | Context | Runtime status | Source |

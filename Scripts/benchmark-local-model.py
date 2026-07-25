@@ -18,6 +18,13 @@ DEFAULT_FIXTURES = (
     / "Benchmarks"
     / "autocomplete-fixtures.json"
 )
+PROMPT_ROOT = (
+    Path(__file__).resolve().parent.parent
+    / "Sources"
+    / "CompletionCore"
+    / "Resources"
+    / "Prompts"
+)
 DEFAULT_SYSTEM_INSTRUCTION = (
     "Continue the user's current text at the cursor. Match their voice. "
     "Produce only text that should be inserted."
@@ -37,87 +44,120 @@ def load_fixture_suite(path: Path) -> tuple[str, list[dict[str, Any]]]:
     return instruction, cases
 
 
-def context_sections(case: dict[str, Any]) -> list[str]:
-    context = case["context"]
-    application = context.get("application_name")
-    website = context.get("website")
-    input_kind = context.get("input_kind")
+def prompt_component(filename: str) -> str:
+    return (PROMPT_ROOT / "Base" / filename).read_text().removesuffix("\n")
 
-    context_lines = []
-    if application and website:
-        context_lines.append(
-            f"- The user is typing in: {application}, on {website}"
-        )
-    elif application:
-        context_lines.append(f"- The user is typing in: {application}")
-    elif website:
-        context_lines.append(f"- The user is typing on: {website}")
-    if input_kind:
-        context_lines.append(f"- Kind of input: {input_kind}")
-    if not context_lines:
-        context_lines.append("- No application metadata is available.")
 
-    sections = ["Context:\n" + "\n".join(context_lines)]
-    optional_sections = [
-        ("OCR content from snapshot:", context.get("ocr_content")),
-        ("Clipboard content:", context.get("clipboard_content")),
-        ("User Voice:", context.get("user_voice")),
+def input_noun_phrase(value: str | None) -> str | None:
+    if not value:
+        return None
+    lowered = value.lower()
+    mappings = [
+        ("comment", "a comment"),
+        ("reply", "a reply"),
+        ("message", "a message"),
+        ("chat", "a message"),
+        ("search", "a search query"),
+        ("email", "an email"),
+        ("mail", "an email"),
+        ("document", "a document"),
+        ("text area", "a document"),
+        ("code", "code"),
+        ("post", "a post"),
     ]
-    for title, value in optional_sections:
-        if isinstance(value, str) and value.strip():
-            sections.append(f"{title}\n{value.strip()}")
-
-    suffix = case["text"].get("after_cursor", "")
-    if suffix:
-        sections.append(f"Text after the cursor:\n{suffix}")
-    return sections
+    return next(
+        (phrase for marker, phrase in mappings if marker in lowered),
+        "some text",
+    )
 
 
-def base_prompt(
+def canonical_prompt(
     case: dict[str, Any],
     prefix: str,
-    prompt_style: str,
+    include_fixture_context: bool,
 ) -> str:
-    demonstrations = (
-        "Task: Continue the final Text value. "
-        "Output only the characters to insert.\n\n"
-        "Text: The package should arrive\n"
-        "Insertion: tomorrow\n\n"
-        "Text: lol that was so\n"
-        "Insertion: weird\n\n"
-        "Text: Would you mind\n"
-        "Insertion: checking this?"
+    context = case["context"]
+    application = context.get("application_name")
+    website = context.get("website") if include_fixture_context else None
+    input_kind = input_noun_phrase(context.get("input_kind"))
+    sections = [prompt_component("00-opening-instruction.md")]
+
+    activity = prompt_component("01a-focused-activity-prefix.md")
+    if input_kind:
+        activity += f" {input_kind}"
+    if website:
+        activity += (
+            f" {prompt_component('01b-focused-website-connector.md')}"
+            f" {website}"
+        )
+    if application:
+        activity += (
+            f" {prompt_component('01c-focused-application-connector.md')}"
+            f" {application}"
+        )
+    if application or website or input_kind:
+        sections.append(
+            prompt_component("01-focused-context-heading.md")
+            + "\n\n"
+            + activity
+            + "."
+        )
+
+    marker = prompt_component("10a-writing-marker.md")
+    seed_examples = sorted(
+        (PROMPT_ROOT / "Seed" / "Examples").glob("*.md")
     )
-    if prompt_style == "production":
-        return f"{demonstrations}\n\nText: {prefix}\nInsertion:"
-
-    sections = context_sections(case)
-    sections.append(f"Text: {prefix}\nInsertion:")
-    return demonstrations + "\n\n" + "\n\n".join(sections)
-
-
-def partial_word_prompt(prefix: str) -> str:
-    return (
-        "Text: I will see you tom\n"
-        "Continuation: orrow\n\n"
-        "Text: I am currently ty\n"
-        "Continuation: ping\n\n"
-        "Text: This is incred\n"
-        "Continuation: ible\n\n"
-        "Text: We can do anyth\n"
-        "Continuation: ing\n\n"
-        f"Text: {prefix}\n"
-        "Continuation:"
-    )
-
-
-def chat_user_prompt(case: dict[str, Any], prefix: str) -> str:
-    sections = context_sections(case)
     sections.append(
-        "Continue the following text, continuing from the cursor. "
-        "Match the user's voice. Produce only what should be inserted.\n"
-        f"{prefix}"
+        prompt_component("02a-seed-fallback-heading.md")
+        + "\n\n"
+        + "\n\n".join(
+            marker + path.read_text().removesuffix("\n")
+            for path in seed_examples
+        )
     )
+    if include_fixture_context:
+        assessment = context.get("user_voice")
+        if isinstance(assessment, str) and assessment.strip():
+            sections.append(
+                prompt_component("04-assessment-heading.md")
+                + "\n\n"
+                + assessment.strip()
+            )
+    sections.append(prompt_component("06-perspective-fix.md"))
+    if include_fixture_context:
+        for filename, value in [
+            ("07-ocr-heading.md", context.get("ocr_content")),
+            ("08-clipboard-heading.md", context.get("clipboard_content")),
+        ]:
+            if isinstance(value, str) and value.strip():
+                sections.append(
+                    prompt_component(filename) + "\n\n" + value.strip()
+                )
+    sections.append(prompt_component("09-final-boundary.md"))
+    suffix = case["text"].get("after_cursor", "")
+    if suffix:
+        sections.extend(
+            [
+                prompt_component("10b-midline-before-cursor-heading.md")
+                + "\n"
+                + marker
+                + prefix,
+                prompt_component("10c-midline-after-cursor-heading.md")
+                + "\n"
+                + suffix,
+                prompt_component("10d-midline-current-part-heading.md")
+                + "\n"
+                + marker
+                + prefix[-500:],
+            ]
+        )
+    else:
+        sections.append(
+            prompt_component("10-writing-heading.md")
+            + "\n"
+            + marker
+            + prefix
+        )
     return "\n\n".join(sections)
 
 
@@ -127,11 +167,11 @@ def prompt_for_case(
     api_style: str,
     prompt_style: str,
 ) -> str:
-    if case["lane"] == "partial-word":
-        return partial_word_prompt(prefix)
-    if api_style == "chatCompletions":
-        return chat_user_prompt(case, prefix)
-    return base_prompt(case, prefix, prompt_style)
+    return canonical_prompt(
+        case,
+        prefix,
+        include_fixture_context=prompt_style == "contextual",
+    )
 
 
 def raw_completion_prompt(
@@ -392,7 +432,7 @@ def main() -> None:
         choices=["contextual", "production"],
         default="contextual",
         help="contextual includes fixture OCR/clipboard/voice; production uses "
-        "the current compact Base prompt",
+        "the canonical prompt with optional fixture sources disabled",
     )
     parser.add_argument(
         "--fixtures",
