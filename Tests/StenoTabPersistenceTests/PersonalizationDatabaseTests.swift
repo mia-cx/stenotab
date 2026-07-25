@@ -389,6 +389,31 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(countAfterDelete, 0)
     }
 
+    func testDeleteAllRecoversFromCyclicLineageIndex() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let capture = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                id: UUID(),
+                fieldText: "private input",
+                selection: UTF16Selection(location: 13, length: 0),
+                insertion: " continuation",
+                acceptanceScope: .entireSuggestion,
+                context: PersonalizationContext(editorIdentifier: "editor")
+            )
+        )
+        try await fixture.database.record(capture)
+        try await fixture.database.insertCompletionEpisodeSourceIndexForTesting(
+            completionEventID: capture.id,
+            sourceEventID: capture.id
+        )
+
+        try await fixture.database.deleteAll()
+
+        let countAfterDelete = try await fixture.database.eventCount()
+        XCTAssertEqual(countAfterDelete, 0)
+    }
+
     func testTargetedDeleteFailsClosedForUnsupportedEpisodeVersion()
         async throws
     {

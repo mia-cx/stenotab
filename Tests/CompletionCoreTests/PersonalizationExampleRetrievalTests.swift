@@ -113,6 +113,33 @@ final class PersonalizationExampleRetrievalTests: XCTestCase {
         )
     }
 
+    func testPromptLineageDoesNotTreatLiteralSeparatorAsAnotherSource() {
+        let ids = [UUID(), UUID(), UUID()]
+        let records = [
+            String(repeating: "a", count: 2_900)
+                + PersonalizationExample.promptRecordSeparator
+                + String(repeating: "b", count: 150),
+            "not included",
+            "also not included",
+        ]
+        let context = PersonalizationPromptContext(
+            frecentExamples: records.joined(
+                separator:
+                    PersonalizationExample.promptRecordSeparator
+            ),
+            frecentSourceEventIDs: ids,
+            frecentRecordCharacterCounts: records.map(\.count)
+        )
+
+        XCTAssertEqual(
+            context.sourceEventIDs(
+                includeFrecent: true,
+                includeRelevant: false
+            ),
+            Array(ids.prefix(1))
+        )
+    }
+
     func testExampleUsesLiteralTextAndInsertionFormat() {
         let example = PersonalizationExample(
             id: UUID(),

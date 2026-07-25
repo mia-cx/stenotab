@@ -1726,6 +1726,10 @@ public actor PersonalizationDatabase {
     public func deleteAll() throws {
         try connection.transaction {
             try connection.execute("DELETE FROM event_scope")
+            // This index is rebuilt from authenticated payloads for targeted
+            // operations, but Delete All must also recover from an attacker-
+            // supplied cycle that would recurse through the delete trigger.
+            try connection.execute("DELETE FROM completion_episode_source")
             try connection.execute("DELETE FROM personalization_event")
             try connection.execute("DELETE FROM personalization_scope")
             try connection.execute(

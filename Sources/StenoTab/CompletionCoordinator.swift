@@ -260,7 +260,6 @@ final class CompletionCoordinator: NSObject {
         invalidatePendingCompletion()
         clearOCRContext()
         if pendingCompletionEpisodeResolution != nil {
-            var finalField = completionEpisodeAuthoritativeBaselineField
             if
                 let snapshot = accessibility.snapshot(),
                 snapshot.editorIdentifier == lastSnapshot?.editorIdentifier
@@ -270,11 +269,12 @@ final class CompletionCoordinator: NSObject {
                     prefix: snapshot.prefix,
                     suffix: snapshot.suffix
                 )
-                finalField = capturedField(from: snapshot)
+                finalizePendingCompletionEpisodeIfNeeded(
+                    finalField: capturedField(from: snapshot)
+                )
+            } else {
+                discardPendingCompletionEpisode()
             }
-            finalizePendingCompletionEpisodeIfNeeded(
-                finalField: finalField
-            )
         }
         clearSuggestion(
             resolution:
@@ -443,10 +443,12 @@ final class CompletionCoordinator: NSObject {
                 suggestionConsumption = .waitingForWhitespace()
                 return
             case .triggerInference:
+                recordTypedSuggestionMatch(from: consumption)
                 deferCompletionEpisodeFinalization(
                     resolution:
                         completionEpisodeTracker
-                        .abandonedSuggestionResolution
+                        .completedSuggestionResolution
+                        ?? .typedThrough
                 )
                 scheduleCompletion()
                 return
@@ -525,10 +527,7 @@ final class CompletionCoordinator: NSObject {
         invalidationReconciliationNotBefore = nil
         guard enabled else {
             clearOCRContext()
-            finalizePendingCompletionEpisodeIfNeeded(
-                finalField:
-                    completionEpisodeAuthoritativeBaselineField
-            )
+            discardPendingCompletionEpisode()
             clearSuggestion(
                 resolution:
                     completionEpisodeTracker.abandonedSuggestionResolution
@@ -538,10 +537,7 @@ final class CompletionCoordinator: NSObject {
         guard policyAllowsCurrentApplication() else {
             invalidatePendingCompletion()
             clearOCRContext()
-            finalizePendingCompletionEpisodeIfNeeded(
-                finalField:
-                    completionEpisodeAuthoritativeBaselineField
-            )
+            discardPendingCompletionEpisode()
             clearSuggestion(
                 resolution:
                     completionEpisodeTracker.abandonedSuggestionResolution
@@ -557,10 +553,7 @@ final class CompletionCoordinator: NSObject {
             if completionEpisodeExpectedField != nil {
                 if completionEpisodeObservationDeadlineExceeded {
                     buffer.apply(.invalidate)
-                    finalizePendingCompletionEpisodeIfNeeded(
-                        finalField:
-                            completionEpisodeAuthoritativeBaselineField
-                    )
+                    discardPendingCompletionEpisode()
                     return
                 }
                 scheduleInvalidationReconciliation()
@@ -616,18 +609,14 @@ final class CompletionCoordinator: NSObject {
             scheduleInvalidationReconciliation()
             return
         }
-        let authoritativeBaselineField =
-            completionEpisodeAuthoritativeBaselineField
         completionEpisodeAuthoritativeBaselineField = nil
         completionEpisodeExpectedField = nil
         completionEpisodeRequiresPostEventObservation = false
         completionEpisodeObservationDeadline = nil
         if reconciliationDecision
-            == .finalizeFromAuthoritativeBaselineAndReconcile
+            == .discardUnobservedAndReconcile
         {
-            finalizePendingCompletionEpisodeIfNeeded(
-                finalField: authoritativeBaselineField
-            )
+            discardPendingCompletionEpisode()
         }
         if focusChanged {
             invalidatePendingCompletion()
@@ -853,10 +842,7 @@ final class CompletionCoordinator: NSObject {
     ) -> EditorSnapshot? {
         guard policyAllowsCurrentApplication() else {
             invalidatePendingCompletion()
-            finalizePendingCompletionEpisodeIfNeeded(
-                finalField:
-                    completionEpisodeAuthoritativeBaselineField
-            )
+            discardPendingCompletionEpisode()
             clearSuggestion(
                 resolution:
                     completionEpisodeTracker.abandonedSuggestionResolution
@@ -870,10 +856,7 @@ final class CompletionCoordinator: NSObject {
         {
             if completionEpisodeObservationDeadlineExceeded {
                 buffer.apply(.invalidate)
-                finalizePendingCompletionEpisodeIfNeeded(
-                    finalField:
-                        completionEpisodeAuthoritativeBaselineField
-                )
+                discardPendingCompletionEpisode()
             }
             return nil
         }
@@ -905,18 +888,14 @@ final class CompletionCoordinator: NSObject {
         if reconciliationDecision == .waitForAuthoritativeChange {
             return nil
         }
-        let authoritativeBaselineField =
-            completionEpisodeAuthoritativeBaselineField
         completionEpisodeAuthoritativeBaselineField = nil
         completionEpisodeExpectedField = nil
         completionEpisodeRequiresPostEventObservation = false
         completionEpisodeObservationDeadline = nil
         if reconciliationDecision
-            == .finalizeFromAuthoritativeBaselineAndReconcile
+            == .discardUnobservedAndReconcile
         {
-            finalizePendingCompletionEpisodeIfNeeded(
-                finalField: authoritativeBaselineField
-            )
+            discardPendingCompletionEpisode()
         }
         if focusChanged {
             finalizeCompletionEpisode(
@@ -1276,8 +1255,19 @@ final class CompletionCoordinator: NSObject {
             typedSuggestionOrigin = nil
             overlay.hide()
             suggestionConsumption = .waitingForWhitespace()
-        case .triggerInference, .diverged:
-            clearSuggestion(
+        case .triggerInference:
+            if let suggestionConsumption {
+                recordTypedSuggestionMatch(from: suggestionConsumption)
+            }
+            deferCompletionEpisodeFinalization(
+                resolution:
+                    completionEpisodeTracker
+                    .completedSuggestionResolution
+                    ?? .typedThrough
+            )
+            scheduleCompletion()
+        case .diverged:
+            deferCompletionEpisodeFinalization(
                 resolution:
                     completionEpisodeTracker
                     .abandonedSuggestionResolution
@@ -2156,6 +2146,12 @@ final class CompletionCoordinator: NSObject {
             resolution: resolution,
             finalField: finalField
         )
+    }
+
+    private func discardPendingCompletionEpisode() {
+        guard pendingCompletionEpisodeResolution != nil else { return }
+        completionEpisodeTracker.discard()
+        resetCompletionEpisodeFinalizationState()
     }
 
     private var completionEpisodeObservationDeadlineExceeded: Bool {

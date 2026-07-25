@@ -85,7 +85,32 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
         XCTAssertEqual(decision, .reconcile)
     }
 
-    func testFocusChangeFinalizesFromLastAuthoritativeField() {
+    func testReconciliationWaitsForIntermediateAuthoritativeField() {
+        let before = CapturedFieldState(
+            text: "a",
+            selection: UTF16Selection(location: 1, length: 0)
+        )
+        let expected = CapturedFieldState(
+            text: "abc",
+            selection: UTF16Selection(location: 3, length: 0)
+        )
+        let intermediate = CapturedFieldState(
+            text: "ab",
+            selection: UTF16Selection(location: 2, length: 0)
+        )
+
+        let decision = CompletionEpisodeReconciliationPolicy.decision(
+            previousEditorIdentifier: "editor",
+            observedEditorIdentifier: "editor",
+            authoritativeBaselineField: before,
+            expectedField: expected,
+            observedField: intermediate
+        )
+
+        XCTAssertEqual(decision, .waitForAuthoritativeChange)
+    }
+
+    func testFocusChangeDiscardsUnobservedOutcome() {
         let authoritative = CapturedFieldState(
             text: "before",
             selection: UTF16Selection(location: 6, length: 0)
@@ -108,7 +133,7 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
 
         XCTAssertEqual(
             decision,
-            .finalizeFromAuthoritativeBaselineAndReconcile
+            .discardUnobservedAndReconcile
         )
     }
 

@@ -223,7 +223,7 @@ public enum CompletionEpisodeReconciliationDecision:
 {
     case waitForAuthoritativeChange
     case reconcile
-    case finalizeFromAuthoritativeBaselineAndReconcile
+    case discardUnobservedAndReconcile
 }
 
 public enum CompletionEpisodeReconciliationPolicy {
@@ -246,17 +246,22 @@ public enum CompletionEpisodeReconciliationPolicy {
             previousEditorIdentifier != observedEditorIdentifier
         if
             !focusChanged,
-            observedField == authoritativeBaselineField,
             (
-                expectedField != authoritativeBaselineField
-                    || requiresPostEventObservation
+                (
+                    expectedField != authoritativeBaselineField
+                        && observedField != expectedField
+                )
+                    || (
+                        requiresPostEventObservation
+                            && observedField == authoritativeBaselineField
+                    )
             ),
             !observationDeadlineExceeded
         {
             return .waitForAuthoritativeChange
         }
         if focusChanged {
-            return .finalizeFromAuthoritativeBaselineAndReconcile
+            return .discardUnobservedAndReconcile
         }
         return .reconcile
     }

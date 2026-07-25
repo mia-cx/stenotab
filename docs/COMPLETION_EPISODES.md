@@ -33,6 +33,9 @@ produced it.
 
 Cancelled requests that never expose a suggestion are not retained. Prefetched
 refills become episodes only when StenoTab actually presents them.
+If Accessibility cannot observe the originating editor after a terminal edit,
+the episode is discarded rather than recording a predicted or stale final
+field as fact.
 When retained prompt examples or a periodic voice assessment come from earlier
 events, the completion episode records those source-event dependencies and
 source scopes. Deleting or expiring a source event, or deleting its application

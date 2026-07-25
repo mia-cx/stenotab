@@ -681,7 +681,9 @@ actor PersonalizationModelWorker {
                 frecentExamples:
                     PersonalizationExample.promptValue(from: frecent),
                 frecentSourceEventIDs: sourceEventIDs(from: frecent),
-                frecentSourceContexts: sourceContexts(from: frecent)
+                frecentSourceContexts: sourceContexts(from: frecent),
+                frecentRecordCharacterCounts:
+                    frecent.map { $0.promptText.count }
             )
         }
         let candidateVectors = Dictionary(
@@ -714,8 +716,12 @@ actor PersonalizationModelWorker {
             voiceAssessment: voiceAssessment?.summary,
             frecentSourceEventIDs: sourceEventIDs(from: frecent),
             frecentSourceContexts: sourceContexts(from: frecent),
+            frecentRecordCharacterCounts:
+                frecent.map { $0.promptText.count },
             relevantSourceEventIDs: sourceEventIDs(from: relevant),
             relevantSourceContexts: sourceContexts(from: relevant),
+            relevantRecordCharacterCounts:
+                relevant.map { $0.promptText.count },
             voiceSourceEventIDs: voiceAssessment?.sourceEventIDs ?? [],
             voiceSourceContexts: voiceAssessment?.sourceContexts ?? []
         )

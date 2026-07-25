@@ -123,8 +123,10 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
     public let voiceAssessment: String?
     public let frecentSourceEventIDs: [UUID]
     public let frecentSourceContexts: [PersonalizationContext]
+    public let frecentRecordCharacterCounts: [Int]
     public let relevantSourceEventIDs: [UUID]
     public let relevantSourceContexts: [PersonalizationContext]
+    public let relevantRecordCharacterCounts: [Int]
     public let voiceSourceEventIDs: [UUID]
     public let voiceSourceContexts: [PersonalizationContext]
 
@@ -134,8 +136,10 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
         voiceAssessment: String? = nil,
         frecentSourceEventIDs: [UUID] = [],
         frecentSourceContexts: [PersonalizationContext] = [],
+        frecentRecordCharacterCounts: [Int] = [],
         relevantSourceEventIDs: [UUID] = [],
         relevantSourceContexts: [PersonalizationContext] = [],
+        relevantRecordCharacterCounts: [Int] = [],
         voiceSourceEventIDs: [UUID] = [],
         voiceSourceContexts: [PersonalizationContext] = []
     ) {
@@ -144,8 +148,10 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
         self.voiceAssessment = voiceAssessment
         self.frecentSourceEventIDs = frecentSourceEventIDs
         self.frecentSourceContexts = frecentSourceContexts
+        self.frecentRecordCharacterCounts = frecentRecordCharacterCounts
         self.relevantSourceEventIDs = relevantSourceEventIDs
         self.relevantSourceContexts = relevantSourceContexts
+        self.relevantRecordCharacterCounts = relevantRecordCharacterCounts
         self.voiceSourceEventIDs = voiceSourceEventIDs
         self.voiceSourceContexts = voiceSourceContexts
     }
@@ -162,7 +168,9 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
                 includeFrecent
                     ? promptSourcePrefix(
                         frecentSourceEventIDs,
-                        examples: frecentExamples
+                        examples: frecentExamples,
+                        recordCharacterCounts:
+                            frecentRecordCharacterCounts
                     )
                     : []
             )
@@ -170,7 +178,9 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
                 includeRelevant
                     ? promptSourcePrefix(
                         relevantSourceEventIDs,
-                        examples: relevantExamples
+                        examples: relevantExamples,
+                        recordCharacterCounts:
+                            relevantRecordCharacterCounts
                     )
                     : []
             )
@@ -192,7 +202,9 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
                 includeFrecent
                     ? promptSourcePrefix(
                         frecentSourceContexts,
-                        examples: frecentExamples
+                        examples: frecentExamples,
+                        recordCharacterCounts:
+                            frecentRecordCharacterCounts
                     )
                     : []
             )
@@ -200,7 +212,9 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
                 includeRelevant
                     ? promptSourcePrefix(
                         relevantSourceContexts,
-                        examples: relevantExamples
+                        examples: relevantExamples,
+                        recordCharacterCounts:
+                            relevantRecordCharacterCounts
                     )
                     : []
             )
@@ -214,7 +228,8 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
 
     private func promptSourcePrefix<Value>(
         _ sources: [Value],
-        examples: String?
+        examples: String?,
+        recordCharacterCounts: [Int]
     ) -> [Value] {
         guard
             let examples,
@@ -223,6 +238,19 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
             ).isEmpty
         else {
             return []
+        }
+        if !recordCharacterCounts.isEmpty {
+            var nextRecordOffset = 0
+            var includedRecordCount = 0
+            for count in recordCharacterCounts {
+                guard nextRecordOffset < 3_000 else { break }
+                if count > 0 {
+                    includedRecordCount += 1
+                }
+                nextRecordOffset += max(0, count)
+                    + PersonalizationExample.promptRecordSeparator.count
+            }
+            return Array(sources.prefix(includedRecordCount))
         }
         let bounded = String(examples.prefix(3_000))
         let includedRecordCount = bounded
