@@ -170,6 +170,7 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         let authoritativeEdits = Self.authoritativeEditFields(in: episode)
         let directlyTypedEdits = episode.edits.enumerated().filter {
             $0.element.provenance == .directlyTyped
+                && !$0.element.insertedText.isEmpty
         }
         for indexedEdit in directlyTypedEdits {
             let editIndex = indexedEdit.offset
@@ -933,7 +934,10 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         let replacementLocation: Int
         let originalText: String
         if let deletedText = edit.deletedText, !deletedText.isEmpty {
-            replacementLocation = edit.selectionAfter.location
+            replacementLocation =
+                edit.insertedText.isEmpty
+                ? edit.selectionAfter.location
+                : edit.selectionBefore.location
             originalText = deletedText
         } else {
             replacementLocation = edit.selectionBefore.location
@@ -1083,7 +1087,16 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
                 location: anchoredStart,
                 length: anchoredEnd - anchoredStart
             )
-            if candidate.isValid(for: authoritativeAfter) {
+            let hasLiteralMappedBoundary =
+                mappedStart != nil || mappedEnd != nil
+            if
+                candidate.isValid(for: authoritativeAfter),
+                hasLiteralMappedBoundary
+                    || utf16Substring(
+                        in: authoritativeAfter,
+                        selection: candidate
+                    ) == edit.insertedText
+            {
                 return candidate
             }
         }

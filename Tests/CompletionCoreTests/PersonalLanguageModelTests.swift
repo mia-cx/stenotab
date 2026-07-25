@@ -1159,6 +1159,146 @@ final class PersonalLanguageModelTests: XCTestCase {
         )
     }
 
+    func testBroadRewriteDoesNotUseCoincidentalProvenanceAnchors() {
+        let date = Date(timeIntervalSince1970: 134)
+        let initial = CapturedFieldState(
+            text: " tail",
+            selection: UTF16Selection(location: 0, length: 0)
+        )
+        let afterDirect = CapturedFieldState(
+            text: "direct  tail",
+            selection: UTF16Selection(location: 7, length: 0)
+        )
+        let predictedFinal = CapturedFieldState(
+            text: "direct model  tail",
+            selection: UTF16Selection(location: 13, length: 0)
+        )
+        let authoritativeText = "corrected model t wrong table"
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: CapturedFieldState(
+                text: authoritativeText,
+                selection: UTF16Selection(
+                    location: authoritativeText.utf16.count,
+                    length: 0
+                )
+            ),
+            edits: [
+                WritingEditCapture(
+                    insertedText: "direct ",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: afterDirect.selection,
+                    fieldBefore: initial,
+                    fieldAfter: afterDirect,
+                    startedAt: date,
+                    endedAt: date
+                ),
+                WritingEditCapture(
+                    insertedText: "model ",
+                    provenance: .acceptedSuggestion,
+                    selectionBefore: afterDirect.selection,
+                    selectionAfter: predictedFinal.selection,
+                    fieldBefore: afterDirect,
+                    fieldAfter: predictedFinal,
+                    startedAt: date.addingTimeInterval(1),
+                    endedAt: date.addingTimeInterval(1)
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date.addingTimeInterval(1),
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(model.vocabularyEntries(), [])
+    }
+
+    func testPureDeletionDoesNotCreatePositiveTypingEvidence() {
+        let date = Date(timeIntervalSince1970: 135)
+        let initial = CapturedFieldState(
+            text: "existing bad",
+            selection: UTF16Selection(location: 12, length: 0)
+        )
+        let final = CapturedFieldState(
+            text: "existing",
+            selection: UTF16Selection(location: 8, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: final,
+            edits: [
+                WritingEditCapture(
+                    insertedText: "",
+                    deletedText: " bad",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: final.selection,
+                    fieldBefore: initial,
+                    fieldAfter: final,
+                    startedAt: date,
+                    endedAt: date
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date,
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(model.vocabularyEntries(), [])
+    }
+
+    func testReplacementLearnsOnlyInsertedText() {
+        let date = Date(timeIntervalSince1970: 136)
+        let initial = CapturedFieldState(
+            text: "existing bad",
+            selection: UTF16Selection(location: 9, length: 3)
+        )
+        let final = CapturedFieldState(
+            text: "existing good",
+            selection: UTF16Selection(location: 13, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: final,
+            edits: [
+                WritingEditCapture(
+                    insertedText: "good",
+                    deletedText: "bad",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: final.selection,
+                    fieldBefore: initial,
+                    fieldAfter: final,
+                    startedAt: date,
+                    endedAt: date
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date,
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(
+            model.vocabularyEntries().map(\.normalized),
+            ["good"]
+        )
+    }
+
     func testVocabularyEntriesExposePreferredCasingAndFeedbackEvidence() {
         var model = PersonalLanguageModel()
         let context = PersonalizationContext(editorIdentifier: "editor")
