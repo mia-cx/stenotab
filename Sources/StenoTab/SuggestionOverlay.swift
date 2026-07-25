@@ -122,13 +122,14 @@ final class SuggestionOverlay {
         )
     }
 
-    func show(_ suggestion: String) {
+    @discardableResult
+    func show(_ suggestion: String) -> Bool {
         guard
             !suggestion.isEmpty,
             let preparedPresentation
         else {
             hide()
-            return
+            return false
         }
 
         let attributedSuggestion = NSMutableAttributedString(
@@ -167,6 +168,7 @@ final class SuggestionOverlay {
         )
         panel.displayIfNeeded()
         panel.orderFrontRegardless()
+        return true
     }
 
     func consume(matchedText: String, remainingSuggestion: String) {

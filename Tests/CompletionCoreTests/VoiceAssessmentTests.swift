@@ -78,6 +78,8 @@ final class VoiceAssessmentTests: XCTestCase {
         )
 
         XCTAssertNil(assessment.analyzerVersion)
+        XCTAssertEqual(assessment.sourceEventIDs, [])
+        XCTAssertEqual(assessment.sourceContexts, [])
         XCTAssertTrue(
             VoiceAssessmentSchedule.shouldAssess(
                 existing: assessment,
@@ -85,6 +87,24 @@ final class VoiceAssessmentTests: XCTestCase {
                 at: Date(timeIntervalSinceReferenceDate: 60)
             )
         )
+    }
+
+    func testAssessmentPreservesDeletionLineage() {
+        let sourceID = UUID()
+        let sourceContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Source",
+            editorIdentifier: "source-editor"
+        )
+
+        let assessment = VoiceAssessmentAnalyzer.assess(
+            texts: Array(repeating: "short direct text", count: 10),
+            sourceEventCount: 10,
+            sourceEventIDs: [sourceID],
+            sourceContexts: [sourceContext]
+        )
+
+        XCTAssertEqual(assessment?.sourceEventIDs, [sourceID])
+        XCTAssertEqual(assessment?.sourceContexts, [sourceContext])
     }
 
     func testAssessmentSummarizesObservableWritingTraitsInFirstPerson() {

@@ -32,6 +32,7 @@ public struct CompletionGenerationMetadata:
 {
     public let providerKind: String
     public let modelIdentifier: String
+    public let endpointOrigin: String?
     public let maximumTokens: Int
     public let temperature: Double
     public let stopSequences: [String]
@@ -39,12 +40,14 @@ public struct CompletionGenerationMetadata:
     public init(
         providerKind: String,
         modelIdentifier: String,
+        endpointOrigin: String? = nil,
         maximumTokens: Int,
         temperature: Double,
         stopSequences: [String]
     ) {
         self.providerKind = providerKind
         self.modelIdentifier = modelIdentifier
+        self.endpointOrigin = endpointOrigin
         self.maximumTokens = maximumTokens
         self.temperature = temperature
         self.stopSequences = stopSequences
@@ -61,6 +64,8 @@ public struct CompletionInvocationCapture:
     public let prompt: CapturedCompletionPrompt
     public let generation: CompletionGenerationMetadata
     public let context: PersonalizationContext
+    public let sourceEventIDs: [UUID]
+    public let sourceContexts: [PersonalizationContext]
     public let startedAt: Date
 
     public init(
@@ -69,6 +74,8 @@ public struct CompletionInvocationCapture:
         prompt: CapturedCompletionPrompt,
         generation: CompletionGenerationMetadata,
         context: PersonalizationContext,
+        sourceEventIDs: [UUID] = [],
+        sourceContexts: [PersonalizationContext] = [],
         startedAt: Date
     ) {
         self.id = id
@@ -76,7 +83,47 @@ public struct CompletionInvocationCapture:
         self.prompt = prompt
         self.generation = generation
         self.context = context
+        self.sourceEventIDs = sourceEventIDs
+        self.sourceContexts = sourceContexts
         self.startedAt = startedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case field
+        case prompt
+        case generation
+        case context
+        case sourceEventIDs
+        case sourceContexts
+        case startedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        field = try container.decode(CapturedFieldState.self, forKey: .field)
+        prompt = try container.decode(
+            CapturedCompletionPrompt.self,
+            forKey: .prompt
+        )
+        generation = try container.decode(
+            CompletionGenerationMetadata.self,
+            forKey: .generation
+        )
+        context = try container.decode(
+            PersonalizationContext.self,
+            forKey: .context
+        )
+        sourceEventIDs = try container.decodeIfPresent(
+            [UUID].self,
+            forKey: .sourceEventIDs
+        ) ?? []
+        sourceContexts = try container.decodeIfPresent(
+            [PersonalizationContext].self,
+            forKey: .sourceContexts
+        ) ?? []
+        startedAt = try container.decode(Date.self, forKey: .startedAt)
     }
 }
 
@@ -139,6 +186,7 @@ public struct CompletionEpisodeCapture: Codable, Sendable, Equatable {
         acceptances.map(\.text).joined()
     }
     public let typedThroughText: String
+    public let generationDidFail: Bool
     public let resolution: CompletionEpisodeResolution
     public let finalField: CapturedFieldState
     public let actualInsertedText: String?
@@ -150,6 +198,7 @@ public struct CompletionEpisodeCapture: Codable, Sendable, Equatable {
         suggestionRevisions: [CompletionSuggestionRevision],
         acceptances: [CompletionAcceptanceCapture],
         typedThroughText: String,
+        generationDidFail: Bool = false,
         resolution: CompletionEpisodeResolution,
         finalField: CapturedFieldState,
         actualInsertedText: String?,
@@ -160,6 +209,7 @@ public struct CompletionEpisodeCapture: Codable, Sendable, Equatable {
         self.suggestionRevisions = suggestionRevisions
         self.acceptances = acceptances
         self.typedThroughText = typedThroughText
+        self.generationDidFail = generationDidFail
         self.resolution = resolution
         self.finalField = finalField
         self.actualInsertedText = actualInsertedText
@@ -167,12 +217,65 @@ public struct CompletionEpisodeCapture: Codable, Sendable, Equatable {
     }
 }
 
+public enum CompletionEpisodeReconciliationDecision:
+    Sendable,
+    Equatable
+{
+    case waitForAuthoritativeChange
+    case reconcile
+    case discardUnconfirmedAndReconcile
+}
+
+public enum CompletionEpisodeReconciliationPolicy {
+    public static func decision(
+        previousEditorIdentifier: String?,
+        observedEditorIdentifier: String,
+        previousAuthoritativeField: CapturedFieldState?,
+        invalidatedField: CapturedFieldState?,
+        observedField: CapturedFieldState
+    ) -> CompletionEpisodeReconciliationDecision {
+        guard let invalidatedField else {
+            return .reconcile
+        }
+        let focusChanged =
+            previousEditorIdentifier != observedEditorIdentifier
+        if !focusChanged, observedField == invalidatedField {
+            return .waitForAuthoritativeChange
+        }
+        if
+            focusChanged,
+            let previousAuthoritativeField,
+            invalidatedField != previousAuthoritativeField
+        {
+            return .discardUnconfirmedAndReconcile
+        }
+        return .reconcile
+    }
+}
+
+public enum CompletionEpisodePendingResolutionPolicy {
+    public static func resolve(
+        existing: CompletionEpisodeResolution?,
+        proposed: CompletionEpisodeResolution
+    ) -> CompletionEpisodeResolution {
+        existing ?? proposed
+    }
+}
+
 public struct CompletionEpisodeTracker: Sendable {
+    // OpenAICompatibleCompletionProvider stops after 4,096 sanitized
+    // characters. A cumulative stream can therefore expose at most this many
+    // distinct growing revisions in production.
+    private static let maximumRecordedSuggestionRevisions = 4_096
+
     private struct ActiveEpisode: Sendable {
         let invocation: CompletionInvocationCapture
         var suggestionRevisions: [CompletionSuggestionRevision]
         var acceptances: [CompletionAcceptanceCapture]
         var typedThroughText: String
+        var generationDidFail: Bool
+        var acceptedCharacterRanges: [Range<Int>]
+        var confirmedConsumedCharacterCount: Int
     }
 
     private var active: ActiveEpisode?
@@ -189,6 +292,16 @@ public struct CompletionEpisodeTracker: Sendable {
 
     public var hasAcceptedText: Bool {
         !(active?.acceptances.isEmpty ?? true)
+    }
+
+    public var hasSuggestionRevisions: Bool {
+        !(active?.suggestionRevisions.isEmpty ?? true)
+    }
+
+    public var abandonedSuggestionResolution:
+        CompletionEpisodeResolution
+    {
+        hasAcceptedText ? .partiallyAccepted : .rejected
     }
 
     public var completedSuggestionResolution:
@@ -215,7 +328,10 @@ public struct CompletionEpisodeTracker: Sendable {
             invocation: invocation,
             suggestionRevisions: [],
             acceptances: [],
-            typedThroughText: ""
+            typedThroughText: "",
+            generationDidFail: false,
+            acceptedCharacterRanges: [],
+            confirmedConsumedCharacterCount: 0
         )
     }
 
@@ -238,8 +354,15 @@ public struct CompletionEpisodeTracker: Sendable {
             active.suggestionRevisions[
                 active.suggestionRevisions.count - 1
             ] = revision
-        } else {
+        } else if
+            active.suggestionRevisions.count
+                < Self.maximumRecordedSuggestionRevisions
+        {
             active.suggestionRevisions.append(revision)
+        } else {
+            active.suggestionRevisions[
+                active.suggestionRevisions.count - 1
+            ] = revision
         }
         self.active = active
     }
@@ -250,6 +373,10 @@ public struct CompletionEpisodeTracker: Sendable {
         at date: Date = Date()
     ) {
         guard !text.isEmpty, var active else { return }
+        let rangeStart = active.confirmedConsumedCharacterCount
+        let rangeEnd = rangeStart + text.count
+        active.acceptedCharacterRanges.append(rangeStart..<rangeEnd)
+        active.confirmedConsumedCharacterCount = rangeEnd
         active.acceptances.append(
             CompletionAcceptanceCapture(
                 text: text,
@@ -260,9 +387,45 @@ public struct CompletionEpisodeTracker: Sendable {
         self.active = active
     }
 
-    public mutating func recordTypedThrough(_ text: String) {
-        guard !text.isEmpty, var active else { return }
-        active.typedThroughText += text
+    public mutating func synchronizeTypedThrough(
+        consumedSuggestionText: String
+    ) {
+        guard var active else { return }
+        let consumedCharacters = Array(consumedSuggestionText)
+        active.confirmedConsumedCharacterCount = consumedCharacters.count
+        active.typedThroughText = String(
+            consumedCharacters.enumerated().compactMap { index, character in
+                active.acceptedCharacterRanges.contains {
+                    $0.contains(index)
+                } ? nil : character
+            }
+        )
+        self.active = active
+    }
+
+    public mutating func recordGenerationFailure() {
+        guard var active else { return }
+        active.generationDidFail = true
+        self.active = active
+    }
+
+    public mutating func markSuggestionFinalIfObserved(
+        _ text: String,
+        at date: Date = Date()
+    ) {
+        guard
+            var active,
+            active.suggestionRevisions.last?.text == text
+        else {
+            return
+        }
+        active.suggestionRevisions[
+            active.suggestionRevisions.count - 1
+        ] = CompletionSuggestionRevision(
+            text: text,
+            isFinal: true,
+            observedAt: date
+        )
         self.active = active
     }
 
@@ -285,6 +448,7 @@ public struct CompletionEpisodeTracker: Sendable {
             suggestionRevisions: active.suggestionRevisions,
             acceptances: active.acceptances,
             typedThroughText: active.typedThroughText,
+            generationDidFail: active.generationDidFail,
             resolution: resolution,
             finalField: finalField,
             actualInsertedText: insertedText(

@@ -5,6 +5,8 @@ struct CompletionInvocationSeed: Sendable {
     let id: UUID
     let field: CapturedFieldState
     let context: PersonalizationContext
+    let sourceEventIDs: [UUID]
+    let sourceContexts: [PersonalizationContext]
     let startedAt: Date
 }
 
@@ -23,17 +25,20 @@ struct CompletionResponse: Sendable {
     let requestID: UInt64
     let text: String?
     let isFinal: Bool
+    let didFail: Bool
     let invocation: CompletionInvocationCapture?
 
     init(
         requestID: UInt64,
         text: String?,
         isFinal: Bool = true,
+        didFail: Bool = false,
         invocation: CompletionInvocationCapture? = nil
     ) {
         self.requestID = requestID
         self.text = text
         self.isFinal = isFinal
+        self.didFail = didFail
         self.invocation = invocation
     }
 }
@@ -104,7 +109,9 @@ struct HeuristicCompletionProvider: CompletionProvider {
 }
 
 struct OpenAICompatibleCompletionProvider: CompletionProvider {
-    private struct PreparedRequest {
+    private static let maximumRawCompletionCharacters = 16_384
+
+    struct PreparedRequest {
         let urlRequest: URLRequest
         let invocation: CompletionInvocationCapture?
     }
@@ -114,6 +121,23 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
     let model: String
     let apiStyle: CompletionAPIStyle
     let maximumWords: Int
+    private let urlSession: URLSession
+
+    init(
+        endpoint: URL,
+        apiKey: String?,
+        model: String,
+        apiStyle: CompletionAPIStyle,
+        maximumWords: Int,
+        urlSession: URLSession = .shared
+    ) {
+        self.endpoint = endpoint
+        self.apiKey = apiKey
+        self.model = model
+        self.apiStyle = apiStyle
+        self.maximumWords = maximumWords
+        self.urlSession = urlSession
+    }
 
     func complete(_ request: CompletionRequest) async -> CompletionResponse {
         let updates = await stream(request)
@@ -144,7 +168,7 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
         }
     }
 
-    private func makeURLRequest(
+    func makeURLRequest(
         for request: CompletionRequest,
         stream: Bool
     ) -> PreparedRequest {
@@ -252,6 +276,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
         let providerKind = isLocalHost
             ? "local-openai-compatible"
             : "openai-compatible"
+        let includesPersonalizationSources =
+            apiStyle != .gemmaChatPrefill
         let invocation = request.invocationSeed.map {
             CompletionInvocationCapture(
                 id: $0.id,
@@ -260,11 +286,20 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                 generation: CompletionGenerationMetadata(
                     providerKind: providerKind,
                     modelIdentifier: model,
+                    endpointOrigin: endpointOrigin,
                     maximumTokens: maximumTokens,
                     temperature: temperature,
                     stopSequences: stopSequences
                 ),
                 context: $0.context,
+                sourceEventIDs:
+                    includesPersonalizationSources
+                    ? $0.sourceEventIDs
+                    : [],
+                sourceContexts:
+                    includesPersonalizationSources
+                    ? $0.sourceContexts
+                    : [],
                 startedAt: $0.startedAt
             )
         }
@@ -274,6 +309,27 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
         )
     }
 
+    var endpointOrigin: String? {
+        guard
+            var components = URLComponents(
+                url: endpoint,
+                resolvingAgainstBaseURL: false
+            ),
+            components.scheme != nil,
+            components.host != nil
+        else {
+            return nil
+        }
+        components.user = nil
+        components.password = nil
+        components.path = ""
+        components.query = nil
+        components.fragment = nil
+        return components.string?.trimmingCharacters(in: CharacterSet(
+            charactersIn: "/"
+        ))
+    }
+
     private func performStreamingRequest(
         _ urlRequest: URLRequest,
         completionRequest request: CompletionRequest,
@@ -281,7 +337,7 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
         continuation: AsyncStream<CompletionResponse>.Continuation
     ) async {
         do {
-            let (bytes, response) = try await URLSession.shared.bytes(
+            let (bytes, response) = try await urlSession.bytes(
                 for: urlRequest
             )
             guard
@@ -292,6 +348,7 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                     CompletionResponse(
                         requestID: request.id,
                         text: nil,
+                        didFail: true,
                         invocation: invocation
                     )
                 )
@@ -318,7 +375,10 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
             }
 
             var decoder = CompletionStreamDecoder()
-            var rawText = ""
+            var rawText = BoundedCompletionTextAccumulator(
+                maximumCharacters:
+                    Self.maximumRawCompletionCharacters
+            )
             var lastPublishedText: String?
             var didFinish = false
             for try await line in bytes.lines {
@@ -326,8 +386,9 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                 guard let event = decoder.consume(line: line) else {
                     continue
                 }
-                rawText += event.delta
-                let text = sanitizedText(rawText, request: request)
+                let reachedRawTextLimit = rawText.append(event.delta)
+                let text = sanitizedText(rawText.text, request: request)
+                let isFinished = event.isFinished || reachedRawTextLimit
                 if
                     let text,
                     !text.isEmpty,
@@ -339,11 +400,11 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                         CompletionResponse(
                             requestID: request.id,
                             text: text,
-                            isFinal: event.isFinished,
+                            isFinal: isFinished,
                             invocation: invocation
                         )
                     )
-                } else if event.isFinished {
+                } else if isFinished {
                     continuation.yield(
                         CompletionResponse(
                             requestID: request.id,
@@ -353,17 +414,16 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                         )
                     )
                 }
-                if event.isFinished {
+                if isFinished {
                     didFinish = true
                     break
                 }
             }
             if !didFinish {
                 continuation.yield(
-                    CompletionResponse(
+                    CompletionStreamTermination.failedResponse(
                         requestID: request.id,
-                        text: lastPublishedText,
-                        isFinal: true,
+                        lastPublishedText: lastPublishedText,
                         invocation: invocation
                     )
                 )
@@ -376,6 +436,7 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                 CompletionResponse(
                     requestID: request.id,
                     text: nil,
+                    didFail: true,
                     invocation: invocation
                 )
             )
@@ -399,6 +460,7 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
             text: rawText.flatMap {
                 sanitizedText($0, request: request)
             },
+            didFail: payload == nil,
             invocation: invocation
         )
     }
@@ -450,6 +512,22 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
             remainder.removeFirst()
         }
         return remainder.first == " " || remainder.first == "\t"
+    }
+}
+
+enum CompletionStreamTermination {
+    static func failedResponse(
+        requestID: UInt64,
+        lastPublishedText: String?,
+        invocation: CompletionInvocationCapture?
+    ) -> CompletionResponse {
+        CompletionResponse(
+            requestID: requestID,
+            text: lastPublishedText,
+            isFinal: true,
+            didFail: true,
+            invocation: invocation
+        )
     }
 }
 

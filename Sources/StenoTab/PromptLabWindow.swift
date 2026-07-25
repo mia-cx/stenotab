@@ -843,7 +843,8 @@ private struct ContextPrivacyView: View {
                             "Read up to 2,000 characters of text from the "
                             + "clipboard as read-only model context. StenoTab "
                             + "never inserts clipboard contents. Off by "
-                            + "default and never retained.",
+                            + "default. Completion history can retain the "
+                            + "model input when collection is enabled.",
                         isOn: clipboardEnabled
                     )
                     Divider()
@@ -851,8 +852,10 @@ private struct ContextPrivacyView: View {
                         title: "Snapshots / OCR",
                         detail:
                             "Capture the focused app window when an editor "
-                            + "gains focus. Text "
-                            + "is recognized locally and kept only in memory.",
+                            + "gains focus. The screenshot is discarded after "
+                            + "local recognition. Completion history can "
+                            + "retain recognized text included in model input "
+                            + "when collection is enabled.",
                         isOn: configuration.context.includeOCR
                     )
                     Divider()
@@ -2057,7 +2060,9 @@ private struct PromptLabView: View {
                 title: "Snapshots / OCR",
                 detail:
                     "Include text recognized locally from the focused app "
-                    + "window.",
+                    + "window. The screenshot is discarded after local "
+                    + "recognition. Completion history can retain recognized "
+                    + "text in model input when collection is enabled.",
                 isOn: configuration.context.includeOCR,
                 debugMode: store.configuration.debugMode,
                 framing: configuration.baseFraming.ocrHeading,
@@ -2069,7 +2074,9 @@ private struct PromptLabView: View {
                 title: "Clipboard contents",
                 detail:
                     "Include clipboard text as read-only model context. "
-                    + "Clipboard contents are never inserted.",
+                    + "Clipboard contents are never inserted. Completion "
+                    + "history can retain the model input when collection is "
+                    + "enabled.",
                 isOn: clipboardEnabled,
                 debugMode: store.configuration.debugMode,
                 framing: configuration.baseFraming.clipboardHeading,

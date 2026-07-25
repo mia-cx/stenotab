@@ -10,6 +10,23 @@ public struct CompletionStreamEvent: Equatable, Sendable {
     }
 }
 
+public struct BoundedCompletionTextAccumulator: Equatable, Sendable {
+    public let maximumCharacters: Int
+    public private(set) var text = ""
+
+    public init(maximumCharacters: Int) {
+        self.maximumCharacters = max(0, maximumCharacters)
+    }
+
+    @discardableResult
+    public mutating func append(_ delta: String) -> Bool {
+        let remaining = maximumCharacters - text.count
+        guard remaining > 0 else { return true }
+        text += delta.prefix(remaining)
+        return text.count >= maximumCharacters
+    }
+}
+
 public struct CompletionStreamDecoder: Sendable {
     public init() {}
 

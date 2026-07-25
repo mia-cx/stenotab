@@ -75,9 +75,12 @@ final class PersonalizationSettingsStore: ObservableObject {
     @Published private(set) var voiceAssessment: VoiceAssessment?
 
     private let defaults: UserDefaults
+    private var collectionGeneration: UInt64 = 0
     private var database: PersonalizationDatabase?
     private var isHistoryInspectorVisible = false
     private var modelWorker: PersonalizationModelWorker?
+    private var pendingPersistenceTasks: [UUID: Task<Void, Never>] = [:]
+    private var persistenceTail: Task<Void, Never>?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -102,7 +105,7 @@ final class PersonalizationSettingsStore: ObservableObject {
         self.database = database
         let worker = PersonalizationModelWorker(database: database)
         modelWorker = worker
-        Task {
+        enqueuePersistenceOperation { [self] in
             do {
                 languageModel = try await worker.prepare()
                 voiceAssessment = await worker.voiceAssessmentSnapshot()
@@ -115,7 +118,7 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func refresh() {
         guard let database else { return }
-        Task {
+        enqueuePersistenceOperation { [self] in
             do {
                 let statistics = try await database.storageStatistics()
                 storedEventCount = statistics.eventCount
@@ -186,9 +189,13 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func deleteAll() {
         guard let modelWorker else { return }
-        Task {
+        collectionGeneration &+= 1
+        let generation = collectionGeneration
+        enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await modelWorker.deleteAll()
+                languageModel = try await modelWorker.deleteAll(
+                    generation: generation
+                )
                 voiceAssessment = nil
                 storedEventCount = 0
                 encryptedPayloadBytes = 0
@@ -205,11 +212,13 @@ final class PersonalizationSettingsStore: ObservableObject {
     func record(_ capture: AcceptedSuggestionCapture) {
         guard collectionEnabled, let modelWorker else { return }
         let policy = retentionPolicy
-        Task {
+        let generation = collectionGeneration
+        enqueuePersistenceOperation { [self] in
             do {
                 languageModel = try await modelWorker.record(
                     capture,
-                    retentionPolicy: policy
+                    retentionPolicy: policy,
+                    generation: generation
                 )
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
@@ -229,11 +238,13 @@ final class PersonalizationSettingsStore: ObservableObject {
             return
         }
         let policy = retentionPolicy
-        Task {
+        let generation = collectionGeneration
+        enqueuePersistenceOperation { [self] in
             do {
                 languageModel = try await modelWorker.record(
                     episode,
-                    retentionPolicy: policy
+                    retentionPolicy: policy,
+                    generation: generation
                 )
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
@@ -247,11 +258,13 @@ final class PersonalizationSettingsStore: ObservableObject {
     func record(_ feedback: CompletionFeedbackCapture) {
         guard collectionEnabled, let modelWorker else { return }
         let policy = retentionPolicy
-        Task {
+        let generation = collectionGeneration
+        enqueuePersistenceOperation { [self] in
             do {
                 languageModel = try await modelWorker.record(
                     feedback,
-                    retentionPolicy: policy
+                    retentionPolicy: policy,
+                    generation: generation
                 )
                 try await refreshAfterRecording(.none)
             } catch {
@@ -263,11 +276,13 @@ final class PersonalizationSettingsStore: ObservableObject {
     func record(_ episode: CompletionEpisodeCapture) {
         guard collectionEnabled, let modelWorker else { return }
         let policy = retentionPolicy
-        Task {
+        let generation = collectionGeneration
+        enqueuePersistenceOperation { [self] in
             do {
                 languageModel = try await modelWorker.record(
                     episode,
-                    retentionPolicy: policy
+                    retentionPolicy: policy,
+                    generation: generation
                 )
                 try await refreshAfterRecording(.completionEpisodes)
             } catch {
@@ -276,11 +291,39 @@ final class PersonalizationSettingsStore: ObservableObject {
         }
     }
 
+    func flushPendingPersistence() async {
+        while !pendingPersistenceTasks.isEmpty {
+            let tasks = Array(pendingPersistenceTasks.values)
+            for task in tasks {
+                await task.value
+            }
+        }
+    }
+
+    private func enqueuePersistenceOperation(
+        _ operation: @escaping @MainActor () async -> Void
+    ) {
+        let id = UUID()
+        let predecessor = persistenceTail
+        let task = Task { [weak self] in
+            await predecessor?.value
+            await operation()
+            self?.pendingPersistenceTasks.removeValue(forKey: id)
+        }
+        pendingPersistenceTasks[id] = task
+        persistenceTail = task
+    }
+
     func deleteEvent(id: UUID) {
         guard let modelWorker else { return }
-        Task {
+        collectionGeneration &+= 1
+        let generation = collectionGeneration
+        enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await modelWorker.deleteEvent(id: id)
+                languageModel = try await modelWorker.deleteEvent(
+                    id: id,
+                    generation: generation
+                )
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
                 refresh()
@@ -292,11 +335,14 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func deleteApplicationHistory(bundleIdentifier: String) {
         guard let modelWorker else { return }
-        Task {
+        collectionGeneration &+= 1
+        let generation = collectionGeneration
+        enqueuePersistenceOperation { [self] in
             do {
                 languageModel = try await modelWorker.deleteEvents(
                     scopeKind: "application",
-                    value: bundleIdentifier
+                    value: bundleIdentifier,
+                    generation: generation
                 )
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
@@ -333,11 +379,14 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func enforceRetention() {
         guard let modelWorker else { return }
+        collectionGeneration &+= 1
+        let generation = collectionGeneration
         let policy = retentionPolicy
-        Task {
+        enqueuePersistenceOperation { [self] in
             do {
                 languageModel = try await modelWorker.enforceRetention(
-                    policy
+                    policy,
+                    generation: generation
                 )
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
@@ -354,7 +403,7 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func reassessVoice() {
         guard let modelWorker else { return }
-        Task {
+        enqueuePersistenceOperation { [self] in
             do {
                 voiceAssessment = try await modelWorker.reassessVoice()
                 operationError = nil
@@ -393,10 +442,15 @@ final class PersonalizationSettingsStore: ObservableObject {
     }
 }
 
-private actor PersonalizationModelWorker {
+actor PersonalizationModelWorker {
     private struct EmbeddedText {
         let modelIdentifier: String
         let vector: [Double]
+    }
+
+    private struct VoiceSource {
+        let id: UUID
+        let context: PersonalizationContext
     }
 
     private let database: PersonalizationDatabase
@@ -407,6 +461,11 @@ private actor PersonalizationModelWorker {
     private var voiceAssessment: VoiceAssessment?
     private var voiceTexts: [String] = []
     private var voiceSourceEventCount = 0
+    private var voiceSources: [VoiceSource] = []
+    private var collectionGeneration: UInt64 = 0
+    private var collectionOperationIsRunning = false
+    private var collectionOperationWaiters:
+        [CheckedContinuation<Void, Never>] = []
 
     init(database: PersonalizationDatabase) {
         self.database = database
@@ -427,8 +486,12 @@ private actor PersonalizationModelWorker {
 
     func record(
         _ capture: AcceptedSuggestionCapture,
-        retentionPolicy: PersonalizationRetentionPolicy
+        retentionPolicy: PersonalizationRetentionPolicy,
+        generation: UInt64
     ) async throws -> PersonalLanguageModel {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        guard generation == collectionGeneration else { return model }
         try await database.record(capture)
         model.ingest(capture)
         try await database.saveLanguageModel(model)
@@ -438,6 +501,7 @@ private actor PersonalizationModelWorker {
         try await embedIfNeeded(example)
         voiceTexts.append(capture.field.text + capture.insertion)
         voiceSourceEventCount += 1
+        appendVoiceSource(id: capture.id, context: capture.context)
         try await updateVoiceAssessmentIfNeeded()
         let removed = try await database.enforceRetention(retentionPolicy)
         if removed > 0 {
@@ -448,8 +512,12 @@ private actor PersonalizationModelWorker {
 
     func record(
         _ episode: WritingEpisodeCapture,
-        retentionPolicy: PersonalizationRetentionPolicy
+        retentionPolicy: PersonalizationRetentionPolicy,
+        generation: UInt64
     ) async throws -> PersonalLanguageModel {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        guard generation == collectionGeneration else { return model }
         try await database.record(episode)
         model.ingest(episode)
         try await database.saveLanguageModel(model)
@@ -462,14 +530,19 @@ private actor PersonalizationModelWorker {
         )
         voiceTexts.append(episode.finalField.text)
         voiceSourceEventCount += 1
+        appendVoiceSource(id: episode.id, context: episode.context)
         try await updateVoiceAssessmentIfNeeded()
         return model
     }
 
     func record(
         _ feedback: CompletionFeedbackCapture,
-        retentionPolicy: PersonalizationRetentionPolicy
+        retentionPolicy: PersonalizationRetentionPolicy,
+        generation: UInt64
     ) async throws -> PersonalLanguageModel {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        guard generation == collectionGeneration else { return model }
         try await database.record(feedback)
         model.ingest(feedback)
         try await database.saveLanguageModel(model)
@@ -482,8 +555,12 @@ private actor PersonalizationModelWorker {
 
     func record(
         _ episode: CompletionEpisodeCapture,
-        retentionPolicy: PersonalizationRetentionPolicy
+        retentionPolicy: PersonalizationRetentionPolicy,
+        generation: UInt64
     ) async throws -> PersonalLanguageModel {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        guard generation == collectionGeneration else { return model }
         try await database.record(episode)
         let removed = try await database.enforceRetention(retentionPolicy)
         if removed > 0 {
@@ -492,15 +569,25 @@ private actor PersonalizationModelWorker {
         return model
     }
 
-    func deleteEvent(id: UUID) async throws -> PersonalLanguageModel {
+    func deleteEvent(
+        id: UUID,
+        generation: UInt64
+    ) async throws -> PersonalLanguageModel {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        collectionGeneration = max(collectionGeneration, generation)
         try await database.deleteEvent(id: id)
         return try await rebuild()
     }
 
     func deleteEvents(
         scopeKind: String,
-        value: String
+        value: String,
+        generation: UInt64
     ) async throws -> PersonalLanguageModel {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        collectionGeneration = max(collectionGeneration, generation)
         _ = try await database.deleteEvents(
             scopeKind: scopeKind,
             value: value
@@ -509,13 +596,20 @@ private actor PersonalizationModelWorker {
     }
 
     func enforceRetention(
-        _ policy: PersonalizationRetentionPolicy
+        _ policy: PersonalizationRetentionPolicy,
+        generation: UInt64
     ) async throws -> PersonalLanguageModel {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        collectionGeneration = max(collectionGeneration, generation)
         let removed = try await database.enforceRetention(policy)
         return removed > 0 ? try await rebuild() : model
     }
 
-    func deleteAll() async throws -> PersonalLanguageModel {
+    func deleteAll(generation: UInt64) async throws -> PersonalLanguageModel {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        collectionGeneration = max(collectionGeneration, generation)
         try await database.deleteAll()
         model = PersonalLanguageModel()
         examples = []
@@ -523,8 +617,27 @@ private actor PersonalizationModelWorker {
         embeddings = [:]
         voiceTexts = []
         voiceSourceEventCount = 0
+        voiceSources = []
         voiceAssessment = nil
         return model
+    }
+
+    private func acquireCollectionOperation() async {
+        guard collectionOperationIsRunning else {
+            collectionOperationIsRunning = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            collectionOperationWaiters.append(continuation)
+        }
+    }
+
+    private func releaseCollectionOperation() {
+        guard !collectionOperationWaiters.isEmpty else {
+            collectionOperationIsRunning = false
+            return
+        }
+        collectionOperationWaiters.removeFirst().resume()
     }
 
     func voiceAssessmentSnapshot() -> VoiceAssessment? {
@@ -548,7 +661,9 @@ private actor PersonalizationModelWorker {
         guard let query = embedding(for: prefix) else {
             return PersonalizationPromptContext(
                 frecentExamples:
-                    PersonalizationExample.promptValue(from: frecent)
+                    PersonalizationExample.promptValue(from: frecent),
+                frecentSourceEventIDs: sourceEventIDs(from: frecent),
+                frecentSourceContexts: sourceContexts(from: frecent)
             )
         }
         let candidateVectors = Dictionary(
@@ -578,8 +693,46 @@ private actor PersonalizationModelWorker {
             relevantExamples: PersonalizationExample.promptValue(
                 from: relevant
             ),
-            voiceAssessment: voiceAssessment?.summary
+            voiceAssessment: voiceAssessment?.summary,
+            frecentSourceEventIDs: sourceEventIDs(from: frecent),
+            frecentSourceContexts: sourceContexts(from: frecent),
+            relevantSourceEventIDs: sourceEventIDs(from: relevant),
+            relevantSourceContexts: sourceContexts(from: relevant),
+            voiceSourceEventIDs: voiceAssessment?.sourceEventIDs ?? [],
+            voiceSourceContexts: voiceAssessment?.sourceContexts ?? []
         )
+    }
+
+    private func appendVoiceSource(
+        id: UUID,
+        context: PersonalizationContext
+    ) {
+        voiceSources.append(VoiceSource(id: id, context: context))
+        let excess = max(0, voiceSources.count - 200)
+        if excess > 0 {
+            voiceSources.removeFirst(excess)
+            voiceTexts.removeFirst(excess)
+        }
+    }
+
+    private func sourceEventIDs(
+        from examples: [PersonalizationExample]
+    ) -> [UUID] {
+        examples.reduce(into: []) { result, example in
+            if !result.contains(example.id) {
+                result.append(example.id)
+            }
+        }
+    }
+
+    private func sourceContexts(
+        from examples: [PersonalizationExample]
+    ) -> [PersonalizationContext] {
+        examples.reduce(into: []) { result, example in
+            if !result.contains(example.context) {
+                result.append(example.context)
+            }
+        }
     }
 
     private func rebuild() async throws -> PersonalLanguageModel {
@@ -621,12 +774,26 @@ private actor PersonalizationModelWorker {
         for example in semanticExamples {
             try await embedIfNeeded(example)
         }
-        voiceTexts = Array(
-            (
-                episodes.map(\.finalField.text)
-                    + accepted.map { $0.field.text + $0.insertion }
-            ).suffix(200)
-        )
+        let voiceInputs =
+            episodes.map {
+                (
+                    text: $0.finalField.text,
+                    id: $0.id,
+                    context: $0.context
+                )
+            }
+            + accepted.map {
+                (
+                    text: $0.field.text + $0.insertion,
+                    id: $0.id,
+                    context: $0.context
+                )
+            }
+        let recentVoiceInputs = Array(voiceInputs.suffix(200))
+        voiceTexts = recentVoiceInputs.map(\.text)
+        voiceSources = recentVoiceInputs.map {
+            VoiceSource(id: $0.id, context: $0.context)
+        }
         voiceSourceEventCount = episodes.count + accepted.count
     }
 
@@ -698,7 +865,19 @@ private actor PersonalizationModelWorker {
         guard
             let updated = VoiceAssessmentAnalyzer.assess(
                 texts: voiceTexts,
-                sourceEventCount: sourceEventCount
+                sourceEventCount: sourceEventCount,
+                sourceEventIDs: voiceSources.reduce(into: []) {
+                    result, source in
+                    if !result.contains(source.id) {
+                        result.append(source.id)
+                    }
+                },
+                sourceContexts: voiceSources.reduce(into: []) {
+                    result, source in
+                    if !result.contains(source.context) {
+                        result.append(source.context)
+                    }
+                }
             )
         else {
             voiceAssessment = nil

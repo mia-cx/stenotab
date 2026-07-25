@@ -7,19 +7,58 @@ public struct VoiceAssessment: Codable, Sendable, Equatable {
     public let sourceEventCount: Int
     public let generatedAt: Date
     public let analyzerVersion: Int?
+    public let sourceEventIDs: [UUID]
+    public let sourceContexts: [PersonalizationContext]
 
     public init(
         summary: String,
         sampleCount: Int,
         sourceEventCount: Int,
         generatedAt: Date,
-        analyzerVersion: Int? = VoiceAssessmentAnalyzer.currentVersion
+        analyzerVersion: Int? = VoiceAssessmentAnalyzer.currentVersion,
+        sourceEventIDs: [UUID] = [],
+        sourceContexts: [PersonalizationContext] = []
     ) {
         self.summary = summary
         self.sampleCount = sampleCount
         self.sourceEventCount = sourceEventCount
         self.generatedAt = generatedAt
         self.analyzerVersion = analyzerVersion
+        self.sourceEventIDs = sourceEventIDs
+        self.sourceContexts = sourceContexts
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case summary
+        case sampleCount
+        case sourceEventCount
+        case generatedAt
+        case analyzerVersion
+        case sourceEventIDs
+        case sourceContexts
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        summary = try container.decode(String.self, forKey: .summary)
+        sampleCount = try container.decode(Int.self, forKey: .sampleCount)
+        sourceEventCount = try container.decode(
+            Int.self,
+            forKey: .sourceEventCount
+        )
+        generatedAt = try container.decode(Date.self, forKey: .generatedAt)
+        analyzerVersion = try container.decodeIfPresent(
+            Int.self,
+            forKey: .analyzerVersion
+        )
+        sourceEventIDs = try container.decodeIfPresent(
+            [UUID].self,
+            forKey: .sourceEventIDs
+        ) ?? []
+        sourceContexts = try container.decodeIfPresent(
+            [PersonalizationContext].self,
+            forKey: .sourceContexts
+        ) ?? []
     }
 }
 
@@ -46,13 +85,15 @@ public enum VoiceAssessmentSchedule {
 }
 
 public enum VoiceAssessmentAnalyzer {
-    public static let currentVersion = 2
+    public static let currentVersion = 3
     private typealias LanguageHypothesis =
         (language: NLLanguage, confidence: Double)
 
     public static func assess(
         texts: [String],
         sourceEventCount: Int,
+        sourceEventIDs: [UUID] = [],
+        sourceContexts: [PersonalizationContext] = [],
         at date: Date = Date()
     ) -> VoiceAssessment? {
         let samples = texts
@@ -156,7 +197,9 @@ public enum VoiceAssessmentAnalyzer {
             summary: traits.joined(separator: " "),
             sampleCount: samples.count,
             sourceEventCount: sourceEventCount,
-            generatedAt: date
+            generatedAt: date,
+            sourceEventIDs: sourceEventIDs,
+            sourceContexts: sourceContexts
         )
     }
 

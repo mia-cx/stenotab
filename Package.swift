@@ -60,6 +60,14 @@ let package = Package(
         .testTarget(
             name: "StenoTabPersistenceTests",
             dependencies: ["CompletionCore", "StenoTabPersistence"]
+        ),
+        .testTarget(
+            name: "StenoTabTests",
+            dependencies: [
+                "CompletionCore",
+                "StenoTab",
+                "StenoTabPersistence",
+            ]
         )
     ]
 )

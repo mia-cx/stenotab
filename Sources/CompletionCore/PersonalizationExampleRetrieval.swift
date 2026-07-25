@@ -76,7 +76,7 @@ public struct PersonalizationExample:
                 return nil
             }
             return PersonalizationExample(
-                id: UUID(),
+                id: episode.id,
                 inputText: fieldBefore.text,
                 insertion: edit.insertedText,
                 context: episode.context,
@@ -91,18 +91,68 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
     public let frecentExamples: String?
     public let relevantExamples: String?
     public let voiceAssessment: String?
+    public let frecentSourceEventIDs: [UUID]
+    public let frecentSourceContexts: [PersonalizationContext]
+    public let relevantSourceEventIDs: [UUID]
+    public let relevantSourceContexts: [PersonalizationContext]
+    public let voiceSourceEventIDs: [UUID]
+    public let voiceSourceContexts: [PersonalizationContext]
 
     public init(
         frecentExamples: String? = nil,
         relevantExamples: String? = nil,
-        voiceAssessment: String? = nil
+        voiceAssessment: String? = nil,
+        frecentSourceEventIDs: [UUID] = [],
+        frecentSourceContexts: [PersonalizationContext] = [],
+        relevantSourceEventIDs: [UUID] = [],
+        relevantSourceContexts: [PersonalizationContext] = [],
+        voiceSourceEventIDs: [UUID] = [],
+        voiceSourceContexts: [PersonalizationContext] = []
     ) {
         self.frecentExamples = frecentExamples
         self.relevantExamples = relevantExamples
         self.voiceAssessment = voiceAssessment
+        self.frecentSourceEventIDs = frecentSourceEventIDs
+        self.frecentSourceContexts = frecentSourceContexts
+        self.relevantSourceEventIDs = relevantSourceEventIDs
+        self.relevantSourceContexts = relevantSourceContexts
+        self.voiceSourceEventIDs = voiceSourceEventIDs
+        self.voiceSourceContexts = voiceSourceContexts
     }
 
     public static let empty = PersonalizationPromptContext()
+
+    public func sourceEventIDs(
+        includeFrecent: Bool,
+        includeRelevant: Bool,
+        includeVoiceAssessment: Bool = false
+    ) -> [UUID] {
+        let candidates =
+            (includeFrecent ? frecentSourceEventIDs : [])
+            + (includeRelevant ? relevantSourceEventIDs : [])
+            + (includeVoiceAssessment ? voiceSourceEventIDs : [])
+        return candidates.reduce(into: []) { result, id in
+            if !result.contains(id) {
+                result.append(id)
+            }
+        }
+    }
+
+    public func sourceContexts(
+        includeFrecent: Bool,
+        includeRelevant: Bool,
+        includeVoiceAssessment: Bool = false
+    ) -> [PersonalizationContext] {
+        let candidates =
+            (includeFrecent ? frecentSourceContexts : [])
+            + (includeRelevant ? relevantSourceContexts : [])
+            + (includeVoiceAssessment ? voiceSourceContexts : [])
+        return candidates.reduce(into: []) { result, context in
+            if !result.contains(context) {
+                result.append(context)
+            }
+        }
+    }
 }
 
 public enum FrecentExampleRetriever {

@@ -40,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         referenceDate: Date()
     )
     private var calendarDayObserver: NSObjectProtocol?
+    private var isPreparingToTerminate = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -122,11 +123,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        coordinator?.stop()
         if let calendarDayObserver {
             NotificationCenter.default.removeObserver(calendarDayObserver)
         }
         localModelTask?.cancel()
         localServer?.stop()
+    }
+
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard !isPreparingToTerminate else {
+            return .terminateLater
+        }
+        isPreparingToTerminate = true
+        coordinator?.stop()
+        Task { [personalizationSettings] in
+            await personalizationSettings.flushPendingPersistence()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     private func installStatusItem(for coordinator: CompletionCoordinator) {

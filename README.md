@@ -193,22 +193,32 @@ sample with data for every planned component.
 - Secure and password fields are excluded.
 - With the default `127.0.0.1` Server URL, local-model completion requests stay
   on the Mac. Changing that URL can send enabled context to another host.
-- Reading clipboard text for prompt context is opt-in, limited to 2,000
-  characters, assembled in memory, and not retained.
+- Reading clipboard text for prompt context is opt-in and limited to 2,000
+  characters. StenoTab assembles it in memory for the request. When
+  personalization collection is enabled, completion history can retain the
+  encrypted model input and include it in readable JSON exports until it is
+  deleted or expires under the retention policy.
 - Screenshot/OCR context is opt-in and requires Screen Recording permission.
   StenoTab captures only the focused app window—not the full display—when focus
   enters an editor. A new typing burst refreshes the capture only when the
   cached result is stale. Vision recognizes the text locally, the screenshot is
   discarded immediately, and up to 6,000 characters of normalized OCR text are
-  retained in memory for the current editor.
+  cached in memory for the current editor. When personalization collection is
+  enabled, completion history can retain OCR text included in the encrypted
+  model input and readable JSON exports.
 - Suggestion acceptance posts literal Unicode keyboard events; it does not
   paste clipboard content or replace the pasteboard.
 - Personalization collection is enabled by default and can be disabled in
   **Settings → Personalization**. Canonical full-field events, scope values,
   derived language models, embeddings, and voice assessments are encrypted at
   rest with a Keychain-backed key. Only HMAC lookup keys, event kinds,
-  timestamps, vector dimensions, and model identifiers remain queryable
-  metadata.
+  timestamps, vector dimensions, model identifiers, encrypted text-chunk byte
+  counts, and opaque chunk reuse/reference relationships remain queryable
+  metadata. Short or final chunks can therefore reveal their exact plaintext
+  UTF-8 byte count, but not their content, without the Keychain key.
+- SQLite full secure deletion is enabled so record, scope, retention, and
+  Delete All operations overwrite deleted encrypted payload bytes rather than
+  leaving recoverable ciphertext in free pages.
 - Personalization work runs in a background actor. Key callbacks only update
   the in-memory shadow buffer and schedule work.
 - Export is an explicit user action and produces readable JSON at the selected

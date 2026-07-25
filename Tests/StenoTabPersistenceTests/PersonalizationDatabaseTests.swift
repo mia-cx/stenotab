@@ -128,9 +128,16 @@ final class PersonalizationDatabaseTests: XCTestCase {
                     observedAt: date.addingTimeInterval(0.1)
                 )
             ],
-            acceptances: [],
-            typedThroughText: "",
-            resolution: .rejected,
+            acceptances: [
+                CompletionAcceptanceCapture(
+                    text: " sug",
+                    scope: .nextWord,
+                    acceptedAt: date.addingTimeInterval(0.15)
+                )
+            ],
+            typedThroughText: "gestion",
+            generationDidFail: true,
+            resolution: .partiallyAccepted,
             finalField: CapturedFieldState(
                 text: "private input outcome",
                 selection: UTF16Selection(location: 21, length: 0)
@@ -198,6 +205,182 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(latestSupported, [newerSupported])
     }
 
+    func testLegacyCompletionEpisodeWithoutLineageIsRemovedOnUpgrade()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: "version two input",
+            suggestion: " retained suggestion",
+            outcome: " retained outcome",
+            date: Date(timeIntervalSince1970: 405)
+        )
+
+        try await fixture.database
+            .recordVersionTwoCompletionEpisodeForTesting(episode)
+
+        let reopened = try PersonalizationDatabase(
+            databaseURL: fixture.directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let hydrated = try await reopened.completionEpisodes()
+        let eventCount = try await reopened.eventCount()
+        XCTAssertEqual(hydrated, [])
+        XCTAssertEqual(eventCount, 0)
+    }
+
+    func testLegacyMigrationAuthenticatesRowsBeforeDeleting() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let legacy = makeCompletionEpisode(
+            id: UUID(),
+            input: "legacy input",
+            suggestion: " legacy",
+            outcome: " legacy outcome",
+            date: Date(timeIntervalSince1970: 405)
+        )
+        let current = makeCompletionEpisode(
+            id: UUID(),
+            input: "current input",
+            suggestion: " current",
+            outcome: " current outcome",
+            date: Date(timeIntervalSince1970: 406)
+        )
+        try await fixture.database
+            .recordVersionTwoCompletionEpisodeForTesting(legacy)
+        try await fixture.database.record(current)
+        let swapped = try await fixture.database
+            .swapFirstTwoCompletionEventPayloadsForTesting()
+        XCTAssertTrue(swapped)
+
+        let reopened = try PersonalizationDatabase(
+            databaseURL: fixture.directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let countBeforeDelete = try await reopened.eventCount()
+        XCTAssertEqual(countBeforeDelete, 2)
+
+        try await reopened.deleteAll()
+        let countAfterDelete = try await reopened.eventCount()
+        XCTAssertEqual(countAfterDelete, 0)
+    }
+
+    func testLegacyMigrationDoesNotDeleteRowWithCorruptedKind()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let capture = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                id: UUID(),
+                fieldText: "canonical private input",
+                selection: UTF16Selection(location: 23, length: 0),
+                insertion: " continuation",
+                acceptanceScope: .entireSuggestion,
+                context: PersonalizationContext(editorIdentifier: "editor")
+            )
+        )
+        try await fixture.database.record(capture)
+        try await fixture.database.replaceEventKindForTesting(
+            eventID: capture.id,
+            kind: "completion_episode"
+        )
+
+        let reopened = try PersonalizationDatabase(
+            databaseURL: fixture.directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let countAfterMigration = try await reopened.eventCount()
+        XCTAssertEqual(countAfterMigration, 1)
+
+        try await reopened.deleteAll()
+        let countAfterDelete = try await reopened.eventCount()
+        XCTAssertEqual(countAfterDelete, 0)
+    }
+
+    func testCorruptEpisodeCanReopenAndDeleteAll() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        try await fixture.database.record(
+            makeCompletionEpisode(
+                id: UUID(),
+                input: "corrupt private input",
+                suggestion: " corrupt",
+                outcome: " corrupt outcome",
+                date: Date(timeIntervalSince1970: 406)
+            )
+        )
+        let corrupted = try await fixture.database
+            .corruptFirstCompletionEventPayloadForTesting()
+        XCTAssertTrue(corrupted)
+
+        let reopened = try PersonalizationDatabase(
+            databaseURL: fixture.directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let countBeforeDelete = try await reopened.eventCount()
+        XCTAssertEqual(countBeforeDelete, 1)
+
+        try await reopened.deleteAll()
+        let countAfterDelete = try await reopened.eventCount()
+        XCTAssertEqual(countAfterDelete, 0)
+    }
+
+    func testTargetedDeleteFailsClosedForUnsupportedEpisodeVersion()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let supported = makeCompletionEpisode(
+            id: UUID(),
+            input: "supported input",
+            suggestion: " supported",
+            outcome: " supported outcome",
+            date: Date(timeIntervalSince1970: 406)
+        )
+        try await fixture.database.record(supported)
+        try await fixture.database.recordUnsupportedCompletionEpisodeForTesting(
+            id: UUID(),
+            storageVersion: 999,
+            capturedAt: Date(timeIntervalSince1970: 407)
+        )
+
+        do {
+            try await fixture.database.deleteEvent(id: supported.id)
+            XCTFail("Expected targeted deletion to fail closed")
+        } catch {
+            XCTAssertTrue(
+                String(describing: error).contains(
+                    "Unsupported completion episode storage version"
+                )
+            )
+        }
+        let countBeforeDelete = try await fixture.database.eventCount()
+        XCTAssertEqual(countBeforeDelete, 2)
+
+        try await fixture.database.deleteAll()
+        let countAfterDelete = try await fixture.database.eventCount()
+        XCTAssertEqual(countAfterDelete, 0)
+    }
+
     func testTextDeltasPreserveDifferentlyNormalizedUTF8Exactly() throws {
         let composed = "Café déjà vu"
         let decomposed = "Cafe\u{301} de\u{301}ja\u{300} vu"
@@ -208,6 +391,143 @@ final class PersonalizationDatabaseTests: XCTestCase {
             Data(try XCTUnwrap(delta.applying(to: composed)).utf8),
             Data(decomposed.utf8)
         )
+    }
+
+    func testHydrationRejectsChunkCiphertextSubstitution() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: String(repeating: "first private block ", count: 80),
+            suggestion: " suggestion",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 406)
+        )
+        try await fixture.database.record(episode)
+        let swapped = try await fixture.database
+            .swapFirstTwoTextChunkPayloadsForTesting()
+        XCTAssertTrue(swapped)
+
+        do {
+            _ = try await fixture.database.completionEpisodes()
+            XCTFail("Expected substituted chunk ciphertext to be rejected")
+        } catch {
+            XCTAssertTrue(
+                String(describing: error).contains("HMAC mismatch")
+            )
+        }
+    }
+
+    func testHydrationRejectsCompletionPayloadRowSubstitution() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        try await fixture.database.record(
+            makeCompletionEpisode(
+                id: UUID(),
+                input: "first private input",
+                suggestion: " first",
+                outcome: " outcome",
+                date: Date(timeIntervalSince1970: 406)
+            )
+        )
+        try await fixture.database.record(
+            makeCompletionEpisode(
+                id: UUID(),
+                input: "second private input",
+                suggestion: " second",
+                outcome: " outcome",
+                date: Date(timeIntervalSince1970: 407)
+            )
+        )
+        let swapped = try await fixture.database
+            .swapFirstTwoCompletionEventPayloadsForTesting()
+        XCTAssertTrue(swapped)
+
+        do {
+            _ = try await fixture.database.completionEpisodes()
+            XCTFail("Expected substituted event payloads to be rejected")
+        } catch {
+            XCTAssertTrue(
+                String(describing: error).contains("integrity mismatch")
+            )
+        }
+    }
+
+    func testTargetedDeleteFailsClosedForSubstitutedCompletionPayloads()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let first = makeCompletionEpisode(
+            id: UUID(),
+            input: "first private input",
+            suggestion: " first",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 406)
+        )
+        let second = makeCompletionEpisode(
+            id: UUID(),
+            input: "second private input",
+            suggestion: " second",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 407)
+        )
+        try await fixture.database.record(first)
+        try await fixture.database.record(second)
+        let swapped = try await fixture.database
+            .swapFirstTwoCompletionEventPayloadsForTesting()
+        XCTAssertTrue(swapped)
+
+        do {
+            try await fixture.database.deleteEvent(id: first.id)
+            XCTFail("Expected targeted deletion to fail closed")
+        } catch {
+            XCTAssertTrue(
+                String(describing: error).contains("integrity mismatch")
+            )
+        }
+        let countBeforeDelete = try await fixture.database.eventCount()
+        XCTAssertEqual(countBeforeDelete, 2)
+
+        try await fixture.database.deleteAll()
+        let countAfterDelete = try await fixture.database.eventCount()
+        XCTAssertEqual(countAfterDelete, 0)
+    }
+
+    func testTargetedDeleteFailsClosedForMissingAuthenticatedChunk()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: "private chunked input",
+            suggestion: " suggestion",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 408)
+        )
+        try await fixture.database.record(episode)
+        let deletedChunk = try await fixture.database
+            .deleteFirstTextChunkForTesting()
+        XCTAssertTrue(deletedChunk)
+
+        do {
+            try await fixture.database.deleteEvent(id: episode.id)
+            XCTFail("Expected targeted deletion to fail closed")
+        } catch {
+            XCTAssertTrue(
+                String(describing: error).contains(
+                    "Missing authenticated completion episode text chunk"
+                )
+            )
+        }
+        let countBeforeDeleteAll =
+            try await fixture.database.eventCount()
+        XCTAssertEqual(countBeforeDeleteAll, 1)
+
+        try await fixture.database.deleteAll()
+        let countAfterDeleteAll = try await fixture.database.eventCount()
+        XCTAssertEqual(countAfterDeleteAll, 0)
     }
 
     func testPromptSuffixReuseRequiresExactUTF8Bytes() async throws {
@@ -229,13 +549,16 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(episodes, [episode])
     }
 
-    func testForeignKeyEnforcementIsEnabled() async throws {
+    func testDatabaseDeletionAndForeignKeyProtectionsAreEnabled() async throws {
         let fixture = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
 
         let isEnabled =
             try await fixture.database.foreignKeyEnforcementEnabled()
+        let secureDeletion =
+            try await fixture.database.secureDeletionEnabled()
         XCTAssertTrue(isEnabled)
+        XCTAssertTrue(secureDeletion)
     }
 
     func testCorpusExportDecodesVersionOneWithoutCompletionEpisodes()
@@ -311,6 +634,8 @@ final class PersonalizationDatabaseTests: XCTestCase {
             afterSecond.encryptedTextChunkBytes
         )
 
+        try await fixture.database
+            .removeEventTextChunkIndexForTesting(eventID: second.id)
         try await fixture.database.deleteEvent(id: first.id)
         let episodesAfterDeletingFirst =
             try await fixture.database.completionEpisodes()
@@ -322,6 +647,10 @@ final class PersonalizationDatabaseTests: XCTestCase {
             0
         )
 
+        try await fixture.database.replaceEventTimestampForTesting(
+            eventID: second.id,
+            capturedAt: Date(timeIntervalSince1970: 10_000)
+        )
         let expired = try await fixture.database.enforceRetention(
             PersonalizationRetentionPolicy(
                 maximumAge: 1,
@@ -387,6 +716,255 @@ final class PersonalizationDatabaseTests: XCTestCase {
             afterScopeDeletion,
             [second]
         )
+    }
+
+    func testApplicationScopedDeletionRemovesCompletionEpisodes()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let chat = makeCompletionEpisode(
+            id: UUID(),
+            input: "private chat input",
+            suggestion: " suggested reply",
+            outcome: " final reply",
+            date: Date(timeIntervalSince1970: 850),
+            applicationBundleIdentifier: "com.example.Chat"
+        )
+        let writer = makeCompletionEpisode(
+            id: UUID(),
+            input: "writer input",
+            suggestion: " document continuation",
+            outcome: " document outcome",
+            date: Date(timeIntervalSince1970: 851),
+            applicationBundleIdentifier: "com.example.Writer"
+        )
+        try await fixture.database.record(chat)
+        try await fixture.database.record(writer)
+
+        let deleted = try await fixture.database.deleteEvents(
+            scopeKind: "application",
+            value: "com.example.Chat"
+        )
+
+        XCTAssertEqual(deleted, 1)
+        let remaining = try await fixture.database.completionEpisodes()
+        let exported = try await fixture.database.exportCorpus()
+        XCTAssertEqual(
+            remaining,
+            [writer]
+        )
+        XCTAssertEqual(
+            exported.completionEpisodes,
+            [writer]
+        )
+    }
+
+    func testDeletingPromptExampleAlsoDeletesDependentCompletionEpisode()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let source = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                id: UUID(),
+                fieldText: "private source text",
+                selection: UTF16Selection(location: 19, length: 0),
+                insertion: " from chat",
+                acceptanceScope: .entireSuggestion,
+                context: PersonalizationContext(
+                    applicationBundleIdentifier: "com.example.Chat",
+                    inputKind: "message",
+                    editorIdentifier: "chat"
+                ),
+                capturedAt: Date(timeIntervalSince1970: 840)
+            )
+        )
+        let dependent = makeCompletionEpisode(
+            id: UUID(),
+            input: "writer input",
+            suggestion: " generated from retained example",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 850),
+            applicationBundleIdentifier: "com.example.Writer",
+            sourceEventIDs: [source.id],
+            sourceContexts: [source.context]
+        )
+        try await fixture.database.record(source)
+        try await fixture.database.record(dependent)
+        try await fixture.database
+            .removeCompletionEpisodeSourceIndexForTesting(
+                completionEventID: dependent.id
+            )
+
+        try await fixture.database.deleteEvent(id: source.id)
+
+        let eventCount = try await fixture.database.eventCount()
+        let completionEpisodes =
+            try await fixture.database.completionEpisodes()
+        XCTAssertEqual(eventCount, 0)
+        XCTAssertEqual(completionEpisodes, [])
+    }
+
+    func testCompletionEpisodeWithMissingSourceIsNotStored() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: "writer input",
+            suggestion: " generated from absent source",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 850),
+            sourceEventIDs: [UUID()]
+        )
+
+        try await fixture.database.record(episode)
+
+        let eventCount = try await fixture.database.eventCount()
+        let completionEpisodes =
+            try await fixture.database.completionEpisodes()
+        let storage =
+            try await fixture.database.completionEpisodeStorageStatistics()
+        XCTAssertEqual(eventCount, 0)
+        XCTAssertEqual(completionEpisodes, [])
+        XCTAssertEqual(storage.uniqueTextChunkCount, 0)
+        XCTAssertEqual(storage.textChunkReferenceCount, 0)
+    }
+
+    func testTargetedDeletionAtomicallyInvalidatesDerivedProjections()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let capture = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                fieldText: "private source",
+                selection: UTF16Selection(location: 14, length: 0),
+                insertion: " text",
+                acceptanceScope: .entireSuggestion,
+                context: PersonalizationContext(editorIdentifier: "editor")
+            )
+        )
+        try await fixture.database.record(capture)
+        try await fixture.database.saveLanguageModel(
+            PersonalLanguageModel()
+        )
+        try await fixture.database.saveVoiceAssessment(
+            VoiceAssessment(
+                summary: "Derived from private source.",
+                sampleCount: 10,
+                sourceEventCount: 10,
+                generatedAt: Date()
+            )
+        )
+
+        try await fixture.database.deleteEvent(id: capture.id)
+
+        let languageModel =
+            try await fixture.database.loadLanguageModel()
+        let voiceAssessment =
+            try await fixture.database.loadVoiceAssessment()
+        XCTAssertNil(languageModel)
+        XCTAssertNil(voiceAssessment)
+    }
+
+    func testSourceApplicationScopeDeletesDependentCompletionEpisode()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let sourceContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Chat",
+            inputKind: "message",
+            editorIdentifier: "chat"
+        )
+        let source = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                id: UUID(),
+                fieldText: "private chat example",
+                selection: UTF16Selection(location: 20, length: 0),
+                insertion: " retained",
+                acceptanceScope: .entireSuggestion,
+                context: sourceContext,
+                capturedAt: Date(timeIntervalSince1970: 840)
+            )
+        )
+        let dependent = makeCompletionEpisode(
+            id: UUID(),
+            input: "writer input",
+            suggestion: " generated from chat",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 850),
+            applicationBundleIdentifier: "com.example.Writer",
+            sourceEventIDs: [source.id],
+            sourceContexts: [sourceContext]
+        )
+        try await fixture.database.record(source)
+        try await fixture.database.record(dependent)
+        try await fixture.database
+            .removeEventScopeIndexForTesting(eventID: source.id)
+
+        _ = try await fixture.database.deleteEvents(
+            scopeKind: "application",
+            value: "com.example.Chat"
+        )
+
+        let eventCount = try await fixture.database.eventCount()
+        let completionEpisodes =
+            try await fixture.database.completionEpisodes()
+        XCTAssertEqual(eventCount, 0)
+        XCTAssertEqual(completionEpisodes, [])
+    }
+
+    func testStorageCapRecomputesAfterSourceCascadeDeletion() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let unrelated = makeCompletionEpisode(
+            id: UUID(),
+            input: "unrelated history",
+            suggestion: " remains",
+            outcome: " remains",
+            date: Date(timeIntervalSince1970: 200)
+        )
+        try await fixture.database.record(unrelated)
+        let unrelatedStorage =
+            try await fixture.database.storageStatistics()
+
+        let source = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                id: UUID(),
+                fieldText: "old source",
+                selection: UTF16Selection(location: 10, length: 0),
+                insertion: " text",
+                acceptanceScope: .entireSuggestion,
+                context: PersonalizationContext(
+                    editorIdentifier: "source"
+                ),
+                capturedAt: Date(timeIntervalSince1970: 100)
+            )
+        )
+        let dependent = makeCompletionEpisode(
+            id: UUID(),
+            input: String(repeating: "large dependent prompt ", count: 2_000),
+            suggestion: " dependent",
+            outcome: " dependent",
+            date: Date(timeIntervalSince1970: 300),
+            sourceEventIDs: [source.id],
+            sourceContexts: [source.context]
+        )
+        try await fixture.database.record(source)
+        try await fixture.database.record(dependent)
+
+        _ = try await fixture.database.enforceRetention(
+            PersonalizationRetentionPolicy(
+                maximumAge: nil,
+                maximumEncryptedBytes:
+                    unrelatedStorage.encryptedPayloadBytes
+            )
+        )
+
+        let remaining = try await fixture.database.completionEpisodes()
+        XCTAssertEqual(remaining, [unrelated])
     }
 
     func testRetentionRemovesWholeOldestRowsAndReportsEncryptedStorage()
@@ -637,6 +1215,52 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(remainingEmbeddings, [])
     }
 
+    func testStorageCapDropsProjectionBeforeCanonicalEvents() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let capture = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                fieldText: "canonical history",
+                selection: UTF16Selection(location: 17, length: 0),
+                insertion: " remains",
+                acceptanceScope: .entireSuggestion,
+                context: PersonalizationContext(editorIdentifier: "editor"),
+                capturedAt: Date(timeIntervalSince1970: 4_000)
+            )
+        )
+        try await fixture.database.record(capture)
+        let canonicalStorage =
+            try await fixture.database.storageStatistics()
+        try await fixture.database.saveVoiceAssessment(
+            VoiceAssessment(
+                summary: String(repeating: "derived projection ", count: 500),
+                sampleCount: 10,
+                sourceEventCount: 10,
+                generatedAt: Date()
+            )
+        )
+        let withProjection =
+            try await fixture.database.storageStatistics()
+        XCTAssertGreaterThan(
+            withProjection.encryptedPayloadBytes,
+            canonicalStorage.encryptedPayloadBytes
+        )
+
+        let removed = try await fixture.database.enforceRetention(
+            PersonalizationRetentionPolicy(
+                maximumAge: nil,
+                maximumEncryptedBytes:
+                    canonicalStorage.encryptedPayloadBytes
+            )
+        )
+
+        XCTAssertEqual(removed, 0)
+        let remaining = try await fixture.database.acceptedSuggestions()
+        let assessment = try await fixture.database.loadVoiceAssessment()
+        XCTAssertEqual(remaining, [capture])
+        XCTAssertNil(assessment)
+    }
+
     private func makeDatabase() throws -> (
         database: PersonalizationDatabase,
         directory: URL
@@ -715,7 +1339,10 @@ final class PersonalizationDatabaseTests: XCTestCase {
         suggestion: String,
         outcome: String,
         date: Date,
-        promptInputOverride: String? = nil
+        promptInputOverride: String? = nil,
+        applicationBundleIdentifier: String = "com.example.Editor",
+        sourceEventIDs: [UUID] = [],
+        sourceContexts: [PersonalizationContext] = []
     ) -> CompletionEpisodeCapture {
         let finalText = input + outcome
         let invocation = CompletionInvocationCapture(
@@ -742,10 +1369,12 @@ final class PersonalizationDatabaseTests: XCTestCase {
                 stopSequences: []
             ),
             context: PersonalizationContext(
-                applicationBundleIdentifier: "com.example.Editor",
+                applicationBundleIdentifier: applicationBundleIdentifier,
                 inputKind: "document",
                 editorIdentifier: "editor"
             ),
+            sourceEventIDs: sourceEventIDs,
+            sourceContexts: sourceContexts,
             startedAt: date
         )
         return CompletionEpisodeCapture(

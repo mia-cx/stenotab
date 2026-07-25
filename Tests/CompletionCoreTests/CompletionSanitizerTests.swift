@@ -166,4 +166,15 @@ final class CompletionSanitizerTests: XCTestCase {
             )
         }
     }
+
+    func testBoundsSingleUnbrokenProviderToken() {
+        let sanitized = CompletionSanitizer.sanitize(
+            String(repeating: "x", count: 10_000),
+            after: "",
+            maximumWords: 8,
+            inferLeadingSpace: false
+        )
+
+        XCTAssertEqual(sanitized.count, 4_096)
+    }
 }

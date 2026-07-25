@@ -159,11 +159,126 @@ public actor PersonalizationDatabase {
 
         try connection.execute("PRAGMA foreign_keys = ON")
         try connection.execute("PRAGMA journal_mode = DELETE")
+        try connection.execute("PRAGMA secure_delete = ON")
         try connection.execute(Self.schema)
+        try Self.removeLegacyCompletionEpisodesWithoutLineage(
+            connection: connection,
+            keyData: keyData,
+            decoder: decoder
+        )
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
             ofItemAtPath: databaseURL.path
         )
+    }
+
+    private static func removeLegacyCompletionEpisodesWithoutLineage(
+        connection: SQLiteConnection,
+        keyData: Data,
+        decoder: JSONDecoder
+    ) throws {
+        struct EventIdentity: Decodable {
+            let id: UUID
+        }
+        let rows = try connection.query(
+            """
+            SELECT id, payload_sealed, payload_hmac
+            FROM personalization_event
+            WHERE kind = ?
+            """,
+            bindings: [.text(Self.completionEpisodeKind)]
+        )
+        var legacyIDs: [String] = []
+        for row in rows {
+            guard
+                let id = row.text(at: 0),
+                let sealedPayload = row.blob(at: 1),
+                let storedHMAC = row.blob(at: 2)
+            else {
+                continue
+            }
+            guard
+                let payload = try? PersonalizationCryptography.open(
+                    sealedPayload,
+                    keyData: keyData
+                )
+            else {
+                // Leave unreadable rows untouched. The database must still
+                // attach so the user can inspect the error or use Delete All.
+                continue
+            }
+            guard
+                let expectedHMAC =
+                    try? PersonalizationCryptography.payloadHMAC(
+                        for: payload,
+                        keyData: keyData
+                    ),
+                storedHMAC == expectedHMAC,
+                let identity = try? decoder.decode(
+                    EventIdentity.self,
+                    from: payload
+                ),
+                identity.id.uuidString == id
+            else {
+                // Never make a destructive migration decision from a payload
+                // that is not authenticated to this row.
+                continue
+            }
+            guard
+                let header = try? decoder.decode(
+                    StoredCompletionEpisodeHeader.self,
+                    from: payload
+                )
+            else {
+                if
+                    let legacy = try? decoder.decode(
+                        CompletionEpisodeCapture.self,
+                        from: payload
+                    ),
+                    legacy.id.uuidString == id
+                {
+                    legacyIDs.append(id)
+                }
+                continue
+            }
+            if header.storageVersion
+                < StoredCompletionEpisode.currentStorageVersion
+            {
+                if
+                    let stored = try? decoder.decode(
+                        StoredCompletionEpisode.self,
+                        from: payload
+                    ),
+                    stored.id.uuidString == id
+                {
+                    legacyIDs.append(id)
+                }
+            }
+        }
+        guard !legacyIDs.isEmpty else { return }
+        try connection.transaction {
+            for id in legacyIDs {
+                try connection.execute(
+                    "DELETE FROM personalization_event WHERE id = ?",
+                    bindings: [.text(id)]
+                )
+            }
+            try connection.execute(
+                """
+                DELETE FROM personalization_scope
+                WHERE id NOT IN (SELECT DISTINCT scope_id FROM event_scope)
+                """
+            )
+            try connection.execute(
+                """
+                DELETE FROM personalization_text_chunk
+                WHERE chunk_hmac NOT IN (
+                    SELECT DISTINCT chunk_hmac
+                    FROM event_text_chunk
+                )
+                """
+            )
+        }
     }
 
     public func record(_ capture: AcceptedSuggestionCapture) throws {
@@ -197,7 +312,47 @@ public actor PersonalizationDatabase {
     }
 
     public func record(_ episode: CompletionEpisodeCapture) throws {
+        try record(
+            episode,
+            storageVersion: StoredCompletionEpisode.currentStorageVersion,
+            generationDidFail: episode.generationDidFail
+        )
+    }
+
+#if DEBUG
+    func recordVersionTwoCompletionEpisodeForTesting(
+        _ episode: CompletionEpisodeCapture
+    ) throws {
+        try record(
+            episode,
+            storageVersion: 2,
+            generationDidFail: nil
+        )
+    }
+#endif
+
+    private func record(
+        _ episode: CompletionEpisodeCapture,
+        storageVersion: Int,
+        generationDidFail: Bool?
+    ) throws {
         try connection.transaction {
+            let sourceEventIDs = episode.invocation.sourceEventIDs.reduce(
+                into: [UUID]()
+            ) { result, id in
+                if !result.contains(id) {
+                    result.append(id)
+                }
+            }
+            for sourceEventID in sourceEventIDs {
+                let sourceExists = try connection.query(
+                    "SELECT 1 FROM personalization_event WHERE id = ? LIMIT 1",
+                    bindings: [.text(sourceEventID.uuidString)]
+                ).first != nil
+                guard sourceExists else {
+                    return
+                }
+            }
             var referencedChunks = Set<Data>()
             let initialText = episode.invocation.field.text
             let initialTextReference = try storedTextReference(
@@ -236,8 +391,7 @@ public actor PersonalizationDatabase {
                 return stored
             }
             let storedEpisode = StoredCompletionEpisode(
-                storageVersion:
-                    StoredCompletionEpisode.currentStorageVersion,
+                storageVersion: storageVersion,
                 id: episode.id,
                 invocation: StoredCompletionInvocation(
                     id: episode.invocation.id,
@@ -248,11 +402,14 @@ public actor PersonalizationDatabase {
                     prompt: storedPrompt,
                     generation: episode.invocation.generation,
                     context: episode.invocation.context,
+                    sourceEventIDs: sourceEventIDs,
+                    sourceContexts: episode.invocation.sourceContexts,
                     startedAt: episode.invocation.startedAt
                 ),
                 suggestionRevisions: storedRevisions,
                 acceptances: episode.acceptances,
                 typedThroughText: episode.typedThroughText,
+                generationDidFail: generationDidFail,
                 resolution: episode.resolution,
                 finalFieldTextDelta: StoredTextDelta(
                     from: initialText,
@@ -268,7 +425,8 @@ public actor PersonalizationDatabase {
                 kind: Self.completionEpisodeKind,
                 capturedAt: episode.endedAt,
                 payload: payload,
-                context: episode.invocation.context
+                context: episode.invocation.context,
+                additionalContexts: episode.invocation.sourceContexts
             )
             for chunkHMAC in referencedChunks {
                 try connection.execute(
@@ -284,6 +442,20 @@ public actor PersonalizationDatabase {
                     ]
                 )
             }
+            for sourceEventID in sourceEventIDs {
+                try connection.execute(
+                    """
+                    INSERT INTO completion_episode_source (
+                        completion_event_id,
+                        source_event_id
+                    ) VALUES (?, ?)
+                    """,
+                    bindings: [
+                        .text(episode.id.uuidString),
+                        .text(sourceEventID.uuidString),
+                    ]
+                )
+            }
         }
     }
 
@@ -292,13 +464,221 @@ public actor PersonalizationDatabase {
             .integer(at: 0) == 1
     }
 
+    func secureDeletionEnabled() throws -> Bool {
+        try connection.query("PRAGMA secure_delete").first?
+            .integer(at: 0) == 1
+    }
+
 #if DEBUG
+    func replaceEventTimestampForTesting(
+        eventID: UUID,
+        capturedAt: Date
+    ) throws {
+        try connection.execute(
+            """
+            UPDATE personalization_event
+            SET captured_at_ms = ?
+            WHERE id = ?
+            """,
+            bindings: [
+                .integer(
+                    Int64(capturedAt.timeIntervalSince1970 * 1_000)
+                ),
+                .text(eventID.uuidString),
+            ]
+        )
+    }
+
+    func removeEventScopeIndexForTesting(eventID: UUID) throws {
+        try connection.execute(
+            "DELETE FROM event_scope WHERE event_id = ?",
+            bindings: [.text(eventID.uuidString)]
+        )
+    }
+
+    func removeEventTextChunkIndexForTesting(eventID: UUID) throws {
+        try connection.execute(
+            "DELETE FROM event_text_chunk WHERE event_id = ?",
+            bindings: [.text(eventID.uuidString)]
+        )
+    }
+
+    func deleteFirstTextChunkForTesting() throws -> Bool {
+        guard
+            let chunkHMAC = try connection.query(
+                """
+                SELECT chunk_hmac
+                FROM personalization_text_chunk
+                ORDER BY rowid ASC
+                LIMIT 1
+                """
+            ).first?.blob(at: 0)
+        else {
+            return false
+        }
+        try connection.execute(
+            """
+            DELETE FROM personalization_text_chunk
+            WHERE chunk_hmac = ?
+            """,
+            bindings: [.blob(chunkHMAC)]
+        )
+        return true
+    }
+
+    func removeCompletionEpisodeSourceIndexForTesting(
+        completionEventID: UUID
+    ) throws {
+        try connection.execute(
+            """
+            DELETE FROM completion_episode_source
+            WHERE completion_event_id = ?
+            """,
+            bindings: [.text(completionEventID.uuidString)]
+        )
+    }
+
+    func replaceEventKindForTesting(
+        eventID: UUID,
+        kind: String
+    ) throws {
+        try connection.execute(
+            """
+            UPDATE personalization_event
+            SET kind = ?
+            WHERE id = ?
+            """,
+            bindings: [.text(kind), .text(eventID.uuidString)]
+        )
+    }
+
+    func swapFirstTwoCompletionEventPayloadsForTesting() throws -> Bool {
+        let rows = try connection.query(
+            """
+            SELECT id, payload_sealed, payload_hmac
+            FROM personalization_event
+            WHERE kind = ?
+            ORDER BY sequence ASC
+            LIMIT 2
+            """,
+            bindings: [.text(Self.completionEpisodeKind)]
+        )
+        guard
+            rows.count == 2,
+            let firstID = rows[0].text(at: 0),
+            let firstPayload = rows[0].blob(at: 1),
+            let firstHMAC = rows[0].blob(at: 2),
+            let secondID = rows[1].text(at: 0),
+            let secondPayload = rows[1].blob(at: 1),
+            let secondHMAC = rows[1].blob(at: 2)
+        else {
+            return false
+        }
+        try connection.transaction {
+            try connection.execute(
+                """
+                UPDATE personalization_event
+                SET payload_sealed = ?, payload_hmac = ?
+                WHERE id = ?
+                """,
+                bindings: [
+                    .blob(secondPayload),
+                    .blob(secondHMAC),
+                    .text(firstID),
+                ]
+            )
+            try connection.execute(
+                """
+                UPDATE personalization_event
+                SET payload_sealed = ?, payload_hmac = ?
+                WHERE id = ?
+                """,
+                bindings: [
+                    .blob(firstPayload),
+                    .blob(firstHMAC),
+                    .text(secondID),
+                ]
+            )
+        }
+        return true
+    }
+
+    func corruptFirstCompletionEventPayloadForTesting() throws -> Bool {
+        let row = try connection.query(
+            """
+            SELECT id, payload_sealed
+            FROM personalization_event
+            WHERE kind = ?
+            ORDER BY sequence ASC
+            LIMIT 1
+            """,
+            bindings: [.text(Self.completionEpisodeKind)]
+        ).first
+        guard
+            let id = row?.text(at: 0),
+            var payload = row?.blob(at: 1),
+            !payload.isEmpty
+        else {
+            return false
+        }
+        payload[payload.startIndex] ^= 0x01
+        try connection.execute(
+            """
+            UPDATE personalization_event
+            SET payload_sealed = ?
+            WHERE id = ?
+            """,
+            bindings: [.blob(payload), .text(id)]
+        )
+        return true
+    }
+
+    func swapFirstTwoTextChunkPayloadsForTesting() throws -> Bool {
+        let rows = try connection.query(
+            """
+            SELECT chunk_hmac, payload_sealed
+            FROM personalization_text_chunk
+            ORDER BY rowid ASC
+            LIMIT 2
+            """
+        )
+        guard
+            rows.count == 2,
+            let firstHMAC = rows[0].blob(at: 0),
+            let firstPayload = rows[0].blob(at: 1),
+            let secondHMAC = rows[1].blob(at: 0),
+            let secondPayload = rows[1].blob(at: 1)
+        else {
+            return false
+        }
+        try connection.transaction {
+            try connection.execute(
+                """
+                UPDATE personalization_text_chunk
+                SET payload_sealed = ?
+                WHERE chunk_hmac = ?
+                """,
+                bindings: [.blob(secondPayload), .blob(firstHMAC)]
+            )
+            try connection.execute(
+                """
+                UPDATE personalization_text_chunk
+                SET payload_sealed = ?
+                WHERE chunk_hmac = ?
+                """,
+                bindings: [.blob(firstPayload), .blob(secondHMAC)]
+            )
+        }
+        return true
+    }
+
     func recordUnsupportedCompletionEpisodeForTesting(
         id: UUID,
         storageVersion: Int,
         capturedAt: Date
     ) throws {
         struct UnsupportedHeader: Encodable {
+            let id: UUID
             let storageVersion: Int
         }
         try connection.transaction {
@@ -307,7 +687,10 @@ public actor PersonalizationDatabase {
                 kind: Self.completionEpisodeKind,
                 capturedAt: capturedAt,
                 payload: try encoder.encode(
-                    UnsupportedHeader(storageVersion: storageVersion)
+                    UnsupportedHeader(
+                        id: id,
+                        storageVersion: storageVersion
+                    )
                 ),
                 context: PersonalizationContext(
                     editorIdentifier: "unsupported"
@@ -341,7 +724,8 @@ public actor PersonalizationDatabase {
         kind: String,
         capturedAt: Date,
         payload: Data,
-        context: PersonalizationContext
+        context: PersonalizationContext,
+        additionalContexts: [PersonalizationContext] = []
     ) throws {
         let sealedPayload = try PersonalizationCryptography.seal(
             payload,
@@ -374,7 +758,9 @@ public actor PersonalizationDatabase {
             ]
         )
 
-        for scope in scopes(from: context) {
+        let eventScopes = ([context] + additionalContexts)
+            .flatMap(scopes)
+        for scope in eventScopes {
             let scopeID = try upsertScope(scope)
             try connection.execute(
                 """
@@ -587,6 +973,16 @@ public actor PersonalizationDatabase {
                         "Completion episode text chunk size mismatch"
                     )
                 }
+                let hydratedHMAC =
+                    try PersonalizationCryptography.payloadHMAC(
+                        for: chunk,
+                        keyData: keyData
+                    )
+                guard hydratedHMAC == chunkHMAC else {
+                    throw PersonalizationPersistenceError.database(
+                        "Completion episode text chunk HMAC mismatch"
+                    )
+                }
                 chunkCache[chunkHMAC] = chunk
             }
             bytes.append(chunk)
@@ -650,16 +1046,18 @@ public actor PersonalizationDatabase {
         var chunkCache: [Data: Data] = [:]
         func decode(
             _ row: SQLiteRow,
-            payloadIndex: Int
+            idIndex: Int,
+            kindIndex: Int,
+            payloadIndex: Int,
+            hmacIndex: Int
         ) throws -> CompletionEpisodeCapture? {
-            guard let sealedPayload = row.blob(at: payloadIndex) else {
-                throw PersonalizationPersistenceError.database(
-                    "Invalid completion episode row"
-                )
-            }
-            let payload = try PersonalizationCryptography.open(
-                sealedPayload,
-                keyData: keyData
+            let payload = try validatedEventPayload(
+                row,
+                idIndex: idIndex,
+                kindIndex: kindIndex,
+                payloadIndex: payloadIndex,
+                hmacIndex: hmacIndex,
+                expectedKind: Self.completionEpisodeKind
             )
             if
                 let header = try? decoder.decode(
@@ -667,9 +1065,8 @@ public actor PersonalizationDatabase {
                     from: payload
                 )
             {
-                guard
-                    header.storageVersion
-                        == StoredCompletionEpisode.currentStorageVersion
+                guard header.storageVersion
+                    == StoredCompletionEpisode.currentStorageVersion
                 else {
                     return nil
                 }
@@ -693,7 +1090,7 @@ public actor PersonalizationDatabase {
         guard let limit else {
             let rows = try connection.query(
                 """
-                SELECT payload_sealed
+                SELECT id, kind, payload_sealed, payload_hmac
                 FROM personalization_event
                 WHERE kind = ?
                 ORDER BY sequence ASC
@@ -701,7 +1098,13 @@ public actor PersonalizationDatabase {
                 bindings: [.text(Self.completionEpisodeKind)]
             )
             return try rows.compactMap {
-                try decode($0, payloadIndex: 0)
+                try decode(
+                    $0,
+                    idIndex: 0,
+                    kindIndex: 1,
+                    payloadIndex: 2,
+                    hmacIndex: 3
+                )
             }
         }
 
@@ -723,7 +1126,7 @@ public actor PersonalizationDatabase {
             bindings.append(.integer(Int64(pageSize)))
             let rows = try connection.query(
                 """
-                SELECT sequence, payload_sealed
+                SELECT sequence, id, kind, payload_sealed, payload_hmac
                 FROM personalization_event
                 WHERE kind = ?\(cursorPredicate)
                 ORDER BY sequence DESC
@@ -734,7 +1137,13 @@ public actor PersonalizationDatabase {
             guard !rows.isEmpty else { break }
 
             for row in rows {
-                if let episode = try decode(row, payloadIndex: 1) {
+                if let episode = try decode(
+                    row,
+                    idIndex: 1,
+                    kindIndex: 2,
+                    payloadIndex: 3,
+                    hmacIndex: 4
+                ) {
                     episodes.append(episode)
                     if episodes.count == requestedCount {
                         break
@@ -761,7 +1170,7 @@ public actor PersonalizationDatabase {
         let limitClause = limit.map { " LIMIT \(max(0, $0))" } ?? ""
         let rows = try connection.query(
             """
-            SELECT kind, payload_sealed
+            SELECT id, kind, payload_sealed, payload_hmac
             FROM personalization_event
             WHERE kind = ?
             ORDER BY sequence \(order)\(limitClause)
@@ -770,23 +1179,62 @@ public actor PersonalizationDatabase {
         )
 
         let decoded = try rows.map { row in
-            guard
-                let kind = row.text(at: 0),
-                kind == expectedKind,
-                let sealedPayload = row.blob(at: 1)
-            else {
-                throw PersonalizationPersistenceError.unsupportedEventKind(
-                    row.text(at: 0) ?? "<missing>"
-                )
-            }
-
-            let payload = try PersonalizationCryptography.open(
-                sealedPayload,
-                keyData: keyData
+            let payload = try validatedEventPayload(
+                row,
+                idIndex: 0,
+                kindIndex: 1,
+                payloadIndex: 2,
+                hmacIndex: 3,
+                expectedKind: expectedKind
             )
             return try decoder.decode(type, from: payload)
         }
         return limit == nil ? decoded : Array(decoded.reversed())
+    }
+
+    private func validatedEventPayload(
+        _ row: SQLiteRow,
+        idIndex: Int,
+        kindIndex: Int,
+        payloadIndex: Int,
+        hmacIndex: Int,
+        expectedKind: String
+    ) throws -> Data {
+        struct EventIdentity: Decodable {
+            let id: UUID
+        }
+        guard
+            let rowID = row.text(at: idIndex),
+            let kind = row.text(at: kindIndex),
+            kind == expectedKind,
+            let sealedPayload = row.blob(at: payloadIndex),
+            let storedHMAC = row.blob(at: hmacIndex)
+        else {
+            throw PersonalizationPersistenceError.database(
+                "Invalid \(expectedKind) event row"
+            )
+        }
+        let payload = try PersonalizationCryptography.open(
+            sealedPayload,
+            keyData: keyData
+        )
+        let expectedHMAC = try PersonalizationCryptography.payloadHMAC(
+            for: payload,
+            keyData: keyData
+        )
+        guard
+            storedHMAC == expectedHMAC,
+            let identity = try? decoder.decode(
+                EventIdentity.self,
+                from: payload
+            ),
+            identity.id.uuidString == rowID
+        else {
+            throw PersonalizationPersistenceError.database(
+                "Personalization event identity or integrity mismatch"
+            )
+        }
+        return payload
     }
 
     public func exportCorpus(
@@ -1020,10 +1468,12 @@ public actor PersonalizationDatabase {
 
     public func deleteEvent(id: UUID) throws {
         try connection.transaction {
+            try rebuildCompletionEpisodeIndexes()
             try connection.execute(
                 "DELETE FROM personalization_event WHERE id = ?",
                 bindings: [.text(id.uuidString)]
             )
+            try invalidateDerivedProjections()
             try pruneUnusedScopes()
             try pruneUnusedTextChunks()
         }
@@ -1039,6 +1489,8 @@ public actor PersonalizationDatabase {
             keyData: keyData
         )
         return try connection.transaction {
+            try rebuildCompletionEpisodeIndexes()
+            try rebuildSupportedEventScopeIndex()
             try connection.execute(
                 """
                 DELETE FROM personalization_event
@@ -1054,6 +1506,7 @@ public actor PersonalizationDatabase {
                 bindings: [.text(scopeKind), .blob(lookupHMAC)]
             )
             let deleted = connection.changedRowCount
+            try invalidateDerivedProjections()
             try pruneUnusedScopes()
             try pruneUnusedTextChunks()
             return deleted
@@ -1139,6 +1592,8 @@ public actor PersonalizationDatabase {
     ) throws -> Int {
         let countBefore = try eventCount()
         try connection.transaction {
+            try rebuildCompletionEpisodeIndexes()
+            try rebuildSupportedEventTimestamps()
             if let maximumAge = policy.maximumAge {
                 let cutoff = now.addingTimeInterval(-maximumAge)
                 try connection.execute(
@@ -1155,67 +1610,26 @@ public actor PersonalizationDatabase {
                 try pruneUnusedTextChunks()
             }
 
+            // Derived projections are reproducible and may already be stale
+            // after age/source cascades. Do not evict canonical events to pay
+            // for bytes that this transaction will remove.
+            try invalidateDerivedProjections()
             if let maximumBytes = policy.maximumEncryptedBytes {
                 var payloadBytes = try encryptedPayloadBytes()
                 while payloadBytes > maximumBytes {
-                    let oldest = try connection.query(
+                    let oldestID = try connection.query(
                         """
-                        SELECT
-                            event.id,
-                            LENGTH(event.payload_sealed)
-                            + COALESCE(
-                                (
-                                    SELECT LENGTH(vector.vector_sealed)
-                                    FROM personalization_embedding AS vector
-                                    WHERE vector.event_id = event.id
-                                ),
-                                0
-                            )
-                            + COALESCE(
-                                (
-                                    SELECT SUM(
-                                        LENGTH(chunk.payload_sealed)
-                                        / (
-                                            SELECT COUNT(*)
-                                            FROM event_text_chunk AS refs
-                                            WHERE refs.chunk_hmac
-                                                = event_chunk.chunk_hmac
-                                        )
-                                    )
-                                    FROM event_text_chunk AS event_chunk
-                                    JOIN personalization_text_chunk AS chunk
-                                        ON chunk.chunk_hmac
-                                            = event_chunk.chunk_hmac
-                                    WHERE event_chunk.event_id = event.id
-                                ),
-                                0
-                            ) AS allocated_bytes
-                        FROM personalization_event AS event
+                        SELECT id
+                        FROM personalization_event
                         ORDER BY captured_at_ms ASC, sequence ASC
+                        LIMIT 1
                         """
+                    ).first?.text(at: 0)
+                    guard let oldestID else { break }
+                    try connection.execute(
+                        "DELETE FROM personalization_event WHERE id = ?",
+                        bindings: [.text(oldestID)]
                     )
-                    var estimatedBytes = payloadBytes
-                    var deletedAny = false
-                    for row in oldest where payloadBytes > maximumBytes {
-                        guard let id = row.text(at: 0) else {
-                            continue
-                        }
-                        try connection.execute(
-                            """
-                            DELETE FROM personalization_event WHERE id = ?
-                            """,
-                            bindings: [.text(id)]
-                        )
-                        deletedAny = true
-                        estimatedBytes -= max(
-                            1,
-                            Int(row.integer(at: 1) ?? 0)
-                        )
-                        if estimatedBytes <= maximumBytes {
-                            break
-                        }
-                    }
-                    guard deletedAny else { break }
                     try pruneUnusedTextChunks()
                     payloadBytes = try encryptedPayloadBytes()
                 }
@@ -1224,6 +1638,230 @@ public actor PersonalizationDatabase {
             try pruneUnusedTextChunks()
         }
         return countBefore - (try eventCount())
+    }
+
+    private func rebuildCompletionEpisodeIndexes() throws {
+        let episodes = try supportedStoredCompletionEpisodes()
+        for episode in episodes {
+            try connection.execute(
+                """
+                DELETE FROM completion_episode_source
+                WHERE completion_event_id = ?
+                """,
+                bindings: [.text(episode.id.uuidString)]
+            )
+            try connection.execute(
+                "DELETE FROM event_text_chunk WHERE event_id = ?",
+                bindings: [.text(episode.id.uuidString)]
+            )
+            let sourceEventIDs = (episode.invocation.sourceEventIDs ?? [])
+                .reduce(
+                    into: [UUID]()
+                ) { result, id in
+                    if !result.contains(id) {
+                        result.append(id)
+                    }
+                }
+            let allSourcesExist = try sourceEventIDs.allSatisfy { id in
+                try connection.query(
+                    """
+                    SELECT 1
+                    FROM personalization_event
+                    WHERE id = ?
+                    LIMIT 1
+                    """,
+                    bindings: [.text(id.uuidString)]
+                ).first != nil
+            }
+            guard allSourcesExist else {
+                try connection.execute(
+                    "DELETE FROM personalization_event WHERE id = ?",
+                    bindings: [.text(episode.id.uuidString)]
+                )
+                continue
+            }
+            for chunkHMAC in episode.referencedChunkHMACs {
+                let chunkExists = try connection.query(
+                    """
+                    SELECT 1
+                    FROM personalization_text_chunk
+                    WHERE chunk_hmac = ?
+                    LIMIT 1
+                    """,
+                    bindings: [.blob(chunkHMAC)]
+                ).first != nil
+                guard chunkExists else {
+                    throw PersonalizationPersistenceError.database(
+                        "Missing authenticated completion episode text chunk"
+                    )
+                }
+                try connection.execute(
+                    """
+                    INSERT INTO event_text_chunk (event_id, chunk_hmac)
+                    VALUES (?, ?)
+                    """,
+                    bindings: [
+                        .text(episode.id.uuidString),
+                        .blob(chunkHMAC),
+                    ]
+                )
+            }
+            for sourceEventID in sourceEventIDs {
+                try connection.execute(
+                    """
+                    INSERT INTO completion_episode_source (
+                        completion_event_id,
+                        source_event_id
+                    ) VALUES (?, ?)
+                    """,
+                    bindings: [
+                        .text(episode.id.uuidString),
+                        .text(sourceEventID.uuidString),
+                    ]
+                )
+            }
+        }
+    }
+
+    private func supportedStoredCompletionEpisodes() throws
+        -> [StoredCompletionEpisode]
+    {
+        let rows = try connection.query(
+            """
+            SELECT id, kind, payload_sealed, payload_hmac
+            FROM personalization_event
+            WHERE kind = ?
+            ORDER BY sequence ASC
+            """,
+            bindings: [.text(Self.completionEpisodeKind)]
+        )
+        return try rows.compactMap { row in
+            let payload = try validatedEventPayload(
+                row,
+                idIndex: 0,
+                kindIndex: 1,
+                payloadIndex: 2,
+                hmacIndex: 3,
+                expectedKind: Self.completionEpisodeKind
+            )
+            guard let header = try? decoder.decode(
+                StoredCompletionEpisodeHeader.self,
+                from: payload
+            ) else {
+                throw PersonalizationPersistenceError.database(
+                    "Invalid completion episode storage header"
+                )
+            }
+            guard
+                header.storageVersion
+                    == StoredCompletionEpisode.currentStorageVersion
+            else {
+                throw PersonalizationPersistenceError.database(
+                    "Unsupported completion episode storage version "
+                        + "\(header.storageVersion)"
+                )
+            }
+            return try decoder.decode(
+                StoredCompletionEpisode.self,
+                from: payload
+            )
+        }
+    }
+
+    private func rebuildSupportedEventScopeIndex() throws {
+        for event in try acceptedSuggestions() {
+            try replaceScopes(for: event.id, contexts: [event.context])
+        }
+        for event in try writingEpisodes() {
+            try replaceScopes(for: event.id, contexts: [event.context])
+        }
+        for event in try completionFeedback() {
+            try replaceScopes(for: event.id, contexts: [event.context])
+        }
+        for event in try supportedStoredCompletionEpisodes() {
+            try replaceScopes(
+                for: event.id,
+                contexts:
+                    [event.invocation.context]
+                    + (event.invocation.sourceContexts ?? [])
+            )
+        }
+    }
+
+    private func rebuildSupportedEventTimestamps() throws {
+        for event in try acceptedSuggestions() {
+            try replaceTimestamp(
+                for: event.id,
+                capturedAt: event.capturedAt
+            )
+        }
+        for event in try writingEpisodes() {
+            try replaceTimestamp(for: event.id, capturedAt: event.endedAt)
+        }
+        for event in try completionFeedback() {
+            try replaceTimestamp(
+                for: event.id,
+                capturedAt: event.capturedAt
+            )
+        }
+        for event in try supportedStoredCompletionEpisodes() {
+            try replaceTimestamp(for: event.id, capturedAt: event.endedAt)
+        }
+    }
+
+    private func replaceTimestamp(
+        for eventID: UUID,
+        capturedAt: Date
+    ) throws {
+        try connection.execute(
+            """
+            UPDATE personalization_event
+            SET captured_at_ms = ?
+            WHERE id = ?
+            """,
+            bindings: [
+                .integer(
+                    Int64(capturedAt.timeIntervalSince1970 * 1_000)
+                ),
+                .text(eventID.uuidString),
+            ]
+        )
+    }
+
+    private func invalidateDerivedProjections() throws {
+        try connection.execute(
+            """
+            DELETE FROM personalization_projection
+            WHERE name IN (?, ?)
+            """,
+            bindings: [
+                .text(Self.languageModelProjection),
+                .text(Self.voiceAssessmentProjection),
+            ]
+        )
+    }
+
+    private func replaceScopes(
+        for eventID: UUID,
+        contexts: [PersonalizationContext]
+    ) throws {
+        try connection.execute(
+            "DELETE FROM event_scope WHERE event_id = ?",
+            bindings: [.text(eventID.uuidString)]
+        )
+        for scope in contexts.flatMap(scopes) {
+            let scopeID = try upsertScope(scope)
+            try connection.execute(
+                """
+                INSERT OR IGNORE INTO event_scope (event_id, scope_id)
+                VALUES (?, ?)
+                """,
+                bindings: [
+                    .text(eventID.uuidString),
+                    .integer(scopeID),
+                ]
+            )
+        }
     }
 
     private func encryptedPayloadBytes() throws -> Int {
@@ -1396,6 +2034,28 @@ public actor PersonalizationDatabase {
 
         CREATE INDEX IF NOT EXISTS event_text_chunk_chunk
         ON event_text_chunk(chunk_hmac);
+
+        CREATE TABLE IF NOT EXISTS completion_episode_source (
+            completion_event_id TEXT NOT NULL
+                REFERENCES personalization_event(id) ON DELETE CASCADE,
+            source_event_id TEXT NOT NULL
+                REFERENCES personalization_event(id) ON DELETE CASCADE,
+            PRIMARY KEY(completion_event_id, source_event_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS completion_episode_source_source
+        ON completion_episode_source(source_event_id);
+
+        CREATE TRIGGER IF NOT EXISTS delete_completion_episode_with_source
+        BEFORE DELETE ON personalization_event
+        BEGIN
+            DELETE FROM personalization_event
+            WHERE id IN (
+                SELECT completion_event_id
+                FROM completion_episode_source
+                WHERE source_event_id = OLD.id
+            );
+        END;
 
         CREATE TABLE IF NOT EXISTS event_scope (
             event_id TEXT NOT NULL

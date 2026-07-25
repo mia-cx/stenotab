@@ -2,6 +2,85 @@ import XCTest
 @testable import CompletionCore
 
 final class CompletionEpisodeTrackerTests: XCTestCase {
+    func testReconciliationWaitsIndefinitelyForChangedAuthoritativeField() {
+        let before = CapturedFieldState(
+            text: "before",
+            selection: UTF16Selection(location: 6, length: 0)
+        )
+
+        let decision = CompletionEpisodeReconciliationPolicy.decision(
+            previousEditorIdentifier: "editor",
+            observedEditorIdentifier: "editor",
+            previousAuthoritativeField: before,
+            invalidatedField: before,
+            observedField: before
+        )
+
+        XCTAssertEqual(decision, .waitForAuthoritativeChange)
+    }
+
+    func testReconciliationAcceptsChangedAuthoritativeField() {
+        let before = CapturedFieldState(
+            text: "before",
+            selection: UTF16Selection(location: 6, length: 0)
+        )
+        let after = CapturedFieldState(
+            text: "before after",
+            selection: UTF16Selection(location: 12, length: 0)
+        )
+
+        let decision = CompletionEpisodeReconciliationPolicy.decision(
+            previousEditorIdentifier: "editor",
+            observedEditorIdentifier: "editor",
+            previousAuthoritativeField: before,
+            invalidatedField: before,
+            observedField: after
+        )
+
+        XCTAssertEqual(decision, .reconcile)
+    }
+
+    func testFocusChangeDiscardsUnconfirmedPredictedEdit() {
+        let authoritative = CapturedFieldState(
+            text: "before",
+            selection: UTF16Selection(location: 6, length: 0)
+        )
+        let predicted = CapturedFieldState(
+            text: "before accepted",
+            selection: UTF16Selection(location: 15, length: 0)
+        )
+
+        let decision = CompletionEpisodeReconciliationPolicy.decision(
+            previousEditorIdentifier: "old-editor",
+            observedEditorIdentifier: "new-editor",
+            previousAuthoritativeField: authoritative,
+            invalidatedField: predicted,
+            observedField: CapturedFieldState(
+                text: "new",
+                selection: UTF16Selection(location: 3, length: 0)
+            )
+        )
+
+        XCTAssertEqual(decision, .discardUnconfirmedAndReconcile)
+    }
+
+    func testPendingTerminalResolutionCannotBeOverwrittenByAbandonment() {
+        XCTAssertEqual(
+            CompletionEpisodePendingResolutionPolicy.resolve(
+                existing: .typedThrough,
+                proposed: .rejected
+            ),
+            .typedThrough
+        )
+        XCTAssertEqual(
+            CompletionEpisodePendingResolutionPolicy.resolve(
+                existing: .accepted,
+                proposed: .partiallyAccepted
+            ),
+            .accepted
+        )
+    }
+
     func testRejectedSuggestionPreservesPromptRevisionsAndFinalWriting() throws {
         let startedAt = Date(timeIntervalSince1970: 1_000)
         let invocation = CompletionInvocationCapture(
@@ -181,7 +260,9 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
             isFinal: true,
             at: startedAt.addingTimeInterval(0.1)
         )
-        tracker.recordTypedThrough(" you ")
+        tracker.synchronizeTypedThrough(
+            consumedSuggestionText: " you "
+        )
 
         let episode = try XCTUnwrap(
             tracker.finalize(
@@ -252,6 +333,34 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
         )
     }
 
+    func testHiddenFinalMarkerUpdatesOnlyTheDisplayedRevision() throws {
+        let date = Date(timeIntervalSince1970: 4_100)
+        let invocation = makeInvocation(date: date)
+        var tracker = CompletionEpisodeTracker()
+        tracker.begin(invocation)
+        tracker.observeSuggestion(" hello", isFinal: false, at: date)
+
+        tracker.markSuggestionFinalIfObserved(
+            " hello",
+            at: date.addingTimeInterval(1)
+        )
+        tracker.markSuggestionFinalIfObserved(
+            " hello world",
+            at: date.addingTimeInterval(2)
+        )
+
+        let episode = try XCTUnwrap(
+            tracker.finalize(
+                resolution: .typedThrough,
+                finalField: invocation.field,
+                at: date.addingTimeInterval(3)
+            )
+        )
+        XCTAssertEqual(episode.suggestionRevisions.count, 1)
+        XCTAssertEqual(episode.suggestionRevisions[0].text, " hello")
+        XCTAssertTrue(episode.suggestionRevisions[0].isFinal)
+    }
+
     func testMixedTabAcceptanceAndTypedThroughResolvesAsPartialAcceptance() {
         let date = Date(timeIntervalSince1970: 5_000)
         let invocation = CompletionInvocationCapture(
@@ -282,12 +391,136 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
             at: date
         )
         tracker.recordAcceptance("uest ", scope: .nextWord, at: date)
-        tracker.recordTypedThrough("for this")
+        tracker.synchronizeTypedThrough(
+            consumedSuggestionText: "uest for this"
+        )
 
         XCTAssertEqual(
             tracker.completedSuggestionResolution,
             .partiallyAccepted
         )
+    }
+
+    func testAbandoningPartiallyAcceptedSuggestionIsNotFullyAccepted() {
+        let date = Date(timeIntervalSince1970: 5_500)
+        let invocation = makeInvocation(date: date)
+        var tracker = CompletionEpisodeTracker()
+        tracker.begin(invocation)
+        tracker.observeSuggestion(" there now", isFinal: true, at: date)
+        tracker.recordAcceptance(" there", scope: .nextWord, at: date)
+
+        XCTAssertEqual(tracker.completedSuggestionResolution, .accepted)
+        XCTAssertEqual(
+            tracker.abandonedSuggestionResolution,
+            .partiallyAccepted
+        )
+    }
+
+    func testTypedThroughOnlyIncludesStreamConfirmedText() throws {
+        let date = Date(timeIntervalSince1970: 5_750)
+        let invocation = makeInvocation(date: date)
+        var tracker = CompletionEpisodeTracker()
+        tracker.begin(invocation)
+        tracker.observeSuggestion(" h", isFinal: false, at: date)
+        tracker.synchronizeTypedThrough(consumedSuggestionText: " h")
+        tracker.observeSuggestion(" hi", isFinal: true, at: date)
+        tracker.synchronizeTypedThrough(consumedSuggestionText: " hi")
+
+        let episode = try XCTUnwrap(
+            tracker.finalize(
+                resolution: .typedThrough,
+                finalField: CapturedFieldState(
+                    text: "hello hi",
+                    selection: UTF16Selection(location: 8, length: 0)
+                ),
+                at: date
+            )
+        )
+
+        XCTAssertEqual(episode.typedThroughText, " hi")
+    }
+
+    func testTypedThroughSpansCanSurroundAnAcceptance() throws {
+        let date = Date(timeIntervalSince1970: 5_800)
+        let invocation = makeInvocation(date: date)
+        var tracker = CompletionEpisodeTracker()
+        tracker.begin(invocation)
+        tracker.observeSuggestion(" there now", isFinal: true, at: date)
+        tracker.synchronizeTypedThrough(consumedSuggestionText: " ")
+        tracker.recordAcceptance("there ", scope: .nextWord, at: date)
+        tracker.synchronizeTypedThrough(
+            consumedSuggestionText: " there now"
+        )
+
+        let episode = try XCTUnwrap(
+            tracker.finalize(
+                resolution: .partiallyAccepted,
+                finalField: CapturedFieldState(
+                    text: "hello there now",
+                    selection: UTF16Selection(location: 15, length: 0)
+                ),
+                at: date
+            )
+        )
+
+        XCTAssertEqual(episode.acceptedText, "there ")
+        XCTAssertEqual(episode.typedThroughText, " now")
+    }
+
+    func testGenerationFailureRemainsVisibleAfterPartialSuggestionResolution()
+        throws
+    {
+        let date = Date(timeIntervalSince1970: 5_875)
+        let invocation = makeInvocation(date: date)
+        var tracker = CompletionEpisodeTracker()
+        tracker.begin(invocation)
+        tracker.observeSuggestion(" there", isFinal: false, at: date)
+        tracker.recordGenerationFailure()
+
+        let episode = try XCTUnwrap(
+            tracker.finalize(
+                resolution: .rejected,
+                finalField: invocation.field,
+                at: date
+            )
+        )
+
+        XCTAssertTrue(episode.generationDidFail)
+        XCTAssertEqual(episode.resolution, .rejected)
+    }
+
+    func testSuggestionRevisionHistoryPreservesEveryReachableStreamRevision()
+        throws
+    {
+        let date = Date(timeIntervalSince1970: 5_900)
+        let invocation = makeInvocation(date: date)
+        var tracker = CompletionEpisodeTracker()
+        tracker.begin(invocation)
+        var revision = ""
+        for index in 0..<4_096 {
+            revision.append("x")
+            tracker.observeSuggestion(
+                revision,
+                isFinal: index == 4_095,
+                at: date
+            )
+        }
+
+        let episode = try XCTUnwrap(
+            tracker.finalize(
+                resolution: .rejected,
+                finalField: invocation.field,
+                at: date
+            )
+        )
+
+        XCTAssertEqual(episode.suggestionRevisions.count, 4_096)
+        XCTAssertEqual(
+            episode.suggestionRevisions[512].text.count,
+            513
+        )
+        XCTAssertEqual(episode.suggestionRevisions.last?.text.count, 4_096)
+        XCTAssertTrue(episode.suggestionRevisions.last?.isFinal == true)
     }
 
     func testFinalizeWithoutSuggestionRevisionReturnsNil() {

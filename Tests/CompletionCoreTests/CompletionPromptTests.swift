@@ -2,6 +2,35 @@ import CompletionCore
 import XCTest
 
 final class CompletionPromptTests: XCTestCase {
+    func testLegacyContextOptInsAreDisabledForRetentionDisclosure() {
+        var legacy = PromptConfiguration.defaults
+        legacy.context.includeClipboard = true
+        legacy.context.includeOCR = true
+
+        let migrated = PromptContextRetentionMigration.migrate(
+            legacy,
+            fromDisclosureVersion: 0
+        )
+
+        XCTAssertFalse(migrated.context.includeClipboard)
+        XCTAssertFalse(migrated.context.includeOCR)
+    }
+
+    func testAcknowledgedContextOptInsArePreserved() {
+        var acknowledged = PromptConfiguration.defaults
+        acknowledged.context.includeClipboard = true
+        acknowledged.context.includeOCR = true
+
+        let migrated = PromptContextRetentionMigration.migrate(
+            acknowledged,
+            fromDisclosureVersion:
+                PromptContextRetentionMigration.currentDisclosureVersion
+        )
+
+        XCTAssertTrue(migrated.context.includeClipboard)
+        XCTAssertTrue(migrated.context.includeOCR)
+    }
+
     func testUnavailableContextSourcesUseOnlyTheSeedFallbackByDefault() {
         let defaults = PromptConfiguration.defaults
 

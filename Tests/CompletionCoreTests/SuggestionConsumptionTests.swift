@@ -2,6 +2,20 @@ import CompletionCore
 import XCTest
 
 final class SuggestionConsumptionTests: XCTestCase {
+    func testInterruptedPartialStreamCanFinishAndResolve() {
+        var state = SuggestionConsumption(
+            suggestion: " hi",
+            isFinal: false
+        )
+
+        XCTAssertEqual(
+            state.apply(insertedText: " hi"),
+            .awaitingStream
+        )
+        XCTAssertEqual(state.finishStreaming(), .waitingForWhitespace)
+        XCTAssertTrue(state.hasFinishedStreaming)
+    }
+
     func testMatchingCharactersConsumeSuggestionWithoutTriggeringInference() {
         var state = SuggestionConsumption(suggestion: " you")
 

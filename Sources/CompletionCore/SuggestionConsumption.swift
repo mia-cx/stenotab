@@ -47,6 +47,11 @@ public struct SuggestionConsumption: Sendable, Equatable {
         return evaluate()
     }
 
+    public mutating func finishStreaming() -> Outcome {
+        isFinal = true
+        return evaluate()
+    }
+
     public mutating func apply(insertedText: String) -> Outcome {
         for character in insertedText {
             if isWaitingForWhitespace {

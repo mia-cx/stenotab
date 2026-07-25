@@ -76,6 +76,8 @@ struct StoredCompletionInvocation: Codable, Sendable, Equatable {
     let prompt: StoredCompletionPrompt
     let generation: CompletionGenerationMetadata
     let context: PersonalizationContext
+    let sourceEventIDs: [UUID]?
+    let sourceContexts: [PersonalizationContext]?
     let startedAt: Date
 }
 
@@ -90,7 +92,7 @@ struct StoredCompletionSuggestionRevision:
 }
 
 struct StoredCompletionEpisode: Codable, Sendable, Equatable {
-    static let currentStorageVersion = 2
+    static let currentStorageVersion = 4
 
     let storageVersion: Int
     let id: UUID
@@ -98,11 +100,24 @@ struct StoredCompletionEpisode: Codable, Sendable, Equatable {
     let suggestionRevisions: [StoredCompletionSuggestionRevision]
     let acceptances: [CompletionAcceptanceCapture]
     let typedThroughText: String
+    let generationDidFail: Bool?
     let resolution: CompletionEpisodeResolution
     let finalFieldTextDelta: StoredTextDelta
     let finalFieldSelection: UTF16Selection
     let actualInsertedText: String?
     let endedAt: Date
+
+    var referencedChunkHMACs: Set<Data> {
+        var references = Set(invocation.field.text.chunkHMACs)
+        for promptReference in [
+            invocation.prompt.systemMessage,
+            invocation.prompt.userMessage,
+            invocation.prompt.textPrompt,
+        ].compactMap({ $0 }) {
+            references.formUnion(promptReference.chunkHMACs)
+        }
+        return references
+    }
 
     func hydrated(
         loadText: (StoredTextReference) throws -> String
@@ -158,11 +173,14 @@ struct StoredCompletionEpisode: Codable, Sendable, Equatable {
                 ),
                 generation: invocation.generation,
                 context: invocation.context,
+                sourceEventIDs: invocation.sourceEventIDs ?? [],
+                sourceContexts: invocation.sourceContexts ?? [],
                 startedAt: invocation.startedAt
             ),
             suggestionRevisions: revisions,
             acceptances: acceptances,
             typedThroughText: typedThroughText,
+            generationDidFail: generationDidFail ?? false,
             resolution: resolution,
             finalField: CapturedFieldState(
                 text: finalText,

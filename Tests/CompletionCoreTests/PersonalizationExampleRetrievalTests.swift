@@ -2,6 +2,64 @@ import XCTest
 @testable import CompletionCore
 
 final class PersonalizationExampleRetrievalTests: XCTestCase {
+    func testPromptLineageIncludesOnlyEnabledHistoryComponents() {
+        let frecentID = UUID()
+        let relevantID = UUID()
+        let voiceID = UUID()
+        let frecentContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Frecent",
+            editorIdentifier: "frecent"
+        )
+        let relevantContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Relevant",
+            editorIdentifier: "relevant"
+        )
+        let voiceContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Voice",
+            editorIdentifier: "voice"
+        )
+        let context = PersonalizationPromptContext(
+            frecentExamples: "frecent",
+            relevantExamples: "relevant",
+            frecentSourceEventIDs: [frecentID],
+            frecentSourceContexts: [frecentContext],
+            relevantSourceEventIDs: [relevantID],
+            relevantSourceContexts: [relevantContext],
+            voiceSourceEventIDs: [voiceID],
+            voiceSourceContexts: [voiceContext]
+        )
+
+        XCTAssertEqual(
+            context.sourceEventIDs(
+                includeFrecent: true,
+                includeRelevant: false
+            ),
+            [frecentID]
+        )
+        XCTAssertEqual(
+            context.sourceContexts(
+                includeFrecent: false,
+                includeRelevant: true
+            ),
+            [relevantContext]
+        )
+        XCTAssertEqual(
+            context.sourceEventIDs(
+                includeFrecent: false,
+                includeRelevant: false,
+                includeVoiceAssessment: true
+            ),
+            [voiceID]
+        )
+        XCTAssertEqual(
+            context.sourceContexts(
+                includeFrecent: false,
+                includeRelevant: false
+            ),
+            []
+        )
+    }
+
     func testExampleUsesLiteralTextAndInsertionFormat() {
         let example = PersonalizationExample(
             id: UUID(),
