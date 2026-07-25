@@ -13,6 +13,7 @@ public struct WritingEditCapture: Codable, Sendable, Equatable {
     public let selectionBefore: UTF16Selection
     public let selectionAfter: UTF16Selection
     public let fieldBefore: CapturedFieldState?
+    public let fieldAfter: CapturedFieldState?
     public let startedAt: Date
     public let endedAt: Date
 
@@ -23,6 +24,7 @@ public struct WritingEditCapture: Codable, Sendable, Equatable {
         selectionBefore: UTF16Selection,
         selectionAfter: UTF16Selection,
         fieldBefore: CapturedFieldState? = nil,
+        fieldAfter: CapturedFieldState? = nil,
         startedAt: Date,
         endedAt: Date
     ) {
@@ -32,6 +34,7 @@ public struct WritingEditCapture: Codable, Sendable, Equatable {
         self.selectionBefore = selectionBefore
         self.selectionAfter = selectionAfter
         self.fieldBefore = fieldBefore
+        self.fieldAfter = fieldAfter
         self.startedAt = startedAt
         self.endedAt = endedAt
     }
@@ -170,6 +173,7 @@ public struct WritingHistoryTracker: Sendable {
             selectionBefore: fieldBefore.selection,
             selectionAfter: fieldAfter.selection,
             fieldBefore: fieldBefore,
+            fieldAfter: fieldAfter,
             startedAt: date,
             endedAt: date
         )
@@ -182,6 +186,7 @@ public struct WritingHistoryTracker: Sendable {
                     selectionBefore: previous.selectionBefore,
                     selectionAfter: edit.selectionAfter,
                     fieldBefore: previous.fieldBefore,
+                    fieldAfter: edit.fieldAfter,
                     startedAt: previous.startedAt,
                     endedAt: date
                 )
@@ -216,6 +221,7 @@ public struct WritingHistoryTracker: Sendable {
                 selectionBefore: fieldBefore.selection,
                 selectionAfter: fieldAfter.selection,
                 fieldBefore: fieldBefore,
+                fieldAfter: fieldAfter,
                 startedAt: date,
                 endedAt: date
             )

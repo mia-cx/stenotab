@@ -287,6 +287,36 @@ public actor PersonalizationDatabase {
         }
     }
 
+    func foreignKeyEnforcementEnabled() throws -> Bool {
+        try connection.query("PRAGMA foreign_keys").first?
+            .integer(at: 0) == 1
+    }
+
+#if DEBUG
+    func recordUnsupportedCompletionEpisodeForTesting(
+        id: UUID,
+        storageVersion: Int,
+        capturedAt: Date
+    ) throws {
+        struct UnsupportedHeader: Encodable {
+            let storageVersion: Int
+        }
+        try connection.transaction {
+            try insertEvent(
+                id: id,
+                kind: Self.completionEpisodeKind,
+                capturedAt: capturedAt,
+                payload: try encoder.encode(
+                    UnsupportedHeader(storageVersion: storageVersion)
+                ),
+                context: PersonalizationContext(
+                    editorIdentifier: "unsupported"
+                )
+            )
+        }
+    }
+#endif
+
     private func recordEvent<Payload: Encodable>(
         id: UUID,
         kind: String,
@@ -419,20 +449,26 @@ public actor PersonalizationDatabase {
     ) throws -> StoredTextReference {
         if
             let (suffix, suffixReference) = reusingSuffix,
-            text.hasSuffix(suffix)
+            !suffix.isEmpty
         {
-            let prefix = String(text.dropLast(suffix.count))
-            let prefixReference = try storedTextReference(
-                for: prefix,
-                referencedChunks: &referencedChunks
-            )
-            referencedChunks.formUnion(suffixReference.chunkHMACs)
-            return StoredTextReference(
-                chunkHMACs:
-                    prefixReference.chunkHMACs
-                    + suffixReference.chunkHMACs,
-                utf8ByteCount: text.utf8.count
-            )
+            let textBytes = Data(text.utf8)
+            let suffixBytes = Data(suffix.utf8)
+            if Data(textBytes.suffix(suffixBytes.count)) == suffixBytes {
+                let prefixBytes = Data(
+                    textBytes.dropLast(suffixBytes.count)
+                )
+                let prefixReference = try storedTextReference(
+                    forUTF8: prefixBytes,
+                    referencedChunks: &referencedChunks
+                )
+                referencedChunks.formUnion(suffixReference.chunkHMACs)
+                return StoredTextReference(
+                    chunkHMACs:
+                        prefixReference.chunkHMACs
+                        + suffixReference.chunkHMACs,
+                    utf8ByteCount: textBytes.count
+                )
+            }
         }
 
         var chunkHMACs: [Data] = []
@@ -459,6 +495,19 @@ public actor PersonalizationDatabase {
         )
     }
 
+    private func storedTextReference(
+        forUTF8 bytes: Data,
+        referencedChunks: inout Set<Data>
+    ) throws -> StoredTextReference {
+        StoredTextReference(
+            chunkHMACs: try storeTextBytes(
+                bytes,
+                referencedChunks: &referencedChunks
+            ),
+            utf8ByteCount: bytes.count
+        )
+    }
+
     private func storeTextBytes(
         _ bytes: Data,
         referencedChunks: inout Set<Data>
@@ -476,37 +525,26 @@ public actor PersonalizationDatabase {
                 for: chunk,
                 keyData: keyData
             )
-            let existing = try connection.query(
-                """
-                SELECT 1
-                FROM personalization_text_chunk
-                WHERE chunk_hmac = ?
-                LIMIT 1
-                """,
-                bindings: [.blob(chunkHMAC)]
+            let sealed = try PersonalizationCryptography.seal(
+                chunk,
+                keyData: keyData
             )
-            if existing.isEmpty {
-                let sealed = try PersonalizationCryptography.seal(
-                    chunk,
-                    keyData: keyData
-                )
-                try connection.execute(
-                    """
-                    INSERT INTO personalization_text_chunk (
-                        chunk_hmac,
-                        payload_sealed,
-                        plaintext_byte_count,
-                        key_version
-                    ) VALUES (?, ?, ?, ?)
-                    """,
-                    bindings: [
-                        .blob(chunkHMAC),
-                        .blob(sealed),
-                        .integer(Int64(chunk.count)),
-                        .integer(Int64(Self.keyVersion)),
-                    ]
-                )
-            }
+            try connection.execute(
+                """
+                INSERT OR IGNORE INTO personalization_text_chunk (
+                    chunk_hmac,
+                    payload_sealed,
+                    plaintext_byte_count,
+                    key_version
+                ) VALUES (?, ?, ?, ?)
+                """,
+                bindings: [
+                    .blob(chunkHMAC),
+                    .blob(sealed),
+                    .integer(Int64(chunk.count)),
+                    .integer(Int64(Self.keyVersion)),
+                ]
+            )
             chunkHMACs.append(chunkHMAC)
             referencedChunks.insert(chunkHMAC)
             offset = end
@@ -621,7 +659,8 @@ public actor PersonalizationDatabase {
             bindings: [.text(Self.completionEpisodeKind)]
         )
         var chunkCache: [Data: Data] = [:]
-        let episodes = try rows.map { row in
+        let episodes = try rows.compactMap {
+            row -> CompletionEpisodeCapture? in
             guard let sealedPayload = row.blob(at: 0) else {
                 throw PersonalizationPersistenceError.database(
                     "Invalid completion episode row"
@@ -641,10 +680,7 @@ public actor PersonalizationDatabase {
                     header.storageVersion
                         == StoredCompletionEpisode.currentStorageVersion
                 else {
-                    throw PersonalizationPersistenceError.database(
-                        "Unsupported completion episode storage version "
-                            + "\(header.storageVersion)"
-                    )
+                    return nil
                 }
                 let stored = try decoder.decode(
                     StoredCompletionEpisode.self,
@@ -1070,14 +1106,45 @@ public actor PersonalizationDatabase {
 
             if let maximumBytes = policy.maximumEncryptedBytes {
                 var payloadBytes = try encryptedPayloadBytes()
-                if payloadBytes > maximumBytes {
+                while payloadBytes > maximumBytes {
                     let oldest = try connection.query(
                         """
-                        SELECT id
-                        FROM personalization_event
+                        SELECT
+                            event.id,
+                            LENGTH(event.payload_sealed)
+                            + COALESCE(
+                                (
+                                    SELECT LENGTH(vector.vector_sealed)
+                                    FROM personalization_embedding AS vector
+                                    WHERE vector.event_id = event.id
+                                ),
+                                0
+                            )
+                            + COALESCE(
+                                (
+                                    SELECT SUM(
+                                        LENGTH(chunk.payload_sealed)
+                                        / (
+                                            SELECT COUNT(*)
+                                            FROM event_text_chunk AS refs
+                                            WHERE refs.chunk_hmac
+                                                = event_chunk.chunk_hmac
+                                        )
+                                    )
+                                    FROM event_text_chunk AS event_chunk
+                                    JOIN personalization_text_chunk AS chunk
+                                        ON chunk.chunk_hmac
+                                            = event_chunk.chunk_hmac
+                                    WHERE event_chunk.event_id = event.id
+                                ),
+                                0
+                            ) AS allocated_bytes
+                        FROM personalization_event AS event
                         ORDER BY captured_at_ms ASC, sequence ASC
                         """
                     )
+                    var estimatedBytes = payloadBytes
+                    var deletedAny = false
                     for row in oldest where payloadBytes > maximumBytes {
                         guard let id = row.text(at: 0) else {
                             continue
@@ -1088,9 +1155,18 @@ public actor PersonalizationDatabase {
                             """,
                             bindings: [.text(id)]
                         )
-                        try pruneUnusedTextChunks()
-                        payloadBytes = try encryptedPayloadBytes()
+                        deletedAny = true
+                        estimatedBytes -= max(
+                            1,
+                            Int(row.integer(at: 1) ?? 0)
+                        )
+                        if estimatedBytes <= maximumBytes {
+                            break
+                        }
                     }
+                    guard deletedAny else { break }
+                    try pruneUnusedTextChunks()
+                    payloadBytes = try encryptedPayloadBytes()
                 }
             }
             try pruneUnusedScopes()
@@ -1266,6 +1342,9 @@ public actor PersonalizationDatabase {
                     ON DELETE CASCADE,
             PRIMARY KEY(event_id, chunk_hmac)
         );
+
+        CREATE INDEX IF NOT EXISTS event_text_chunk_chunk
+        ON event_text_chunk(chunk_hmac);
 
         CREATE TABLE IF NOT EXISTS event_scope (
             event_id TEXT NOT NULL

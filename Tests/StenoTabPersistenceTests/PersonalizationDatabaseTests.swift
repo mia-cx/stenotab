@@ -129,7 +129,6 @@ final class PersonalizationDatabaseTests: XCTestCase {
                 )
             ],
             acceptances: [],
-            acceptedText: "",
             typedThroughText: "",
             resolution: .rejected,
             finalField: CapturedFieldState(
@@ -157,6 +156,70 @@ final class PersonalizationDatabaseTests: XCTestCase {
         )
         XCTAssertNil(raw.range(of: Data("SECRET OCR CONTEXT".utf8)))
         XCTAssertNil(raw.range(of: Data("private input outcome".utf8)))
+        XCTAssertNil(raw.range(of: Data("private input".utf8)))
+    }
+
+    func testUnsupportedCompletionEpisodeDoesNotHideSupportedRows()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let supported = makeCompletionEpisode(
+            id: UUID(),
+            input: "supported input",
+            suggestion: " suggestion",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 400)
+        )
+        try await fixture.database.record(supported)
+        try await fixture.database.recordUnsupportedCompletionEpisodeForTesting(
+            id: UUID(),
+            storageVersion: 999,
+            capturedAt: Date(timeIntervalSince1970: 401)
+        )
+
+        let episodes = try await fixture.database.completionEpisodes()
+        XCTAssertEqual(episodes, [supported])
+    }
+
+    func testTextDeltasPreserveDifferentlyNormalizedUTF8Exactly() throws {
+        let composed = "Café déjà vu"
+        let decomposed = "Cafe\u{301} de\u{301}ja\u{300} vu"
+        let delta = StoredTextDelta(from: composed, to: decomposed)
+
+        XCTAssertEqual(delta.applying(to: composed), decomposed)
+        XCTAssertEqual(
+            Data(try XCTUnwrap(delta.applying(to: composed)).utf8),
+            Data(decomposed.utf8)
+        )
+    }
+
+    func testPromptSuffixReuseRequiresExactUTF8Bytes() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let decomposedInput = "Cafe\u{301}"
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: decomposedInput,
+            suggestion: " works",
+            outcome: " works",
+            date: Date(timeIntervalSince1970: 402),
+            promptInputOverride: "Café"
+        )
+
+        try await fixture.database.record(episode)
+
+        let episodes = try await fixture.database.completionEpisodes()
+        XCTAssertEqual(episodes, [episode])
+    }
+
+    func testForeignKeyEnforcementIsEnabled() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let isEnabled =
+            try await fixture.database.foreignKeyEnforcementEnabled()
+        XCTAssertTrue(isEnabled)
     }
 
     func testCorpusExportDecodesVersionOneWithoutCompletionEpisodes()
@@ -635,7 +698,8 @@ final class PersonalizationDatabaseTests: XCTestCase {
         input: String,
         suggestion: String,
         outcome: String,
-        date: Date
+        date: Date,
+        promptInputOverride: String? = nil
     ) -> CompletionEpisodeCapture {
         let finalText = input + outcome
         let invocation = CompletionInvocationCapture(
@@ -652,7 +716,7 @@ final class PersonalizationDatabaseTests: XCTestCase {
                 textPrompt:
                     "Stable OCR and clipboard context.\n\n"
                     + "My writing:\n§"
-                    + input
+                    + (promptInputOverride ?? input)
             ),
             generation: CompletionGenerationMetadata(
                 providerKind: "local-openai-compatible",
@@ -684,7 +748,6 @@ final class PersonalizationDatabaseTests: XCTestCase {
                 ),
             ],
             acceptances: [],
-            acceptedText: "",
             typedThroughText: "",
             resolution: .rejected,
             finalField: CapturedFieldState(

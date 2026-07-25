@@ -98,7 +98,7 @@ final class PersonalizationSettingsStore: ObservableObject {
             do {
                 languageModel = try await worker.prepare()
                 voiceAssessment = await worker.voiceAssessmentSnapshot()
-                refresh()
+                refreshStatistics()
             } catch {
                 operationError = String(describing: error)
             }
@@ -120,6 +120,21 @@ final class PersonalizationSettingsStore: ObservableObject {
                     try await database.acceptedSuggestions(limit: 20)
                 recentCompletionEpisodes =
                     try await database.completionEpisodes(limit: 20)
+                operationError = nil
+            } catch {
+                operationError = String(describing: error)
+            }
+        }
+    }
+
+    private func refreshStatistics() {
+        guard let database else { return }
+        Task {
+            do {
+                let statistics = try await database.storageStatistics()
+                storedEventCount = statistics.eventCount
+                encryptedPayloadBytes =
+                    statistics.encryptedPayloadBytes
                 operationError = nil
             } catch {
                 operationError = String(describing: error)
@@ -156,7 +171,7 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
-                refresh()
+                refreshStatistics()
             } catch {
                 operationError = String(describing: error)
             }
@@ -180,7 +195,7 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
-                refresh()
+                refreshStatistics()
             } catch {
                 operationError = String(describing: error)
             }
@@ -196,7 +211,7 @@ final class PersonalizationSettingsStore: ObservableObject {
                     feedback,
                     retentionPolicy: policy
                 )
-                refresh()
+                refreshStatistics()
             } catch {
                 operationError = String(describing: error)
             }
@@ -212,7 +227,7 @@ final class PersonalizationSettingsStore: ObservableObject {
                     episode,
                     retentionPolicy: policy
                 )
-                refresh()
+                refreshStatistics()
             } catch {
                 operationError = String(describing: error)
             }

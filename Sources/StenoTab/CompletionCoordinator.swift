@@ -16,6 +16,11 @@ final class CompletionCoordinator: NSObject {
         let editorIdentifier: String
     }
 
+    private enum SuggestionAssociationToken: Equatable {
+        case model(UInt64)
+        case refill(UInt64)
+    }
+
     private let accessibility = AccessibilityReader()
     private let overlay = SuggestionOverlay()
     private let ocrCapture = ScreenOCRContextCapture()
@@ -58,7 +63,7 @@ final class CompletionCoordinator: NSObject {
     private var lastSnapshot: EditorSnapshot?
     private var suggestion: String?
     private var suggestionConsumption: SuggestionConsumption?
-    private var suggestionRequestID: UInt64?
+    private var suggestionAssociationToken: SuggestionAssociationToken?
     private var newestRequestID: UInt64 = 0
     private var preparedRequestSnapshot:
         (requestID: UInt64, snapshot: EditorSnapshot)?
@@ -86,8 +91,10 @@ final class CompletionCoordinator: NSObject {
     private var writingHistoryTracker = WritingHistoryTracker()
     private var completionReversionTracker = CompletionReversionTracker()
     private var completionEpisodeTracker = CompletionEpisodeTracker()
-    private var activeCompletionEpisodeRequestID: UInt64?
+    private var activeCompletionEpisodeToken: SuggestionAssociationToken?
     private var typedSuggestionOrigin: CapturedFieldState?
+    private let completionEpisodeCollectionIsEnabled:
+        @MainActor () -> Bool
 
     private lazy var requestPump = LatestStreamPump<
         CompletionRequest,
@@ -127,6 +134,8 @@ final class CompletionCoordinator: NSObject {
         onCompletionEpisode: @escaping @MainActor (
             CompletionEpisodeCapture
         ) -> Void = { _ in },
+        completionEpisodeCollectionIsEnabled:
+            @escaping @MainActor () -> Bool = { true },
         personalCompletion: @escaping @MainActor (
             String,
             PersonalizationContext
@@ -146,6 +155,8 @@ final class CompletionCoordinator: NSObject {
         self.onWritingEpisode = onWritingEpisode
         self.onCompletionFeedback = onCompletionFeedback
         self.onCompletionEpisode = onCompletionEpisode
+        self.completionEpisodeCollectionIsEnabled =
+            completionEpisodeCollectionIsEnabled
         self.personalCompletion = personalCompletion
         self.personalizationPromptContext = personalizationPromptContext
         super.init()
@@ -262,7 +273,7 @@ final class CompletionCoordinator: NSObject {
         if !enabled {
             invalidatePendingCompletion()
             clearOCRContext()
-            clearSuggestion()
+            clearSuggestion(resolution: .rejected)
         } else {
             reconcile()
         }
@@ -271,14 +282,14 @@ final class CompletionCoordinator: NSObject {
     func applicationPolicyDidChange() {
         invalidatePendingCompletion()
         clearOCRContext()
-        clearSuggestion()
+        clearSuggestion(resolution: .rejected)
         reconcile()
     }
 
     private func handle(_ mutation: ShadowTextBuffer.Mutation) {
         guard enabled, policyAllowsCurrentApplication() else {
             invalidatePendingCompletion()
-            clearSuggestion()
+            clearSuggestion(resolution: .rejected)
             return
         }
         let snapshotBeforeMutation = lastSnapshot
@@ -373,7 +384,7 @@ final class CompletionCoordinator: NSObject {
         }
 
         invalidatePendingCompletion()
-        clearSuggestion()
+        clearSuggestion(resolution: .rejected)
         if buffer.needsReconciliation {
             reconcile()
         } else {
@@ -384,13 +395,13 @@ final class CompletionCoordinator: NSObject {
     private func reconcile(captureFocusedEditor: Bool = false) {
         guard enabled else {
             clearOCRContext()
-            clearSuggestion()
+            clearSuggestion(resolution: .rejected)
             return
         }
         guard policyAllowsCurrentApplication() else {
             invalidatePendingCompletion()
             clearOCRContext()
-            clearSuggestion()
+            clearSuggestion(resolution: .rejected)
             return
         }
         let frontmostProcessID = NSWorkspace.shared.frontmostApplication?
@@ -411,7 +422,7 @@ final class CompletionCoordinator: NSObject {
                 frontmostProcessMatchesLastSnapshot: frontmostMatches
             ) {
                 invalidatePendingCompletion()
-                clearSuggestion()
+                clearSuggestion(resolution: .rejected)
             }
             return
         }
@@ -425,7 +436,7 @@ final class CompletionCoordinator: NSObject {
         } ?? true
         if focusChanged {
             invalidatePendingCompletion()
-            clearSuggestion()
+            clearSuggestion(resolution: .rejected)
         }
         updateTypographyScale(from: previousSnapshot, to: snapshot)
         if let completed = writingHistoryTracker.observe(
@@ -457,7 +468,7 @@ final class CompletionCoordinator: NSObject {
                 suffix: snapshot.suffix
             )
             invalidatePendingCompletion()
-            clearSuggestion()
+            clearSuggestion(resolution: .rejected)
             prepareOverlay(for: snapshot)
             return
         }
@@ -513,7 +524,7 @@ final class CompletionCoordinator: NSObject {
             CompletionRequestPolicy.shouldRequest(prefix: buffer.prefix)
         else {
             invalidatePendingCompletion()
-            clearSuggestion()
+            clearSuggestion(resolution: .rejected)
             return
         }
         if let candidateSnapshot = lastSnapshot,
@@ -543,7 +554,7 @@ final class CompletionCoordinator: NSObject {
             debounceTask?.cancel()
             newestRequestID &+= 1
             preparedRequestSnapshot = nil
-            suggestionRequestID = nil
+            suggestionAssociationToken = nil
             suggestion = completion.insertion
             suggestionConsumption = SuggestionConsumption(
                 suggestion: completion.insertion,
@@ -579,27 +590,31 @@ final class CompletionCoordinator: NSObject {
                 learnedContext = .empty
             }
             guard !Task.isCancelled else { return }
+            guard
+                let preparedSnapshot = self.prepareCurrentPresentation(
+                    expectedPrefix: prefix,
+                    expectedSuffix: suffix
+                )
+            else {
+                return
+            }
+            self.preparedRequestSnapshot = (
+                requestID,
+                preparedSnapshot
+            )
             let request = self.makeRequest(
                 id: requestID,
                 prefix: prefix,
                 suffix: suffix,
-                snapshot: snapshot,
+                snapshot: preparedSnapshot,
+                invocationField: CapturedFieldState(
+                    text: preparedSnapshot.fieldText,
+                    selection: preparedSnapshot.selection
+                ),
                 personalization: learnedContext
             )
-            guard self.prepare(request) else { return }
             await self.requestPump.submit(request)
         }
-    }
-
-    private func prepare(_ request: CompletionRequest) -> Bool {
-        guard let snapshot = prepareCurrentPresentation(
-            expectedPrefix: request.prefix,
-            expectedSuffix: request.suffix
-        ) else {
-            return false
-        }
-        preparedRequestSnapshot = (request.id, snapshot)
-        return true
     }
 
     private func prepareCurrentPresentation(
@@ -608,7 +623,7 @@ final class CompletionCoordinator: NSObject {
     ) -> EditorSnapshot? {
         guard policyAllowsCurrentApplication() else {
             invalidatePendingCompletion()
-            clearSuggestion()
+            clearSuggestion(resolution: .rejected)
             return nil
         }
         guard let snapshot = accessibility.snapshot() ?? lastSnapshot else {
@@ -622,7 +637,7 @@ final class CompletionCoordinator: NSObject {
         if focusChanged {
             suggestion = nil
             suggestionConsumption = nil
-            suggestionRequestID = nil
+            suggestionAssociationToken = nil
             overlay.hide()
         }
         updateTypographyScale(from: previousSnapshot, to: snapshot)
@@ -653,6 +668,7 @@ final class CompletionCoordinator: NSObject {
         prefix: String,
         suffix: String,
         snapshot: EditorSnapshot?,
+        invocationField: CapturedFieldState?,
         personalization: PersonalizationPromptContext = .empty,
         detectPartialWord: Bool = true
     ) -> CompletionRequest {
@@ -660,17 +676,19 @@ final class CompletionCoordinator: NSObject {
             ? incompleteWordFragment(in: prefix)
             : nil
         let configuration = promptConfiguration()
-        let invocationSeed = snapshot.map {
-            CompletionInvocationSeed(
-                id: UUID(),
-                field: CapturedFieldState(
-                    text: $0.fieldText,
-                    selection: $0.selection
-                ),
-                context: personalizationContext(for: $0),
-                startedAt: Date()
-            )
-        }
+        let invocationSeed =
+            completionEpisodeCollectionIsEnabled()
+            ? snapshot.flatMap { snapshot in
+                invocationField.map { field in
+                    CompletionInvocationSeed(
+                        id: UUID(),
+                        field: field,
+                        context: personalizationContext(for: snapshot),
+                        startedAt: Date()
+                    )
+                }
+            }
+            : nil
         return CompletionRequest(
             id: id,
             prefix: prefix,
@@ -863,7 +881,7 @@ final class CompletionCoordinator: NSObject {
         {
             finalizeCompletionEpisode(resolution: .superseded)
             completionEpisodeTracker.begin(invocation)
-            activeCompletionEpisodeRequestID = response.requestID
+            activeCompletionEpisodeToken = .model(response.requestID)
         }
 
         guard let text = response.text, !text.isEmpty else {
@@ -880,7 +898,7 @@ final class CompletionCoordinator: NSObject {
 
         let outcome: SuggestionConsumption.Outcome
         if
-            suggestionRequestID == response.requestID,
+            suggestionAssociationToken == .model(response.requestID),
             var consumption = suggestionConsumption
         {
             outcome = consumption.update(
@@ -889,7 +907,7 @@ final class CompletionCoordinator: NSObject {
             )
             suggestionConsumption = consumption
         } else {
-            suggestionRequestID = response.requestID
+            suggestionAssociationToken = .model(response.requestID)
             typedSuggestionOrigin = CapturedFieldState(
                 text: preparedRequestSnapshot.snapshot.fieldText,
                 selection: preparedRequestSnapshot.snapshot.selection
@@ -1028,12 +1046,19 @@ final class CompletionCoordinator: NSObject {
             scope: scope
         )
         guard !acceptance.accepted.isEmpty else { return false }
-        if activeCompletionEpisodeRequestID == suggestionRequestID {
+        let linkedEpisodeID: UUID?
+        if
+            let activeCompletionEpisodeToken,
+            activeCompletionEpisodeToken == suggestionAssociationToken
+        {
+            linkedEpisodeID = completionEpisodeTracker.activeInvocationID
             completionEpisodeTracker.recordAcceptance(
                 acceptance.accepted,
                 scope: scope,
                 at: Date()
             )
+        } else {
+            linkedEpisodeID = nil
         }
         typedSuggestionOrigin = nil
         let snapshotBeforeAcceptance = accessibility.snapshot() ?? lastSnapshot
@@ -1043,8 +1068,7 @@ final class CompletionCoordinator: NSObject {
                 selection: $0.selection,
                 insertion: acceptance.accepted,
                 acceptanceScope: scope,
-                completionEpisodeID:
-                    completionEpisodeTracker.activeInvocationID,
+                completionEpisodeID: linkedEpisodeID,
                 context: personalizationContext(for: $0)
             )
         }
@@ -1166,6 +1190,13 @@ final class CompletionCoordinator: NSObject {
                 prefix: key.prefix,
                 suffix: key.suffix,
                 snapshot: snapshot,
+                invocationField: CapturedFieldState(
+                    text: key.prefix + key.suffix,
+                    selection: UTF16Selection(
+                        location: key.prefix.utf16.count,
+                        length: 0
+                    )
+                ),
                 personalization: learnedContext,
                 detectPartialWord: false
             )
@@ -1425,14 +1456,12 @@ final class CompletionCoordinator: NSObject {
                 isFinal: true,
                 at: Date()
             )
-            activeCompletionEpisodeRequestID = requestID
+            activeCompletionEpisodeToken = .refill(requestID)
         }
         suggestion = text
         suggestionConsumption = SuggestionConsumption(suggestion: text)
-        suggestionRequestID = requestID
-        typedSuggestionOrigin =
-            invocation?.field
-            ?? currentCapturedField()
+        suggestionAssociationToken = .refill(requestID)
+        typedSuggestionOrigin = nil
 
         if
             let snapshot = accessibility.snapshot(),
@@ -1591,7 +1620,10 @@ final class CompletionCoordinator: NSObject {
     }
 
     private func recordCompletionEpisodeTypedThrough(_ text: String) {
-        guard activeCompletionEpisodeRequestID == suggestionRequestID else {
+        guard
+            let activeCompletionEpisodeToken,
+            activeCompletionEpisodeToken == suggestionAssociationToken
+        else {
             return
         }
         completionEpisodeTracker.recordTypedThrough(text)
@@ -1611,16 +1643,16 @@ final class CompletionCoordinator: NSObject {
             )
         else {
             completionEpisodeTracker.discard()
-            activeCompletionEpisodeRequestID = nil
+            activeCompletionEpisodeToken = nil
             return
         }
-        activeCompletionEpisodeRequestID = nil
+        activeCompletionEpisodeToken = nil
         onCompletionEpisode(episode)
     }
 
     private func clearSuggestion(
         resetConsumption: Bool = true,
-        resolution: CompletionEpisodeResolution = .superseded
+        resolution: CompletionEpisodeResolution
     ) {
         debounceTask?.cancel()
         caretReanchorTask?.cancel()
@@ -1628,7 +1660,7 @@ final class CompletionCoordinator: NSObject {
         if resetConsumption {
             finalizeCompletionEpisode(resolution: resolution)
             suggestionConsumption = nil
-            suggestionRequestID = nil
+            suggestionAssociationToken = nil
             typedSuggestionOrigin = nil
         }
         overlay.hide()

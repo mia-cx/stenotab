@@ -135,7 +135,9 @@ public struct CompletionEpisodeCapture: Codable, Sendable, Equatable {
     public let invocation: CompletionInvocationCapture
     public let suggestionRevisions: [CompletionSuggestionRevision]
     public let acceptances: [CompletionAcceptanceCapture]
-    public let acceptedText: String
+    public var acceptedText: String {
+        acceptances.map(\.text).joined()
+    }
     public let typedThroughText: String
     public let resolution: CompletionEpisodeResolution
     public let finalField: CapturedFieldState
@@ -147,7 +149,6 @@ public struct CompletionEpisodeCapture: Codable, Sendable, Equatable {
         invocation: CompletionInvocationCapture,
         suggestionRevisions: [CompletionSuggestionRevision],
         acceptances: [CompletionAcceptanceCapture],
-        acceptedText: String,
         typedThroughText: String,
         resolution: CompletionEpisodeResolution,
         finalField: CapturedFieldState,
@@ -158,7 +159,6 @@ public struct CompletionEpisodeCapture: Codable, Sendable, Equatable {
         self.invocation = invocation
         self.suggestionRevisions = suggestionRevisions
         self.acceptances = acceptances
-        self.acceptedText = acceptedText
         self.typedThroughText = typedThroughText
         self.resolution = resolution
         self.finalField = finalField
@@ -284,7 +284,6 @@ public struct CompletionEpisodeTracker: Sendable {
             invocation: active.invocation,
             suggestionRevisions: active.suggestionRevisions,
             acceptances: active.acceptances,
-            acceptedText: active.acceptances.map(\.text).joined(),
             typedThroughText: active.typedThroughText,
             resolution: resolution,
             finalField: finalField,

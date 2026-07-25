@@ -36,10 +36,21 @@ Each committed training run should record:
 - start/end time and resulting adapter path/fingerprint; and
 - evaluation metrics used to accept or reject the checkpoint.
 
-Only mark the selection as consumed when the adapter and ledger entry have been
-saved atomically. Failed or interrupted runs leave those episodes eligible for
-retry. Compatibility includes the base-model revision, quantization, adapter
-architecture, and training-recipe version.
+Use a crash-recoverable commit protocol rather than assuming the adapter and
+ledger can share one transaction:
+
+1. persist the run and its immutable selection as `prepared`;
+2. train, write the adapter to a temporary path, durably rename it into place,
+   and record its content fingerprint;
+3. verify that the published artifact matches the prepared run; then
+4. commit the ledger relationship and mark the run `committed`.
+
+Startup reconciliation must resume or fail prepared/training runs, commit a
+published artifact whose fingerprint matches its prepared run, and quarantine
+or remove orphaned artifacts. Failed or interrupted runs keep their episodes
+eligible for retry; a completed commit is idempotent and must not train the same
+selection again. Compatibility includes the base-model revision, quantization,
+adapter architecture, and training-recipe version.
 
 ### Use a monotonic sequence for the watermark, timestamps for retention
 
@@ -68,16 +79,20 @@ safe.
 
 ### Retention has two hazards that are easy to miss
 
-1. **The frozen validation slice must never be deleted.** Comparing adapters
-   across rounds only means something if the held-out set is stable. Retention
-   has to treat validation episodes as pinned, or every gate result becomes
-   incomparable to the last.
+1. **Ordinary storage retention pins the frozen validation slice.** Comparing
+   adapters across rounds only means something if the held-out set is stable.
+   Privacy deletion takes precedence, however: remove the requested episode,
+   invalidate every affected baseline and adapter lineage, then create a new
+   versioned frozen validation slice. Evaluation results are comparable only
+   within the same validation-slice version.
 
 2. **Deleting an episode does not un-train it.** The adapter keeps its
    influence. So row deletion is a *storage* measure, not a *privacy* one — and
    "delete my data" means both things to a user. Privacy-motivated deletion has
    to invalidate or retrain the adapter as well, otherwise the promise is not
-   kept. Worth surfacing in the UI as two distinct actions.
+   kept. The UI must distinguish a storage-only cleanup action from a privacy
+   deletion action that also invalidates/rebuilds derived adapters and
+   baselines.
 
 An edited, deleted, or excluded source episode should mark every affected
 adapter lineage stale. Rebuild from the remaining eligible corpus rather than

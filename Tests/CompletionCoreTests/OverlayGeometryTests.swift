@@ -30,6 +30,44 @@ final class OverlayGeometryTests: XCTestCase {
         )
     }
 
+    func testPresentationForegroundRaisesOpacityForLightEditorContrast() {
+        let color = OverlayContrast.presentationForeground(
+            explicitForeground: nil,
+            background: OverlayRGBColor(
+                red: 0.96,
+                green: 0.96,
+                blue: 0.96
+            ),
+            fallback: OverlayRGBColor(red: 1, green: 0, blue: 0)
+        )
+
+        XCTAssertEqual(color.red, 0)
+        XCTAssertEqual(color.green, 0)
+        XCTAssertEqual(color.blue, 0)
+        XCTAssertGreaterThan(color.alpha, 0.34)
+        XCTAssertLessThan(color.alpha, 1)
+    }
+
+    func testPresentationForegroundKeepsPreferredOpacityWhenExplicit() {
+        XCTAssertEqual(
+            OverlayContrast.presentationForeground(
+                explicitForeground: OverlayRGBColor(
+                    red: 0.2,
+                    green: 0.3,
+                    blue: 0.4
+                ),
+                background: OverlayRGBColor(red: 1, green: 1, blue: 1),
+                fallback: OverlayRGBColor(red: 0, green: 0, blue: 0)
+            ),
+            OverlayRGBColor(
+                red: 0.2,
+                green: 0.3,
+                blue: 0.4,
+                alpha: 0.34
+            )
+        )
+    }
+
     func testAlignsOverlayOriginToPhysicalPixels() {
         XCTAssertEqual(
             OverlayGeometry.pixelAlignedOrigin(

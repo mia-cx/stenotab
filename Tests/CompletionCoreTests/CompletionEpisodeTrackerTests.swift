@@ -289,4 +289,61 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
             .partiallyAccepted
         )
     }
+
+    func testFinalizeWithoutSuggestionRevisionReturnsNil() {
+        let date = Date(timeIntervalSince1970: 6_000)
+        let invocation = makeInvocation(date: date)
+        var tracker = CompletionEpisodeTracker()
+        tracker.begin(invocation)
+
+        XCTAssertNil(
+            tracker.finalize(
+                resolution: .rejected,
+                finalField: invocation.field,
+                at: date
+            )
+        )
+    }
+
+    func testFinalizeWithInvalidFinalSelectionReturnsNil() {
+        let date = Date(timeIntervalSince1970: 7_000)
+        let invocation = makeInvocation(date: date)
+        var tracker = CompletionEpisodeTracker()
+        tracker.begin(invocation)
+        tracker.observeSuggestion(" there", isFinal: true, at: date)
+
+        XCTAssertNil(
+            tracker.finalize(
+                resolution: .rejected,
+                finalField: CapturedFieldState(
+                    text: "hello",
+                    selection: UTF16Selection(location: 99, length: 0)
+                ),
+                at: date
+            )
+        )
+    }
+
+    private func makeInvocation(date: Date) -> CompletionInvocationCapture {
+        CompletionInvocationCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "hello",
+                selection: UTF16Selection(location: 5, length: 0)
+            ),
+            prompt: CapturedCompletionPrompt(
+                transport: .textCompletion,
+                textPrompt: "My writing:\n§hello"
+            ),
+            generation: CompletionGenerationMetadata(
+                providerKind: "local",
+                modelIdentifier: "gemma-4-e2b",
+                maximumTokens: 16,
+                temperature: 0,
+                stopSequences: []
+            ),
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date
+        )
+    }
 }

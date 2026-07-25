@@ -43,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        installMainMenu()
+        ApplicationMenu.install(on: NSApp, delegate: self)
         configurePersonalizationDatabase()
 
         let environment = ProcessInfo.processInfo.environment
@@ -83,6 +83,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             },
             onCompletionEpisode: { [weak self] episode in
                 self?.recordCompletionEpisode(episode)
+            },
+            completionEpisodeCollectionIsEnabled: {
+                [personalizationSettings] in
+                personalizationSettings.collectionEnabled
             },
             personalCompletion: { [personalizationSettings] prefix, context in
                 personalizationSettings.personalCompletion(
@@ -469,59 +473,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
 
         NSApp.setActivationPolicy(.accessory)
         NSApp.deactivate()
-    }
-
-    private func installMainMenu() {
-        let mainMenu = NSMenu()
-        let applicationItem = NSMenuItem(title: "StenoTab", action: nil, keyEquivalent: "")
-        let applicationMenu = NSMenu(title: "StenoTab")
-
-        let aboutItem = NSMenuItem(
-            title: "About StenoTab",
-            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
-            keyEquivalent: ""
-        )
-        aboutItem.target = NSApp
-        applicationMenu.addItem(aboutItem)
-        applicationMenu.addItem(.separator())
-
-        let hideItem = NSMenuItem(
-            title: "Hide StenoTab",
-            action: #selector(NSApplication.hide(_:)),
-            keyEquivalent: "h"
-        )
-        hideItem.target = NSApp
-        applicationMenu.addItem(hideItem)
-
-        let hideOthersItem = NSMenuItem(
-            title: "Hide Others",
-            action: #selector(NSApplication.hideOtherApplications(_:)),
-            keyEquivalent: "h"
-        )
-        hideOthersItem.keyEquivalentModifierMask = [.command, .option]
-        hideOthersItem.target = NSApp
-        applicationMenu.addItem(hideOthersItem)
-
-        let showAllItem = NSMenuItem(
-            title: "Show All",
-            action: #selector(NSApplication.unhideAllApplications(_:)),
-            keyEquivalent: ""
-        )
-        showAllItem.target = NSApp
-        applicationMenu.addItem(showAllItem)
-        applicationMenu.addItem(.separator())
-
-        let quitItem = NSMenuItem(
-            title: "Quit StenoTab",
-            action: #selector(NSApplication.terminate(_:)),
-            keyEquivalent: "q"
-        )
-        quitItem.target = NSApp
-        applicationMenu.addItem(quitItem)
-
-        applicationItem.submenu = applicationMenu
-        mainMenu.addItem(applicationItem)
-        NSApp.mainMenu = mainMenu
     }
 
     private func menuBarIcon() -> NSImage? {

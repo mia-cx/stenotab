@@ -325,8 +325,8 @@ final class AccessibilityReader {
         } else {
             foregroundColor = nil
         }
-        let backgroundKey = NSAttributedString.Key("AXBackgroundColor")
-        let backgroundValue = attributes[backgroundKey]
+        let backgroundValue =
+            attributes[.accessibilityBackgroundColor]
         let backgroundColor: CGColor?
         if
             let backgroundValue,

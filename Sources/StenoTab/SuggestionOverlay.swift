@@ -57,7 +57,7 @@ final class SuggestionOverlay {
         let fallbackColor = rgbComponents(of: .labelColor)
             ?? OverlayRGBColor(red: 0, green: 0, blue: 0)
         let sourceColor = nsColor(
-            OverlayContrast.foreground(
+            OverlayContrast.presentationForeground(
                 explicitForeground: rgbComponents(of: foregroundColor),
                 background: rgbComponents(of: backgroundColor),
                 fallback: fallbackColor
@@ -79,7 +79,7 @@ final class SuggestionOverlay {
         preparedPresentation = PreparedPresentation(
             attributes: [
                 .font: font,
-                .foregroundColor: sourceColor.withAlphaComponent(0.34),
+                .foregroundColor: sourceColor,
             ],
             linePlacement: OverlayGeometry.prepareLinePlacement(
                 caretRect: caretRect,

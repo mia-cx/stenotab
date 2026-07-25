@@ -47,6 +47,8 @@ public enum VoiceAssessmentSchedule {
 
 public enum VoiceAssessmentAnalyzer {
     public static let currentVersion = 2
+    private typealias LanguageHypothesis =
+        (language: NLLanguage, confidence: Double)
 
     public static func assess(
         texts: [String],
@@ -82,8 +84,14 @@ public enum VoiceAssessmentAnalyzer {
             }
         }.count
         let technicalWords = words.filter(isTechnicalWord).count
-        let languageTrait = languageTrait(in: samples)
-        let englishVariety = englishVariety(in: samples)
+        let languageHypotheses = samples.map(languageHypothesis(for:))
+        let languageTrait = languageTrait(
+            hypotheses: languageHypotheses
+        )
+        let englishVariety = englishVariety(
+            in: samples,
+            hypotheses: languageHypotheses
+        )
 
         var traits: [String] = []
         switch averageWords {
@@ -168,12 +176,14 @@ public enum VoiceAssessmentAnalyzer {
             || word.contains("/")
     }
 
-    private static func languageTrait(in samples: [String]) -> String? {
+    private static func languageTrait(
+        hypotheses: [LanguageHypothesis?]
+    ) -> String? {
         var counts: [NLLanguage: Int] = [:]
 
-        for sample in samples {
+        for hypothesis in hypotheses {
             guard
-                let hypothesis = languageHypothesis(for: sample),
+                let hypothesis,
                 hypothesis.confidence >= 0.75
             else {
                 continue
@@ -222,7 +232,7 @@ public enum VoiceAssessmentAnalyzer {
 
     private static func languageHypothesis(
         for sample: String
-    ) -> (language: NLLanguage, confidence: Double)? {
+    ) -> LanguageHypothesis? {
         guard sample.filter(\.isLetter).count >= 20 else { return nil }
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(sample)
@@ -244,7 +254,10 @@ public enum VoiceAssessmentAnalyzer {
         case undetermined
     }
 
-    private static func englishVariety(in samples: [String]) -> EnglishVariety {
+    private static func englishVariety(
+        in samples: [String],
+        hypotheses: [LanguageHypothesis?]
+    ) -> EnglishVariety {
         let britishMarkers: Set<String> = [
             "behaviour", "cancelled", "centre", "colour", "defence",
             "favourite", "honour", "labelled", "licence", "modelling",
@@ -263,9 +276,9 @@ public enum VoiceAssessmentAnalyzer {
         var americanWords: Set<String> = []
         var americanSamples = 0
 
-        for sample in samples {
+        for (sample, hypothesis) in zip(samples, hypotheses) {
             if
-                let language = languageHypothesis(for: sample),
+                let language = hypothesis,
                 language.confidence >= 0.75,
                 language.language != .english
             {

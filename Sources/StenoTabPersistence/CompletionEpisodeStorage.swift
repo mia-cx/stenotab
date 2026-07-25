@@ -9,52 +9,52 @@ struct StoredTextReference: Codable, Sendable, Equatable {
 struct StoredTextDelta: Codable, Sendable, Equatable {
     let retainedPrefixCount: Int
     let retainedSuffixCount: Int
-    let replacement: String
+    let replacement: Data
 
     init(from original: String, to updated: String) {
-        let originalCharacters = Array(original)
-        let updatedCharacters = Array(updated)
+        let originalBytes = Array(original.utf8)
+        let updatedBytes = Array(updated.utf8)
         var prefixCount = 0
         while
-            prefixCount < originalCharacters.count,
-            prefixCount < updatedCharacters.count,
-            originalCharacters[prefixCount]
-                == updatedCharacters[prefixCount]
+            prefixCount < originalBytes.count,
+            prefixCount < updatedBytes.count,
+            originalBytes[prefixCount] == updatedBytes[prefixCount]
         {
             prefixCount += 1
         }
 
         var suffixCount = 0
         while
-            suffixCount < originalCharacters.count - prefixCount,
-            suffixCount < updatedCharacters.count - prefixCount,
-            originalCharacters[originalCharacters.count - suffixCount - 1]
-                == updatedCharacters[updatedCharacters.count - suffixCount - 1]
+            suffixCount < originalBytes.count - prefixCount,
+            suffixCount < updatedBytes.count - prefixCount,
+            originalBytes[originalBytes.count - suffixCount - 1]
+                == updatedBytes[updatedBytes.count - suffixCount - 1]
         {
             suffixCount += 1
         }
 
         retainedPrefixCount = prefixCount
         retainedSuffixCount = suffixCount
-        replacement = String(
-            updatedCharacters[
-                prefixCount..<(updatedCharacters.count - suffixCount)
+        replacement = Data(
+            updatedBytes[
+                prefixCount..<(updatedBytes.count - suffixCount)
             ]
         )
     }
 
     func applying(to original: String) -> String? {
-        let characters = Array(original)
+        let bytes = Array(original.utf8)
         guard
             retainedPrefixCount >= 0,
             retainedSuffixCount >= 0,
-            retainedPrefixCount + retainedSuffixCount <= characters.count
+            retainedPrefixCount + retainedSuffixCount <= bytes.count
         else {
             return nil
         }
-        return String(characters.prefix(retainedPrefixCount))
-            + replacement
-            + String(characters.suffix(retainedSuffixCount))
+        var updated = Array(bytes.prefix(retainedPrefixCount))
+        updated.append(contentsOf: replacement)
+        updated.append(contentsOf: bytes.suffix(retainedSuffixCount))
+        return String(bytes: updated, encoding: .utf8)
     }
 }
 
@@ -90,7 +90,7 @@ struct StoredCompletionSuggestionRevision:
 }
 
 struct StoredCompletionEpisode: Codable, Sendable, Equatable {
-    static let currentStorageVersion = 1
+    static let currentStorageVersion = 2
 
     let storageVersion: Int
     let id: UUID
@@ -162,7 +162,6 @@ struct StoredCompletionEpisode: Codable, Sendable, Equatable {
             ),
             suggestionRevisions: revisions,
             acceptances: acceptances,
-            acceptedText: acceptances.map(\.text).joined(),
             typedThroughText: typedThroughText,
             resolution: resolution,
             finalField: CapturedFieldState(

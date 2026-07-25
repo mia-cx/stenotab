@@ -24,6 +24,65 @@ public struct OverlayRGBColor: Sendable, Equatable {
 }
 
 public enum OverlayContrast {
+    public static func presentationForeground(
+        explicitForeground: OverlayRGBColor?,
+        background: OverlayRGBColor?,
+        fallback: OverlayRGBColor,
+        preferredAlpha: Double = 0.34,
+        minimumContrast: Double = 3
+    ) -> OverlayRGBColor {
+        if let explicitForeground {
+            return OverlayRGBColor(
+                red: explicitForeground.red,
+                green: explicitForeground.green,
+                blue: explicitForeground.blue,
+                alpha: preferredAlpha
+            )
+        }
+        guard let background else {
+            return OverlayRGBColor(
+                red: fallback.red,
+                green: fallback.green,
+                blue: fallback.blue,
+                alpha: preferredAlpha
+            )
+        }
+
+        let opaque = foreground(
+            explicitForeground: nil,
+            background: background,
+            fallback: fallback
+        )
+        var lower = preferredAlpha
+        var upper = 1.0
+        if contrastAfterCompositing(
+            foreground: opaque,
+            background: background,
+            alpha: lower
+        ) >= minimumContrast {
+            upper = lower
+        } else {
+            for _ in 0..<12 {
+                let candidate = (lower + upper) / 2
+                if contrastAfterCompositing(
+                    foreground: opaque,
+                    background: background,
+                    alpha: candidate
+                ) >= minimumContrast {
+                    upper = candidate
+                } else {
+                    lower = candidate
+                }
+            }
+        }
+        return OverlayRGBColor(
+            red: opaque.red,
+            green: opaque.green,
+            blue: opaque.blue,
+            alpha: upper
+        )
+    }
+
     public static func foreground(
         explicitForeground: OverlayRGBColor?,
         background: OverlayRGBColor?,
@@ -55,5 +114,24 @@ public enum OverlayContrast {
         component <= 0.04045
             ? component / 12.92
             : pow((component + 0.055) / 1.055, 2.4)
+    }
+
+    private static func contrastAfterCompositing(
+        foreground: OverlayRGBColor,
+        background: OverlayRGBColor,
+        alpha: Double
+    ) -> Double {
+        let composite = OverlayRGBColor(
+            red: foreground.red * alpha
+                + background.red * (1 - alpha),
+            green: foreground.green * alpha
+                + background.green * (1 - alpha),
+            blue: foreground.blue * alpha
+                + background.blue * (1 - alpha)
+        )
+        let foregroundLuminance = relativeLuminance(composite)
+        let backgroundLuminance = relativeLuminance(background)
+        return (max(foregroundLuminance, backgroundLuminance) + 0.05)
+            / (min(foregroundLuminance, backgroundLuminance) + 0.05)
     }
 }

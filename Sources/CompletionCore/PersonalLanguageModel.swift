@@ -83,7 +83,7 @@ public struct PersonalVocabularyEntry:
 }
 
 public struct PersonalLanguageModel: Codable, Sendable, Equatable {
-    private static let currentProjectionVersion = 2
+    private static let currentProjectionVersion = 3
 
     private struct WordOccurrence {
         let display: String
@@ -150,57 +150,37 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         context: PersonalizationContext,
         at date: Date = Date()
     ) {
-        let insertedWords = Self.words(in: insertedText)
-        guard !insertedWords.isEmpty else { return }
-        let precedingWords = Self.words(in: precedingText)
-        let combined = precedingWords + insertedWords
-        let insertedStart = precedingWords.count
-        let scopeKeys = Self.scopeKeys(for: context)
-
-        for index in insertedStart..<combined.count {
-            let displayToken = combined[index]
-            let normalized = Self.normalize(displayToken)
-            updateVocabulary(
-                normalized: normalized,
-                display: displayToken,
-                signal: signal,
-                at: date
-            )
-
-            let maximumContext = min(
-                maximumNGramLength - 1,
-                index
-            )
-            for contextLength in 0...maximumContext {
-                let contextStart = index - contextLength
-                let key = Self.contextKey(
-                    Array(combined[contextStart..<index])
-                )
-                updateTransition(
-                    contextKey: key,
-                    candidate: normalized,
-                    signal: signal,
-                    scopeKeys: scopeKeys,
-                    at: date
-                )
-            }
-        }
+        learnFieldChange(
+            before: precedingText,
+            after: precedingText + insertedText,
+            signal: signal,
+            context: context,
+            at: date
+        )
     }
 
     public mutating func ingest(_ episode: WritingEpisodeCapture) {
-        guard episode.edits.contains(where: {
+        let directlyTypedEdits = episode.edits.filter {
             $0.provenance == .directlyTyped
-        }) else {
-            return
         }
-        learnFieldChange(
-            before: episode.initialField.text,
-            after: episode.finalField.text,
-            signal: .directlyTyped,
-            context: episode.context,
-            at: episode.endedAt,
-            excludeUnterminatedTrailingWord: episode.boundary == .idle
-        )
+        for (index, edit) in directlyTypedEdits.enumerated() {
+            guard
+                let fieldBefore = edit.fieldBefore,
+                let fieldAfter = Self.resolvedFieldAfter(edit)
+            else {
+                continue
+            }
+            learnFieldChange(
+                before: fieldBefore.text,
+                after: fieldAfter.text,
+                signal: .directlyTyped,
+                context: episode.context,
+                at: edit.endedAt,
+                excludeUnterminatedTrailingWord:
+                    episode.boundary == .idle
+                    && index == directlyTypedEdits.count - 1
+            )
+        }
     }
 
     public mutating func ingest(_ capture: AcceptedSuggestionCapture) {
@@ -378,7 +358,8 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         let affectedIndices = words.indices.filter {
             let intersects = Self.intersects(
                 words[$0].range,
-                changedRange: changedRange
+                changedRange: changedRange,
+                includeBoundaryTouch: signal == .directlyTyped
             )
             let isUnterminatedTail =
                 trailingWordIsUnterminated && $0 == words.count - 1
@@ -569,7 +550,8 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
                 result += String(word.dropFirst(fragment.count))
                 continue
             }
-            if index == 0, prefix.last?.isWhitespace == true {
+            if index == 0,
+               prefix.isEmpty || prefix.last?.isWhitespace == true {
                 result += word
             } else {
                 result += " " + word
@@ -658,15 +640,22 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
 
     private static func intersects(
         _ wordRange: Range<String.Index>,
-        changedRange: Range<String.Index>
+        changedRange: Range<String.Index>,
+        includeBoundaryTouch: Bool
     ) -> Bool {
         if changedRange.isEmpty {
-            return wordRange.lowerBound <= changedRange.lowerBound
+            return includeBoundaryTouch
+                && wordRange.lowerBound <= changedRange.lowerBound
                 && changedRange.lowerBound <= wordRange.upperBound
         }
         return wordRange.overlaps(changedRange)
-            || wordRange.upperBound == changedRange.lowerBound
-            || wordRange.lowerBound == changedRange.upperBound
+            || (
+                includeBoundaryTouch
+                && (
+                    wordRange.upperBound == changedRange.lowerBound
+                    || wordRange.lowerBound == changedRange.upperBound
+                )
+            )
     }
 
     private static func trailingWordFragment(in text: String) -> String? {
@@ -741,5 +730,37 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         return String(decoding: utf16[..<lowerBound], as: UTF16.self)
             + insertion
             + String(decoding: utf16[upperBound...], as: UTF16.self)
+    }
+
+    private static func resolvedFieldAfter(
+        _ edit: WritingEditCapture
+    ) -> CapturedFieldState? {
+        if let fieldAfter = edit.fieldAfter {
+            return fieldAfter
+        }
+        guard let fieldBefore = edit.fieldBefore else { return nil }
+
+        let replacementSelection: UTF16Selection
+        if let deletedText = edit.deletedText, !deletedText.isEmpty {
+            replacementSelection = UTF16Selection(
+                location: edit.selectionAfter.location,
+                length: deletedText.utf16.count
+            )
+        } else {
+            replacementSelection = edit.selectionBefore
+        }
+        guard
+            let text = replacing(
+                replacementSelection,
+                in: fieldBefore.text,
+                with: edit.insertedText
+            )
+        else {
+            return nil
+        }
+        return CapturedFieldState(
+            text: text,
+            selection: edit.selectionAfter
+        )
     }
 }

@@ -226,12 +226,18 @@ final class VoiceAssessmentTests: XCTestCase {
 
     func testAssessmentRecognizesSustainedEnglishAndDutchCodeSwitching() {
         let texts = [
-            "could you check whether the settings window still opens?",
-            "i think the model download finished successfully",
-            "the autocomplete suggestion looks correctly aligned now",
-            "kun je controleren of het instellingenvenster nog opent?",
-            "volgens mij is het model helemaal klaar met downloaden",
-            "de automatische aanvulling staat nu op de juiste plek"
+            "could you check whether the settings window still opens after "
+                + "the latest update and whether every option remains visible?",
+            "i think the model download finished successfully and the local "
+                + "server is responding normally to completion requests",
+            "the autocomplete suggestion looks correctly aligned now and it "
+                + "continues on the next line without covering existing text",
+            "kun je controleren of het instellingenvenster nog opent na de "
+                + "laatste update en of alle opties zichtbaar blijven?",
+            "volgens mij is het model helemaal klaar met downloaden en "
+                + "reageert de lokale server normaal op aanvullingen",
+            "de automatische aanvulling staat nu op de juiste plek en gaat "
+                + "netjes verder op de volgende regel"
         ]
 
         let assessment = VoiceAssessmentAnalyzer.assess(
@@ -249,10 +255,14 @@ final class VoiceAssessmentTests: XCTestCase {
 
     func testNonEnglishCognatesDoNotBecomeEnglishDialectEvidence() {
         let texts = [
-            "le programme fonctionne correctement sur mon ordinateur",
-            "le centre de la fenêtre contient tous les réglages",
-            "la licence du logiciel se trouve dans le dépôt",
-            "je vais vérifier les autres modifications maintenant"
+            "le programme fonctionne correctement sur mon ordinateur et "
+                + "toutes les suggestions apparaissent sans délai visible",
+            "le centre de la fenêtre contient tous les réglages nécessaires "
+                + "pour configurer le modèle local et les raccourcis",
+            "la licence du logiciel se trouve dans le dépôt avec la "
+                + "documentation complète pour installer cette version",
+            "je vais vérifier les autres modifications maintenant avant de "
+                + "publier la nouvelle version pour les utilisateurs"
         ]
 
         let assessment = VoiceAssessmentAnalyzer.assess(

@@ -101,6 +101,105 @@ final class PersonalLanguageModelTests: XCTestCase {
         XCTAssertFalse(entries.contains { $0.normalized == "hing" })
     }
 
+    func testMixedEpisodeLearnsOnlyDirectlyTypedEdits() {
+        let date = Date(timeIntervalSince1970: 77)
+        let initial = CapturedFieldState(
+            text: "open a pull req",
+            selection: UTF16Selection(location: 15, length: 0)
+        )
+        let afterAcceptance = CapturedFieldState(
+            text: "open a pull request ",
+            selection: UTF16Selection(location: 20, length: 0)
+        )
+        let final = CapturedFieldState(
+            text: "open a pull request please",
+            selection: UTF16Selection(location: 26, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: final,
+            edits: [
+                WritingEditCapture(
+                    insertedText: "uest ",
+                    provenance: .acceptedSuggestion,
+                    selectionBefore: initial.selection,
+                    selectionAfter: afterAcceptance.selection,
+                    fieldBefore: initial,
+                    fieldAfter: afterAcceptance,
+                    startedAt: date,
+                    endedAt: date
+                ),
+                WritingEditCapture(
+                    insertedText: "please",
+                    provenance: .directlyTyped,
+                    selectionBefore: afterAcceptance.selection,
+                    selectionAfter: final.selection,
+                    fieldBefore: afterAcceptance,
+                    fieldAfter: final,
+                    startedAt: date,
+                    endedAt: date
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date,
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel()
+        model.ingest(episode)
+
+        XCTAssertEqual(
+            model.vocabularyEntries().map(\.normalized),
+            ["please"]
+        )
+    }
+
+    func testAcceptedSeparatorDoesNotReinforceUnchangedBoundaryWord() throws {
+        let capture = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                fieldText: "hello",
+                selection: UTF16Selection(location: 5, length: 0),
+                insertion: " world",
+                acceptanceScope: .nextWord,
+                context: PersonalizationContext(editorIdentifier: "editor"),
+                capturedAt: Date(timeIntervalSince1970: 78)
+            )
+        )
+
+        var model = PersonalLanguageModel()
+        model.ingest(capture)
+
+        XCTAssertEqual(
+            model.vocabularyEntries().map(\.normalized),
+            ["world"]
+        )
+    }
+
+    func testEmptyPrefixLocalCompletionDoesNotAddLeadingSpace() throws {
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        for offset in 0..<3 {
+            model.learn(
+                insertedText: "hello",
+                precedingText: "",
+                signal: .directlyTyped,
+                context: PersonalizationContext(editorIdentifier: "editor"),
+                at: Date(timeIntervalSince1970: Double(80 + offset))
+            )
+        }
+
+        let completion = try XCTUnwrap(
+            model.completion(
+                for: "",
+                context: PersonalizationContext(editorIdentifier: "editor"),
+                at: Date(timeIntervalSince1970: 90)
+            )
+        )
+
+        XCTAssertEqual(completion.insertion, "hello")
+    }
+
     func testRepeatedEditorPhrasesCanCompleteLocally() throws {
         let context = PersonalizationContext(
             applicationBundleIdentifier: "com.example.Chat",

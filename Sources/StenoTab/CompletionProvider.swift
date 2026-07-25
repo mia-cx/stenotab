@@ -148,6 +148,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
         for request: CompletionRequest,
         stream: Bool
     ) -> PreparedRequest {
+        let maximumTokens = 16
+        let temperature = 0.0
         let resource = switch apiStyle {
         case .textCompletions, .gemmaChatPrefill:
             "completions"
@@ -186,8 +188,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                 TextCompletionBody(
                     model: model,
                     prompt: prompt,
-                    maxTokens: 16,
-                    temperature: 0,
+                    maxTokens: maximumTokens,
+                    temperature: temperature,
                     stop: nil,
                     stream: stream
                 )
@@ -206,8 +208,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                 TextCompletionBody(
                     model: model,
                     prompt: prompt,
-                    maxTokens: 16,
-                    temperature: 0,
+                    maxTokens: maximumTokens,
+                    temperature: temperature,
                     stop: ["<turn|>"],
                     stream: stream
                 )
@@ -234,8 +236,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                         ),
                         .init(role: "user", content: prompt.userMessage),
                     ],
-                    maxTokens: 16,
-                    temperature: 0,
+                    maxTokens: maximumTokens,
+                    temperature: temperature,
                     stop: nil,
                     stream: stream
                 )
@@ -258,8 +260,8 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                 generation: CompletionGenerationMetadata(
                     providerKind: providerKind,
                     modelIdentifier: model,
-                    maximumTokens: 16,
-                    temperature: 0,
+                    maximumTokens: maximumTokens,
+                    temperature: temperature,
                     stopSequences: stopSequences
                 ),
                 context: $0.context,
