@@ -23,12 +23,6 @@ enum PromptResources {
     static let baseFinalBoundary = load("Base/09-final-boundary")
     static let baseWritingHeading = load("Base/10-writing-heading")
     static let baseExamplePrefix = load("Base/10a-writing-marker")
-    static let baseBeforeCursorHeading =
-        load("Base/10b-midline-before-cursor-heading")
-    static let suffixHeading =
-        load("Base/10c-midline-after-cursor-heading")
-    static let baseCurrentPartHeading =
-        load("Base/10d-midline-current-part-heading")
     static let seedWritingExamples = loadDirectory("Seed/Examples")
 
     static let chatSystemInstruction = load("Chat/00-system-instruction")

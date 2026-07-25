@@ -75,13 +75,10 @@ final class CompletionPromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains(
             "I describe myself like this:\n\nUse concise sentences."
         ))
-        XCTAssertTrue(prompt.contains(
-            "What comes right after the part I am currently typing:\n"
-                + "after the caret"
-        ))
+        XCTAssertFalse(prompt.contains("after the caret"))
+        XCTAssertFalse(prompt.contains("part I am currently typing"))
         XCTAssertTrue(prompt.hasSuffix(
-            "The part of my writing I am currently typing:\n"
-                + "§this sounds like me"
+            "My writing:\n§this sounds like me"
         ))
         XCTAssertFalse(prompt.contains("Text to continue:"))
         XCTAssertFalse(prompt.contains("Task:"))
@@ -492,9 +489,8 @@ final class CompletionPromptTests: XCTestCase {
 
         XCTAssertTrue(seeded.contains("Some examples of my writing:"))
         XCTAssertTrue(seeded.contains("§hey, are you around later?"))
-        XCTAssertTrue(seeded.contains(
-            "§I'm not sure why it's doing that."
-        ))
+        XCTAssertFalse(seeded.contains("I'm not sure why"))
+        XCTAssertTrue(seeded.contains("§no worries, that works for me"))
         XCTAssertTrue(seeded.hasSuffix("My writing:\n§yo what's up"))
 
         var withHistory = PromptConfiguration.defaults
@@ -539,10 +535,6 @@ final class CompletionPromptTests: XCTestCase {
         XCTAssertEqual(
             configuration.baseFraming.focusedActivityPrefix,
             "I am writing"
-        )
-        XCTAssertEqual(
-            configuration.baseFraming.suffixHeading,
-            "What comes right after the part I am currently typing:"
         )
         XCTAssertEqual(configuration.baseFraming.examplePrefix, "§")
 
@@ -631,9 +623,6 @@ final class CompletionPromptTests: XCTestCase {
         configuration.baseFraming.finalBoundary = "Boundary"
         configuration.baseFraming.writingHeading = "Mine:"
         configuration.baseFraming.examplePrefix = "¶"
-        configuration.baseFraming.beforeCursorHeading = "Before"
-        configuration.baseFraming.suffixHeading = "After"
-        configuration.baseFraming.currentPartHeading = "Current"
         configuration.systemInstruction = "System"
         configuration.debugMode = true
 

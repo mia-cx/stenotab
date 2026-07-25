@@ -389,7 +389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         )
     }
 
-    @objc private func openSettingsWindow() {
+    @objc func openSettingsWindow() {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
                 promptStore: promptSettings,

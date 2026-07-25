@@ -82,7 +82,6 @@ public enum CompletionPrompt {
     ) -> String {
         base(
             prefix: prefix,
-            suffix: suffix,
             contextSections: contextSections(
                 context,
                 configuration: configuration,
@@ -97,7 +96,6 @@ public enum CompletionPrompt {
 
     private static func base(
         prefix: String,
-        suffix: String,
         contextSections: [String],
         configuration: PromptConfiguration
     ) -> String {
@@ -120,35 +118,15 @@ public enum CompletionPrompt {
             sections.append(finalBoundary)
         }
 
-        if suffix.isEmpty {
-            sections.append(
-                writingSection(
-                    prefix,
-                    heading: configuration.baseFraming.writingHeading,
-                    examplePrefix: configuration.baseFraming.examplePrefix,
-                    includeFraming:
-                        configuration.base.includeWritingHeading
-                )
+        sections.append(
+            writingSection(
+                prefix,
+                heading: configuration.baseFraming.writingHeading,
+                examplePrefix: configuration.baseFraming.examplePrefix,
+                includeFraming:
+                    configuration.base.includeWritingHeading
             )
-        } else {
-            sections.append(
-                framedLiteralText(
-                    prefix,
-                    heading: configuration.baseFraming.beforeCursorHeading,
-                    examplePrefix: configuration.baseFraming.examplePrefix
-                )
-            )
-            sections.append(
-                "\(configuration.baseFraming.suffixHeading)\n\(suffix)"
-            )
-            sections.append(
-                framedLiteralText(
-                    currentPart(of: prefix),
-                    heading: configuration.baseFraming.currentPartHeading,
-                    examplePrefix: configuration.baseFraming.examplePrefix
-                )
-            )
-        }
+        )
         return sections.joined(separator: "\n\n")
     }
 
@@ -432,9 +410,4 @@ public enum CompletionPrompt {
             && nonempty(context.inputHistory) == nil
     }
 
-    private static func currentPart(of prefix: String) -> String {
-        let limit = 500
-        guard prefix.count > limit else { return prefix }
-        return String(prefix.suffix(limit))
-    }
 }

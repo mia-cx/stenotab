@@ -1906,7 +1906,8 @@ private struct PromptLabView: View {
                 isOn: configuration.base.includePerspectiveFix,
                 debugMode: store.configuration.debugMode,
                 framing: configuration.baseFraming.perspectiveFix,
-                dynamicValue: ""
+                dynamicValue: "",
+                showsToggle: store.configuration.debugMode
             )
         }
     }
@@ -1969,24 +1970,6 @@ private struct PromptLabView: View {
                     text: configuration.baseFraming.examplePrefix,
                     dynamicValue: "USER_INPUT",
                     valueOnNewLine: false
-                )
-                DebugFramingEditor(
-                    label: "Mid-line text before cursor heading",
-                    text: configuration.baseFraming.beforeCursorHeading,
-                    dynamicValue: "TEXT_BEFORE_CURSOR",
-                    valueOnNewLine: true
-                )
-                DebugFramingEditor(
-                    label: "Mid-line text after cursor heading",
-                    text: configuration.baseFraming.suffixHeading,
-                    dynamicValue: "TEXT_AFTER_CURSOR",
-                    valueOnNewLine: true
-                )
-                DebugFramingEditor(
-                    label: "Mid-line current part heading",
-                    text: configuration.baseFraming.currentPartHeading,
-                    dynamicValue: "CURRENT_PART",
-                    valueOnNewLine: true
                 )
             }
         }
@@ -2147,6 +2130,7 @@ private struct PromptToggleRow: View {
     @Binding var framing: String
     let dynamicValue: String
     var valueOnNewLine = false
+    var showsToggle = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -2171,11 +2155,13 @@ private struct PromptToggleRow: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Toggle(title, isOn: $isOn)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .frame(width: 54, alignment: .trailing)
+                if showsToggle {
+                    Toggle(title, isOn: $isOn)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .frame(width: 54, alignment: .trailing)
+                }
             }
 
             if debugMode {

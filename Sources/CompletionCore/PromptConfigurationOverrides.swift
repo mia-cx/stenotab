@@ -22,9 +22,6 @@ extension PromptConfiguration {
             public var finalBoundary: String?
             public var writingHeading: String?
             public var examplePrefix: String?
-            public var beforeCursorHeading: String?
-            public var suffixHeading: String?
-            public var currentPartHeading: String?
 
             init(
                 configuration: BaseFraming,
@@ -94,18 +91,6 @@ extension PromptConfiguration {
                     configuration.examplePrefix,
                     defaults.examplePrefix
                 )
-                beforeCursorHeading = Self.difference(
-                    configuration.beforeCursorHeading,
-                    defaults.beforeCursorHeading
-                )
-                suffixHeading = Self.difference(
-                    configuration.suffixHeading,
-                    defaults.suffixHeading
-                )
-                currentPartHeading = Self.difference(
-                    configuration.currentPartHeading,
-                    defaults.currentPartHeading
-                )
             }
 
             public var isEmpty: Bool {
@@ -125,9 +110,6 @@ extension PromptConfiguration {
                     && finalBoundary == nil
                     && writingHeading == nil
                     && examplePrefix == nil
-                    && beforeCursorHeading == nil
-                    && suffixHeading == nil
-                    && currentPartHeading == nil
             }
 
             func apply(to framing: inout BaseFraming) {
@@ -181,15 +163,6 @@ extension PromptConfiguration {
                 }
                 if let examplePrefix {
                     framing.examplePrefix = examplePrefix
-                }
-                if let beforeCursorHeading {
-                    framing.beforeCursorHeading = beforeCursorHeading
-                }
-                if let suffixHeading {
-                    framing.suffixHeading = suffixHeading
-                }
-                if let currentPartHeading {
-                    framing.currentPartHeading = currentPartHeading
                 }
             }
 

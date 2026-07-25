@@ -137,9 +137,6 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
         public var finalBoundary: String
         public var writingHeading: String
         public var examplePrefix: String
-        public var beforeCursorHeading: String
-        public var suffixHeading: String
-        public var currentPartHeading: String
 
         public init(
             openingInstruction: String? = nil,
@@ -157,10 +154,7 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
             clipboardHeading: String? = nil,
             finalBoundary: String? = nil,
             writingHeading: String? = nil,
-            examplePrefix: String? = nil,
-            beforeCursorHeading: String? = nil,
-            suffixHeading: String? = nil,
-            currentPartHeading: String? = nil
+            examplePrefix: String? = nil
         ) {
             self.openingInstruction =
                 openingInstruction ?? PromptResources.baseOpeningInstruction
@@ -197,11 +191,6 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
                 writingHeading ?? PromptResources.baseWritingHeading
             self.examplePrefix =
                 examplePrefix ?? PromptResources.baseExamplePrefix
-            self.beforeCursorHeading =
-                beforeCursorHeading ?? PromptResources.baseBeforeCursorHeading
-            self.suffixHeading = suffixHeading ?? PromptResources.suffixHeading
-            self.currentPartHeading =
-                currentPartHeading ?? PromptResources.baseCurrentPartHeading
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -221,9 +210,6 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
             case finalBoundary
             case writingHeading
             case examplePrefix
-            case beforeCursorHeading
-            case suffixHeading
-            case currentPartHeading
         }
 
         public init(from decoder: Decoder) throws {
@@ -292,18 +278,6 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
                 examplePrefix: try container.decodeIfPresent(
                     String.self,
                     forKey: .examplePrefix
-                ),
-                beforeCursorHeading: try container.decodeIfPresent(
-                    String.self,
-                    forKey: .beforeCursorHeading
-                ),
-                suffixHeading: try container.decodeIfPresent(
-                    String.self,
-                    forKey: .suffixHeading
-                ),
-                currentPartHeading: try container.decodeIfPresent(
-                    String.self,
-                    forKey: .currentPartHeading
                 )
             )
         }
@@ -356,15 +330,6 @@ public struct PromptConfiguration: Codable, Sendable, Equatable {
             try container.encode(finalBoundary, forKey: .finalBoundary)
             try container.encode(writingHeading, forKey: .writingHeading)
             try container.encode(examplePrefix, forKey: .examplePrefix)
-            try container.encode(
-                beforeCursorHeading,
-                forKey: .beforeCursorHeading
-            )
-            try container.encode(suffixHeading, forKey: .suffixHeading)
-            try container.encode(
-                currentPartHeading,
-                forKey: .currentPartHeading
-            )
         }
     }
 

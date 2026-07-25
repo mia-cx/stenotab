@@ -102,7 +102,6 @@ final class PromptSettingsStore: ObservableObject {
             var inputHistoryHeading: String?
             var assessmentHeading: String?
             var customVoiceHeading: String?
-            var suffixHeading: String?
         }
 
         var framing: Framing?
@@ -125,9 +124,6 @@ final class PromptSettingsStore: ObservableObject {
             }
             if let value = framing.customVoiceHeading {
                 configuration.baseFraming.customVoiceHeading = value
-            }
-            if let value = framing.suffixHeading {
-                configuration.baseFraming.suffixHeading = value
             }
         }
     }
