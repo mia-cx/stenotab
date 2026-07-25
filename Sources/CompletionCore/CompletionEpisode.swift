@@ -262,6 +262,21 @@ public enum CompletionEpisodePendingResolutionPolicy {
     }
 }
 
+public enum CompletionEpisodeLiveEditorPolicy {
+    public static func allowsCapture(
+        activeEditorIdentifier: String?,
+        liveEditorIdentifier: String?
+    ) -> Bool {
+        guard
+            let activeEditorIdentifier,
+            let liveEditorIdentifier
+        else {
+            return false
+        }
+        return activeEditorIdentifier == liveEditorIdentifier
+    }
+}
+
 public struct CompletionEpisodeTracker: Sendable {
     // OpenAICompatibleCompletionProvider stops after 4,096 sanitized
     // characters. A cumulative stream can therefore expose at most this many

@@ -189,13 +189,14 @@ public actor PersonalizationDatabase {
             bindings: [.text(Self.completionEpisodeKind)]
         )
         var legacyIDs: [String] = []
+        var currentEpisodes: [StoredCompletionEpisode] = []
         for row in rows {
             guard
                 let id = row.text(at: 0),
                 let sealedPayload = row.blob(at: 1),
                 let storedHMAC = row.blob(at: 2)
             else {
-                continue
+                return
             }
             guard
                 let payload = try? PersonalizationCryptography.open(
@@ -205,7 +206,7 @@ public actor PersonalizationDatabase {
             else {
                 // Leave unreadable rows untouched. The database must still
                 // attach so the user can inspect the error or use Delete All.
-                continue
+                return
             }
             guard
                 let expectedHMAC =
@@ -222,7 +223,7 @@ public actor PersonalizationDatabase {
             else {
                 // Never make a destructive migration decision from a payload
                 // that is not authenticated to this row.
-                continue
+                return
             }
             guard
                 let header = try? decoder.decode(
@@ -238,11 +239,28 @@ public actor PersonalizationDatabase {
                     legacy.id.uuidString == id
                 {
                     legacyIDs.append(id)
+                } else {
+                    return
                 }
                 continue
             }
-            if header.storageVersion
-                < StoredCompletionEpisode.currentStorageVersion
+            if
+                header.storageVersion
+                    == StoredCompletionEpisode.currentStorageVersion
+            {
+                guard
+                    let stored = try? decoder.decode(
+                        StoredCompletionEpisode.self,
+                        from: payload
+                    ),
+                    stored.id.uuidString == id
+                else {
+                    return
+                }
+                currentEpisodes.append(stored)
+            } else if
+                header.storageVersion
+                    < StoredCompletionEpisode.currentStorageVersion
             {
                 if
                     let stored = try? decoder.decode(
@@ -253,10 +271,108 @@ public actor PersonalizationDatabase {
                 {
                     legacyIDs.append(id)
                 }
+            } else {
+                // A newer build owns this storage version. Leave the database
+                // untouched so Delete All remains available.
+                return
             }
         }
         guard !legacyIDs.isEmpty else { return }
+
+        for episode in currentEpisodes {
+            for chunkHMAC in episode.referencedChunkHMACs {
+                let row = try connection.query(
+                    """
+                    SELECT payload_sealed, plaintext_byte_count
+                    FROM personalization_text_chunk
+                    WHERE chunk_hmac = ?
+                    """,
+                    bindings: [.blob(chunkHMAC)]
+                ).first
+                guard
+                    let sealed = row?.blob(at: 0),
+                    let expectedByteCount = row?.integer(at: 1),
+                    let chunk = try? PersonalizationCryptography.open(
+                        sealed,
+                        keyData: keyData
+                    ),
+                    chunk.count == Int(expectedByteCount),
+                    let authenticatedHMAC =
+                        try? PersonalizationCryptography.payloadHMAC(
+                            for: chunk,
+                            keyData: keyData
+                        ),
+                    authenticatedHMAC == chunkHMAC
+                else {
+                    // Do not run a destructive migration when a surviving
+                    // current episode cannot be authenticated completely.
+                    return
+                }
+            }
+            let sourceEventIDs =
+                (episode.invocation.sourceEventIDs ?? []).reduce(
+                    into: [UUID]()
+                ) { result, id in
+                    if !result.contains(id) {
+                        result.append(id)
+                    }
+                }
+            let allSourcesExist = try sourceEventIDs.allSatisfy { id in
+                try connection.query(
+                    """
+                    SELECT 1
+                    FROM personalization_event
+                    WHERE id = ?
+                    LIMIT 1
+                    """,
+                    bindings: [.text(id.uuidString)]
+                ).first != nil
+            }
+            guard allSourcesExist else { return }
+        }
+
         try connection.transaction {
+            // These are derived indexes. Rebuild them globally from
+            // authenticated current payloads before legacy deletes can fire
+            // source-cascade triggers or chunk garbage collection.
+            try connection.execute("DELETE FROM completion_episode_source")
+            try connection.execute("DELETE FROM event_text_chunk")
+            for episode in currentEpisodes {
+                for chunkHMAC in episode.referencedChunkHMACs {
+                    try connection.execute(
+                        """
+                        INSERT INTO event_text_chunk (event_id, chunk_hmac)
+                        VALUES (?, ?)
+                        """,
+                        bindings: [
+                            .text(episode.id.uuidString),
+                            .blob(chunkHMAC),
+                        ]
+                    )
+                }
+                let sourceEventIDs =
+                    (episode.invocation.sourceEventIDs ?? []).reduce(
+                        into: [UUID]()
+                    ) { result, id in
+                        if !result.contains(id) {
+                            result.append(id)
+                        }
+                    }
+                for sourceEventID in sourceEventIDs {
+                    try connection.execute(
+                        """
+                        INSERT INTO completion_episode_source (
+                            completion_event_id,
+                            source_event_id
+                        ) VALUES (?, ?)
+                        """,
+                        bindings: [
+                            .text(episode.id.uuidString),
+                            .text(sourceEventID.uuidString),
+                        ]
+                    )
+                }
+            }
             for id in legacyIDs {
                 try connection.execute(
                     "DELETE FROM personalization_event WHERE id = ?",
@@ -350,7 +466,10 @@ public actor PersonalizationDatabase {
                     bindings: [.text(sourceEventID.uuidString)]
                 ).first != nil
                 guard sourceExists else {
-                    return
+                    throw PersonalizationPersistenceError.database(
+                        "Missing completion episode source event "
+                            + sourceEventID.uuidString
+                    )
                 }
             }
             var referencedChunks = Set<Data>()
@@ -362,19 +481,25 @@ public actor PersonalizationDatabase {
             let promptInput = textBeforeSelection(
                 in: episode.invocation.field
             )
-            let promptInputReference = try promptInput.map {
-                if $0 == initialText {
-                    return initialTextReference
-                }
+            let providerInput = promptInput.map {
+                String($0.suffix(1_500))
+            }
+            let providerInputReference = try providerInput.map { input in
+                let fieldBytes = Data(initialText.utf8)
+                let inputBytes = Data(input.utf8)
+                let inputEnd = Data((promptInput ?? "").utf8).count
                 return try storedTextReference(
-                    for: $0,
+                    forUTF8Subrange:
+                        (inputEnd - inputBytes.count)..<inputEnd,
+                    in: fieldBytes,
+                    fullReference: initialTextReference,
                     referencedChunks: &referencedChunks
                 )
             }
             let storedPrompt = try storedPrompt(
                 episode.invocation.prompt,
-                promptInput: promptInput,
-                promptInputReference: promptInputReference,
+                promptInput: providerInput,
+                promptInputReference: providerInputReference,
                 referencedChunks: &referencedChunks
             )
             var previousSuggestion = ""
@@ -536,6 +661,63 @@ public actor PersonalizationDatabase {
             """,
             bindings: [.text(completionEventID.uuidString)]
         )
+    }
+
+    func attachFirstTextChunkForTesting(eventID: UUID) throws -> Bool {
+        guard
+            let chunkHMAC = try connection.query(
+                """
+                SELECT chunk_hmac
+                FROM personalization_text_chunk
+                ORDER BY rowid ASC
+                LIMIT 1
+                """
+            ).first?.blob(at: 0)
+        else {
+            return false
+        }
+        try connection.execute(
+            """
+            INSERT OR IGNORE INTO event_text_chunk (event_id, chunk_hmac)
+            VALUES (?, ?)
+            """,
+            bindings: [.text(eventID.uuidString), .blob(chunkHMAC)]
+        )
+        return true
+    }
+
+    func insertCompletionEpisodeSourceIndexForTesting(
+        completionEventID: UUID,
+        sourceEventID: UUID
+    ) throws {
+        try connection.execute(
+            """
+            INSERT INTO completion_episode_source (
+                completion_event_id,
+                source_event_id
+            ) VALUES (?, ?)
+            """,
+            bindings: [
+                .text(completionEventID.uuidString),
+                .text(sourceEventID.uuidString),
+            ]
+        )
+    }
+
+    func firstCompletionFieldPromptChunkOverlapForTesting() throws -> Int {
+        guard let episode = try supportedStoredCompletionEpisodes().first else {
+            return 0
+        }
+        let promptChunks = [
+            episode.invocation.prompt.systemMessage,
+            episode.invocation.prompt.userMessage,
+            episode.invocation.prompt.textPrompt,
+        ]
+        .compactMap { $0 }
+        .flatMap(\.chunkHMACs)
+        return Set(episode.invocation.field.text.chunkHMACs)
+            .intersection(Set(promptChunks))
+            .count
     }
 
     func replaceEventKindForTesting(
@@ -894,6 +1076,63 @@ public actor PersonalizationDatabase {
         )
     }
 
+    private func storedTextReference(
+        forUTF8Subrange range: Range<Int>,
+        in fullBytes: Data,
+        fullReference: StoredTextReference,
+        referencedChunks: inout Set<Data>
+    ) throws -> StoredTextReference {
+        guard
+            range.lowerBound >= 0,
+            range.upperBound <= fullBytes.count,
+            range.lowerBound <= range.upperBound
+        else {
+            throw PersonalizationPersistenceError.database(
+                "Invalid completion episode provider-input range"
+            )
+        }
+        guard !range.isEmpty else {
+            return StoredTextReference(chunkHMACs: [], utf8ByteCount: 0)
+        }
+
+        var chunkHMACs: [Data] = []
+        var offset = range.lowerBound
+        while offset < range.upperBound {
+            let fullChunkIndex = offset / Self.textChunkByteCount
+            let fullChunkStart =
+                fullChunkIndex * Self.textChunkByteCount
+            let fullChunkEnd = min(
+                fullChunkStart + Self.textChunkByteCount,
+                fullBytes.count
+            )
+            if
+                offset == fullChunkStart,
+                fullChunkEnd <= range.upperBound,
+                fullChunkIndex < fullReference.chunkHMACs.count
+            {
+                let chunkHMAC = fullReference.chunkHMACs[fullChunkIndex]
+                chunkHMACs.append(chunkHMAC)
+                referencedChunks.insert(chunkHMAC)
+                offset = fullChunkEnd
+                continue
+            }
+
+            let partialEnd = min(fullChunkEnd, range.upperBound)
+            let partial = Data(fullBytes[offset..<partialEnd])
+            chunkHMACs.append(
+                contentsOf: try storeTextBytes(
+                    partial,
+                    referencedChunks: &referencedChunks
+                )
+            )
+            offset = partialEnd
+        }
+        return StoredTextReference(
+            chunkHMACs: chunkHMACs,
+            utf8ByteCount: range.count
+        )
+    }
+
     private func storeTextBytes(
         _ bytes: Data,
         referencedChunks: inout Set<Data>
@@ -944,47 +1183,10 @@ public actor PersonalizationDatabase {
     ) throws -> String {
         var bytes = Data()
         for chunkHMAC in reference.chunkHMACs {
-            let chunk: Data
-            if let cached = chunkCache[chunkHMAC] {
-                chunk = cached
-            } else {
-                let row = try connection.query(
-                    """
-                    SELECT payload_sealed, plaintext_byte_count
-                    FROM personalization_text_chunk
-                    WHERE chunk_hmac = ?
-                    """,
-                    bindings: [.blob(chunkHMAC)]
-                ).first
-                guard
-                    let sealed = row?.blob(at: 0),
-                    let expectedByteCount = row?.integer(at: 1)
-                else {
-                    throw PersonalizationPersistenceError.database(
-                        "Missing completion episode text chunk"
-                    )
-                }
-                chunk = try PersonalizationCryptography.open(
-                    sealed,
-                    keyData: keyData
-                )
-                guard chunk.count == Int(expectedByteCount) else {
-                    throw PersonalizationPersistenceError.database(
-                        "Completion episode text chunk size mismatch"
-                    )
-                }
-                let hydratedHMAC =
-                    try PersonalizationCryptography.payloadHMAC(
-                        for: chunk,
-                        keyData: keyData
-                    )
-                guard hydratedHMAC == chunkHMAC else {
-                    throw PersonalizationPersistenceError.database(
-                        "Completion episode text chunk HMAC mismatch"
-                    )
-                }
-                chunkCache[chunkHMAC] = chunk
-            }
+            let chunk = try loadTextChunk(
+                chunkHMAC,
+                chunkCache: &chunkCache
+            )
             bytes.append(chunk)
         }
         guard
@@ -996,6 +1198,53 @@ public actor PersonalizationDatabase {
             )
         }
         return text
+    }
+
+    private func loadTextChunk(
+        _ chunkHMAC: Data,
+        chunkCache: inout [Data: Data],
+        missingChunkMessage: String =
+            "Missing completion episode text chunk"
+    ) throws -> Data {
+        if let cached = chunkCache[chunkHMAC] {
+            return cached
+        }
+        let row = try connection.query(
+            """
+            SELECT payload_sealed, plaintext_byte_count
+            FROM personalization_text_chunk
+            WHERE chunk_hmac = ?
+            """,
+            bindings: [.blob(chunkHMAC)]
+        ).first
+        guard
+            let sealed = row?.blob(at: 0),
+            let expectedByteCount = row?.integer(at: 1)
+        else {
+            throw PersonalizationPersistenceError.database(
+                missingChunkMessage
+            )
+        }
+        let chunk = try PersonalizationCryptography.open(
+            sealed,
+            keyData: keyData
+        )
+        guard chunk.count == Int(expectedByteCount) else {
+            throw PersonalizationPersistenceError.database(
+                "Completion episode text chunk size mismatch"
+            )
+        }
+        let hydratedHMAC = try PersonalizationCryptography.payloadHMAC(
+            for: chunk,
+            keyData: keyData
+        )
+        guard hydratedHMAC == chunkHMAC else {
+            throw PersonalizationPersistenceError.database(
+                "Completion episode text chunk HMAC mismatch"
+            )
+        }
+        chunkCache[chunkHMAC] = chunk
+        return chunk
     }
 
     private func textBeforeSelection(
@@ -1642,18 +1891,20 @@ public actor PersonalizationDatabase {
 
     private func rebuildCompletionEpisodeIndexes() throws {
         let episodes = try supportedStoredCompletionEpisodes()
+        var chunkCache: [Data: Data] = [:]
         for episode in episodes {
-            try connection.execute(
-                """
-                DELETE FROM completion_episode_source
-                WHERE completion_event_id = ?
-                """,
-                bindings: [.text(episode.id.uuidString)]
-            )
-            try connection.execute(
-                "DELETE FROM event_text_chunk WHERE event_id = ?",
-                bindings: [.text(episode.id.uuidString)]
-            )
+            for chunkHMAC in episode.referencedChunkHMACs {
+                _ = try loadTextChunk(
+                    chunkHMAC,
+                    chunkCache: &chunkCache,
+                    missingChunkMessage:
+                        "Missing authenticated completion episode text chunk"
+                )
+            }
+        }
+        try connection.execute("DELETE FROM completion_episode_source")
+        try connection.execute("DELETE FROM event_text_chunk")
+        for episode in episodes {
             let sourceEventIDs = (episode.invocation.sourceEventIDs ?? [])
                 .reduce(
                     into: [UUID]()
@@ -1681,20 +1932,6 @@ public actor PersonalizationDatabase {
                 continue
             }
             for chunkHMAC in episode.referencedChunkHMACs {
-                let chunkExists = try connection.query(
-                    """
-                    SELECT 1
-                    FROM personalization_text_chunk
-                    WHERE chunk_hmac = ?
-                    LIMIT 1
-                    """,
-                    bindings: [.blob(chunkHMAC)]
-                ).first != nil
-                guard chunkExists else {
-                    throw PersonalizationPersistenceError.database(
-                        "Missing authenticated completion episode text chunk"
-                    )
-                }
                 try connection.execute(
                     """
                     INSERT INTO event_text_chunk (event_id, chunk_hmac)

@@ -81,6 +81,27 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
         )
     }
 
+    func testCaptureRequiresLiveSnapshotFromActiveEditor() {
+        XCTAssertTrue(
+            CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                activeEditorIdentifier: "editor",
+                liveEditorIdentifier: "editor"
+            )
+        )
+        XCTAssertFalse(
+            CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                activeEditorIdentifier: "editor",
+                liveEditorIdentifier: nil
+            )
+        )
+        XCTAssertFalse(
+            CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                activeEditorIdentifier: "editor",
+                liveEditorIdentifier: "secure-or-different-editor"
+            )
+        )
+    }
+
     func testRejectedSuggestionPreservesPromptRevisionsAndFinalWriting() throws {
         let startedAt = Date(timeIntervalSince1970: 1_000)
         let invocation = CompletionInvocationCapture(

@@ -331,6 +331,19 @@ final class CompletionCoordinator: NSObject {
             )
             return
         }
+        let liveEditorIdentifier = accessibility.snapshot()?.editorIdentifier
+        guard
+            CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                activeEditorIdentifier: lastSnapshot?.editorIdentifier,
+                liveEditorIdentifier: liveEditorIdentifier
+            )
+        else {
+            invalidatePendingCompletion()
+            clearOCRContext()
+            discardCompletionEpisodeAndSuggestion()
+            buffer.apply(.invalidate)
+            return
+        }
         if
             case .focusChange = mutation,
             pendingCompletionEpisodeResolution != nil
@@ -1197,30 +1210,22 @@ final class CompletionCoordinator: NSObject {
             if let suggestionConsumption {
                 recordTypedSuggestionMatch(from: suggestionConsumption)
             }
-            deferCompletionEpisodeFinalization(
+            finalizeCompletionEpisode(
                 resolution:
                     completionEpisodeTracker
                     .completedSuggestionResolution
-                    ?? .typedThrough,
-                untilFieldChangesFrom: lastSnapshot.map {
-                    CapturedFieldState(
-                        text: $0.fieldText,
-                        selection: $0.selection
-                    )
-                }
+                    ?? .typedThrough
             )
+            suggestion = nil
+            suggestionAssociationToken = nil
+            typedSuggestionOrigin = nil
+            overlay.hide()
             suggestionConsumption = .waitingForWhitespace()
         case .triggerInference, .diverged:
-            deferCompletionEpisodeFinalization(
+            clearSuggestion(
                 resolution:
                     completionEpisodeTracker
-                    .abandonedSuggestionResolution,
-                untilFieldChangesFrom: lastSnapshot.map {
-                    CapturedFieldState(
-                        text: $0.fieldText,
-                        selection: $0.selection
-                    )
-                }
+                    .abandonedSuggestionResolution
             )
             scheduleCompletion()
         }
@@ -1339,6 +1344,19 @@ final class CompletionCoordinator: NSObject {
             let suggestion,
             !suggestion.isEmpty
         else {
+            return false
+        }
+        let liveEditorIdentifier = accessibility.snapshot()?.editorIdentifier
+        guard
+            CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                activeEditorIdentifier: lastSnapshot?.editorIdentifier,
+                liveEditorIdentifier: liveEditorIdentifier
+            )
+        else {
+            invalidatePendingCompletion()
+            clearOCRContext()
+            discardCompletionEpisodeAndSuggestion()
+            buffer.apply(.invalidate)
             return false
         }
         caretReanchorTask?.cancel()
@@ -1953,12 +1971,24 @@ final class CompletionCoordinator: NSObject {
     private func finalizeCompletionEpisode(
         resolution: CompletionEpisodeResolution
     ) {
+        guard completionEpisodeTracker.activeInvocationID != nil else {
+            resetCompletionEpisodeFinalizationState()
+            return
+        }
+        let liveEditorIdentifier = accessibility.snapshot()?.editorIdentifier
+        guard
+            CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                activeEditorIdentifier: lastSnapshot?.editorIdentifier,
+                liveEditorIdentifier: liveEditorIdentifier
+            )
+        else {
+            completionEpisodeTracker.discard()
+            resetCompletionEpisodeFinalizationState()
+            return
+        }
         let effectiveResolution =
             pendingCompletionEpisodeResolution ?? resolution
-        pendingCompletionEpisodeResolution = nil
-        invalidationReconciliationNotBefore = nil
-        invalidatedCompletionEpisodeField = nil
-        invalidationReconciliationGeneration &+= 1
+        resetCompletionEpisodeFinalizationState()
         guard
             let finalField =
                 currentCapturedField()
@@ -1975,6 +2005,24 @@ final class CompletionCoordinator: NSObject {
         }
         activeCompletionEpisodeToken = nil
         onCompletionEpisode(episode)
+    }
+
+    private func resetCompletionEpisodeFinalizationState() {
+        pendingCompletionEpisodeResolution = nil
+        invalidationReconciliationNotBefore = nil
+        invalidatedCompletionEpisodeField = nil
+        invalidationReconciliationGeneration &+= 1
+        activeCompletionEpisodeToken = nil
+    }
+
+    private func discardCompletionEpisodeAndSuggestion() {
+        completionEpisodeTracker.discard()
+        resetCompletionEpisodeFinalizationState()
+        suggestion = nil
+        suggestionConsumption = nil
+        suggestionAssociationToken = nil
+        typedSuggestionOrigin = nil
+        overlay.hide()
     }
 
     private func deferCompletionEpisodeFinalization(

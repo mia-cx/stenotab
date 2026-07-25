@@ -235,6 +235,51 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(eventCount, 0)
     }
 
+    func testLegacyMigrationRebuildsIndexesBeforeDeletingLegacyRows()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let legacy = makeCompletionEpisode(
+            id: UUID(),
+            input: "legacy private input",
+            suggestion: " legacy",
+            outcome: " legacy outcome",
+            date: Date(timeIntervalSince1970: 405)
+        )
+        let current = makeCompletionEpisode(
+            id: UUID(),
+            input: "current private input",
+            suggestion: " current",
+            outcome: " current outcome",
+            date: Date(timeIntervalSince1970: 406)
+        )
+        try await fixture.database
+            .recordVersionTwoCompletionEpisodeForTesting(legacy)
+        try await fixture.database.record(current)
+        try await fixture.database
+            .removeEventTextChunkIndexForTesting(eventID: current.id)
+        try await fixture.database
+            .insertCompletionEpisodeSourceIndexForTesting(
+                completionEventID: current.id,
+                sourceEventID: legacy.id
+            )
+
+        let reopened = try PersonalizationDatabase(
+            databaseURL: fixture.directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+
+        let episodes = try await reopened.completionEpisodes()
+        let eventCount = try await reopened.eventCount()
+        XCTAssertEqual(episodes, [current])
+        XCTAssertEqual(eventCount, 1)
+    }
+
     func testLegacyMigrationAuthenticatesRowsBeforeDeleting() async throws {
         let fixture = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -530,6 +575,59 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(countAfterDeleteAll, 0)
     }
 
+    func testDestructiveOperationsFailClosedForSubstitutedChunkCiphertext()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: String(repeating: "private chunked input ", count: 80),
+            suggestion: " suggestion",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 409)
+        )
+        try await fixture.database.record(episode)
+        let swapped = try await fixture.database
+            .swapFirstTwoTextChunkPayloadsForTesting()
+        XCTAssertTrue(swapped)
+
+        do {
+            try await fixture.database.deleteEvent(id: episode.id)
+            XCTFail("Expected targeted deletion to fail closed")
+        } catch {
+            XCTAssertTrue(
+                String(describing: error).contains("HMAC mismatch")
+            )
+        }
+        let countAfterTargetedDelete =
+            try await fixture.database.eventCount()
+        XCTAssertEqual(countAfterTargetedDelete, 1)
+
+        do {
+            _ = try await fixture.database.enforceRetention(
+                PersonalizationRetentionPolicy(
+                    maximumAge: 0,
+                    maximumEncryptedBytes: nil
+                ),
+                now: Date(timeIntervalSince1970: 410)
+            )
+            XCTFail("Expected retention to fail closed")
+        } catch {
+            XCTAssertTrue(
+                String(describing: error).contains("HMAC mismatch")
+            )
+        }
+        let countAfterRetention =
+            try await fixture.database.eventCount()
+        XCTAssertEqual(countAfterRetention, 1)
+
+        try await fixture.database.deleteAll()
+        let countAfterDeleteAll =
+            try await fixture.database.eventCount()
+        XCTAssertEqual(countAfterDeleteAll, 0)
+    }
+
     func testPromptSuffixReuseRequiresExactUTF8Bytes() async throws {
         let fixture = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -545,6 +643,31 @@ final class PersonalizationDatabaseTests: XCTestCase {
 
         try await fixture.database.record(episode)
 
+        let episodes = try await fixture.database.completionEpisodes()
+        XCTAssertEqual(episodes, [episode])
+    }
+
+    func testLongProviderPrefixReusesAuthenticatedFieldChunks() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let input = String(
+            (0..<2_100).map { index in
+                Character(UnicodeScalar(0x21 + ((index * 37) % 90))!)
+            }
+        )
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: input,
+            suggestion: " suggestion",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 410)
+        )
+
+        try await fixture.database.record(episode)
+
+        let overlap = try await fixture.database
+            .firstCompletionFieldPromptChunkOverlapForTesting()
+        XCTAssertGreaterThan(overlap, 0)
         let episodes = try await fixture.database.completionEpisodes()
         XCTAssertEqual(episodes, [episode])
     }
@@ -806,6 +929,71 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(completionEpisodes, [])
     }
 
+    func testRebuildRemovesForgedChunkReferenceBeforeTargetedDeletion()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let unrelated = makeEpisode(
+            id: UUID(),
+            text: "unrelated writing",
+            app: "com.example.Writer",
+            editor: "writer"
+        )
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: "private completion input",
+            suggestion: " suggestion",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 860)
+        )
+        try await fixture.database.record(unrelated)
+        try await fixture.database.record(episode)
+        let attached = try await fixture.database
+            .attachFirstTextChunkForTesting(eventID: unrelated.id)
+        XCTAssertTrue(attached)
+
+        try await fixture.database.deleteEvent(id: episode.id)
+
+        let storage =
+            try await fixture.database.completionEpisodeStorageStatistics()
+        XCTAssertEqual(storage.uniqueTextChunkCount, 0)
+        XCTAssertEqual(storage.textChunkReferenceCount, 0)
+        let remaining = try await fixture.database.writingEpisodes()
+        XCTAssertEqual(remaining, [unrelated])
+    }
+
+    func testRebuildRemovesForgedSourceEdgeBeforeCascadeDeletion()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let unrelated = makeEpisode(
+            id: UUID(),
+            text: "unrelated writing",
+            app: "com.example.Writer",
+            editor: "writer"
+        )
+        let source = makeEpisode(
+            id: UUID(),
+            text: "source writing",
+            app: "com.example.Chat",
+            editor: "chat"
+        )
+        try await fixture.database.record(unrelated)
+        try await fixture.database.record(source)
+        try await fixture.database
+            .insertCompletionEpisodeSourceIndexForTesting(
+                completionEventID: unrelated.id,
+                sourceEventID: source.id
+            )
+
+        try await fixture.database.deleteEvent(id: source.id)
+
+        let remaining = try await fixture.database.writingEpisodes()
+        XCTAssertEqual(remaining, [unrelated])
+    }
+
     func testCompletionEpisodeWithMissingSourceIsNotStored() async throws {
         let fixture = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -818,7 +1006,16 @@ final class PersonalizationDatabaseTests: XCTestCase {
             sourceEventIDs: [UUID()]
         )
 
-        try await fixture.database.record(episode)
+        do {
+            try await fixture.database.record(episode)
+            XCTFail("Expected missing source event to reject the record")
+        } catch {
+            XCTAssertTrue(
+                String(describing: error).contains(
+                    "Missing completion episode source event"
+                )
+            )
+        }
 
         let eventCount = try await fixture.database.eventCount()
         let completionEpisodes =
