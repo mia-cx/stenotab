@@ -9,7 +9,11 @@ let package = Package(
     ],
     products: [
         .library(name: "CompletionCore", targets: ["CompletionCore"]),
-        .executable(name: "StenoTab", targets: ["StenoTab"])
+        .executable(name: "StenoTab", targets: ["StenoTab"]),
+        .executable(
+            name: "PersonalizationBenchmark",
+            targets: ["PersonalizationBenchmark"]
+        )
     ],
     targets: [
         .target(
@@ -39,6 +43,14 @@ let package = Package(
                 .linkedFramework("ServiceManagement"),
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("Vision")
+            ]
+        ),
+        .executableTarget(
+            name: "PersonalizationBenchmark",
+            dependencies: ["CompletionCore"],
+            path: "Benchmarks/PersonalizationBenchmark",
+            linkerSettings: [
+                .linkedFramework("NaturalLanguage")
             ]
         ),
         .testTarget(

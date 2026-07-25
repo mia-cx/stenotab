@@ -395,7 +395,7 @@ private struct PersonalizationSettingsView: View {
                                 Int64(store.encryptedPayloadBytes),
                             countStyle: .file
                         )
-                        + " of encrypted event payloads"
+                        + " of encrypted personalization data"
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)

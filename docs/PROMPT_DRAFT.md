@@ -20,9 +20,9 @@ the same canonical user prompt as local base models.
 | Input kind | Live, on by default | AX role, subrole, placeholder, title, and description |
 | Snapshot text / OCR | Live, off by default | Focused app window through ScreenCaptureKit and local Vision OCR |
 | Clipboard | Live, off by default | Current text clipboard contents |
-| Frecent input history | Not connected yet; bundled seed fallback is on | Planned encrypted local history retrieval |
-| Semantically relevant history | Not connected yet, off by default | Planned embedding retrieval |
-| Voice assessment | Not connected yet, off by default | Planned local periodic assessment |
+| Frecent input history | Live, on by default | Encrypted accepted and directly typed examples |
+| Semantically relevant history | Live, off by default | Apple Natural Language embeddings stored encrypted |
+| Voice assessment | Live, off by default | Periodic local deterministic assessment |
 | Custom personalization | Live | Prompt Lab setting |
 | Text before and after cursor | Live | Focused editor through Accessibility |
 | Shipped seed examples | Live fallback | Bundled Markdown examples; replaced by real history |
@@ -38,13 +38,22 @@ I am writing a comment on youtube.com in Safari.
 
 I have recently written text like:
 
-§yeah, deleting the stale permission entry fixed it for me too
+Text:
+§yeah, deleting the stale permission entry
+Insertion:
+§ fixed it for me too
 
-§I think the signature changed between those two builds.
+Text:
+§I think the signature changed
+Insertion:
+§ between those two builds.
 
 Other relevant examples of my writing are:
 
-§yeah, re-adding the signed build fixed Accessibility permissions here too
+Text:
+§yeah, re-adding the signed build fixed
+Insertion:
+§ Accessibility permissions here too
 
 I have noticed that my writing typically looks like this:
 
@@ -96,11 +105,17 @@ I am <activity /> [on <website />] in <app />
 ```md
 I have recently written text like:
 
-§<example frecency-order=0 />
-§<example frecency-order=1 />
-§<example frecency-order=2 />
-§<example frecency-order=3 />
-§<example frecency-order=4 />
+Text:
+§<example.input frecency-order=0 />
+Insertion:
+§<example.insertion frecency-order=0 />
+
+Text:
+§<example.input frecency-order=1 />
+Insertion:
+§<example.insertion frecency-order=1 />
+
+<!-- Up to five paired records. -->
 ```
 
 ### Semantically relevant examples
@@ -108,11 +123,17 @@ I have recently written text like:
 ```md
 Other relevant examples of my writing are:
 
-§<example embedding-proximity=0 />
-§<example embedding-proximity=1 />
-§<example embedding-proximity=2 />
-§<example embedding-proximity=3 />
-§<example embedding-proximity=4 />
+Text:
+§<example.input embedding-proximity=0 />
+Insertion:
+§<example.insertion embedding-proximity=0 />
+
+Text:
+§<example.input embedding-proximity=1 />
+Insertion:
+§<example.insertion embedding-proximity=1 />
+
+<!-- Up to five paired records. -->
 ```
 
 ### Periodic automatic re-assessment

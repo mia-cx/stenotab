@@ -140,18 +140,18 @@ final class PersonalizationSettingsStore: ObservableObject {
         }
     }
 
-    func didRecordEvent() {
-        storedEventCount += 1
-    }
-
     func record(_ capture: AcceptedSuggestionCapture) {
         guard collectionEnabled, let modelWorker else { return }
+        let policy = retentionPolicy
         Task {
             do {
-                languageModel = try await modelWorker.record(capture)
+                languageModel = try await modelWorker.record(
+                    capture,
+                    retentionPolicy: policy
+                )
                 voiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
-                didRecordEvent()
+                refresh()
             } catch {
                 operationError = String(describing: error)
             }
@@ -184,10 +184,14 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func record(_ feedback: CompletionFeedbackCapture) {
         guard collectionEnabled, let modelWorker else { return }
+        let policy = retentionPolicy
         Task {
             do {
-                languageModel = try await modelWorker.record(feedback)
-                didRecordEvent()
+                languageModel = try await modelWorker.record(
+                    feedback,
+                    retentionPolicy: policy
+                )
+                refresh()
             } catch {
                 operationError = String(describing: error)
             }
@@ -343,7 +347,8 @@ private actor PersonalizationModelWorker {
     }
 
     func record(
-        _ capture: AcceptedSuggestionCapture
+        _ capture: AcceptedSuggestionCapture,
+        retentionPolicy: PersonalizationRetentionPolicy
     ) async throws -> PersonalLanguageModel {
         try await database.record(capture)
         model.ingest(capture)
@@ -355,6 +360,10 @@ private actor PersonalizationModelWorker {
         voiceTexts.append(capture.field.text + capture.insertion)
         voiceSourceEventCount += 1
         try await updateVoiceAssessmentIfNeeded()
+        let removed = try await database.enforceRetention(retentionPolicy)
+        if removed > 0 {
+            return try await rebuild()
+        }
         return model
     }
 
@@ -379,11 +388,16 @@ private actor PersonalizationModelWorker {
     }
 
     func record(
-        _ feedback: CompletionFeedbackCapture
+        _ feedback: CompletionFeedbackCapture,
+        retentionPolicy: PersonalizationRetentionPolicy
     ) async throws -> PersonalLanguageModel {
         try await database.record(feedback)
         model.ingest(feedback)
         try await database.saveLanguageModel(model)
+        let removed = try await database.enforceRetention(retentionPolicy)
+        if removed > 0 {
+            return try await rebuild()
+        }
         return model
     }
 

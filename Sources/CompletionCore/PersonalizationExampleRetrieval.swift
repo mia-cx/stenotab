@@ -106,6 +106,11 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
 }
 
 public enum FrecentExampleRetriever {
+    private struct ExampleGroup {
+        var representative: PersonalizationExample
+        var count: Int
+    }
+
     private struct ScoredExample {
         let example: PersonalizationExample
         let score: Double
@@ -118,43 +123,51 @@ public enum FrecentExampleRetriever {
         limit: Int = 5
     ) -> [PersonalizationExample] {
         guard limit > 0 else { return [] }
-        let grouped = Dictionary(grouping: examples) {
-            signature(for: $0)
-        }
-        let scored: [ScoredExample] = grouped.compactMap {
-            _, duplicates -> ScoredExample? in
-            guard
-                let representative = duplicates.max(
-                    by: { $0.capturedAt < $1.capturedAt }
+        var grouped: [String: ExampleGroup] = [:]
+        grouped.reserveCapacity(examples.count)
+        for example in examples {
+            let key = signature(for: example)
+            if var existing = grouped[key] {
+                existing.count += 1
+                if example.capturedAt > existing.representative.capturedAt {
+                    existing.representative = example
+                }
+                grouped[key] = existing
+            } else {
+                grouped[key] = ExampleGroup(
+                    representative: example,
+                    count: 1
                 )
-            else {
-                return nil
             }
+        }
+        var best: [ScoredExample] = []
+        best.reserveCapacity(limit + 1)
+        for group in grouped.values {
+            let representative = group.representative
             let age = max(
                 0,
                 date.timeIntervalSince(representative.capturedAt)
             )
             let recency = exp(-age / (14 * 24 * 60 * 60))
-            let frequency = log1p(Double(duplicates.count))
+            let frequency = log1p(Double(group.count))
             let scope = scopeMatch(
                 representative.context,
                 context
             )
             let accepted =
                 representative.source == .acceptedSuggestion ? 0.25 : 0
-            return ScoredExample(
-                example: representative,
-                score: recency + frequency + scope + accepted
+            best.append(
+                ScoredExample(
+                    example: representative,
+                    score: recency + frequency + scope + accepted
+                )
             )
-        }
-        return scored.sorted {
-            if $0.score == $1.score {
-                return $0.example.capturedAt > $1.example.capturedAt
+            best.sort(by: precedes)
+            if best.count > limit {
+                best.removeLast()
             }
-            return $0.score > $1.score
         }
-        .prefix(limit)
-        .map(\.example)
+        return best.map(\.example)
     }
 
     private static func signature(
@@ -163,6 +176,16 @@ public enum FrecentExampleRetriever {
         example.inputText.lowercased()
             + "\u{1F}"
             + example.insertion.lowercased()
+    }
+
+    private static func precedes(
+        _ lhs: ScoredExample,
+        _ rhs: ScoredExample
+    ) -> Bool {
+        if lhs.score == rhs.score {
+            return lhs.example.capturedAt > rhs.example.capturedAt
+        }
+        return lhs.score > rhs.score
     }
 }
 

@@ -151,8 +151,9 @@ updates, and makes local and remote providers share one conceptual boundary.
 
 The existing package already has the beginning of the right split:
 `CompletionCore` does not import AppKit or ApplicationServices, and the
-`StenoTab` executable owns Accessibility, event taps, pasteboard insertion, and
-the overlay.
+`StenoTab` executable owns Accessibility, event taps, literal Unicode event
+insertion, and the overlay. `StenoTabPersistence` isolates encrypted SQLite and
+Keychain-backed storage from both layers.
 
 The remaining architectural pressure points are:
 

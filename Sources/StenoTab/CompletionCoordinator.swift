@@ -1142,24 +1142,21 @@ final class CompletionCoordinator: NSObject {
         } else {
             switch mutation {
             case .deleteBackward:
-                guard fieldBefore.selection.location > 0 else {
-                    return nil
-                }
-                selection = UTF16Selection(
-                    location: fieldBefore.selection.location - 1,
-                    length: 1
-                )
+                guard let resolved = fieldBefore.selection
+                    .selectionForDeletion(
+                        in: fieldBefore.text,
+                        direction: .backward
+                    )
+                else { return nil }
+                selection = resolved
             case .deleteForward:
-                guard
-                    fieldBefore.selection.location
-                        < fieldBefore.text.utf16.count
-                else {
-                    return nil
-                }
-                selection = UTF16Selection(
-                    location: fieldBefore.selection.location,
-                    length: 1
-                )
+                guard let resolved = fieldBefore.selection
+                    .selectionForDeletion(
+                        in: fieldBefore.text,
+                        direction: .forward
+                    )
+                else { return nil }
+                selection = resolved
             case .insert, .invalidate:
                 return nil
             }

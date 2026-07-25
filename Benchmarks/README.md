@@ -67,3 +67,36 @@ Use `--prompt-style contextual` to exercise the proposed OCR, clipboard, and
 voice envelope. Use `--prompt-style production` as a compact-prompt control.
 Comparing both separates context quality from prompt-prefill cost and makes
 instruction-boundary regressions visible.
+
+## Classical personalization microbenchmark
+
+`PersonalizationBenchmark` isolates local work that happens before provider
+inference:
+
+```sh
+swift run -c release PersonalizationBenchmark
+```
+
+Cases:
+
+| Case | Representative corpus | Acceptance |
+| --- | --- | ---: |
+| `local_completion` | 2,020 learned phrases | p95 ≤ 1 ms |
+| `query_embedding` | warmed Apple NL 11-word query | p95 ≤ 20 ms |
+| `frecent_retrieval` | top five of 10,000 examples | p95 ≤ 20 ms |
+| `semantic_retrieval` | top five of 2,000 × 512-d vectors | p95 ≤ 50 ms |
+
+The harness consumes every result into a checksum and runs in release mode to
+avoid debug-build noise and optimizer-elided work.
+
+Baseline on the development Apple-silicon Mac, 2026-07-25:
+
+| Case | p50 | p95 |
+| --- | ---: | ---: |
+| `local_completion` | 0.022 ms | 0.022 ms |
+| `query_embedding` | 3.675 ms | 5.157 ms |
+| `frecent_retrieval` | 9.090 ms | 11.091 ms |
+| `semantic_retrieval` | 5.505 ms | 7.552 ms |
+
+These numbers establish regression budgets for local logic. They do not
+replace an end-to-end warm TTFT run against `llama-server`.

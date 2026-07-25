@@ -63,4 +63,29 @@ final class PersonalizationCaptureTests: XCTestCase {
             )
         )
     }
+
+    func testDeletionSelectionPreservesWholeExtendedGraphemeClusters() {
+        let text = "A👨‍👩‍👧‍👦B"
+        let familyLength = "👨‍👩‍👧‍👦".utf16.count
+        let afterFamily = UTF16Selection(
+            location: 1 + familyLength,
+            length: 0
+        )
+        let beforeFamily = UTF16Selection(location: 1, length: 0)
+
+        XCTAssertEqual(
+            afterFamily.selectionForDeletion(
+                in: text,
+                direction: .backward
+            ),
+            UTF16Selection(location: 1, length: familyLength)
+        )
+        XCTAssertEqual(
+            beforeFamily.selectionForDeletion(
+                in: text,
+                direction: .forward
+            ),
+            UTF16Selection(location: 1, length: familyLength)
+        )
+    }
 }

@@ -322,6 +322,61 @@ final class PersonalizationDatabaseTests: XCTestCase {
         )
     }
 
+    func testStorageCapCountsEncryptedEmbeddingsAndProjections()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let eventID = UUID()
+        let capture = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                id: eventID,
+                fieldText: "storage accounting input",
+                selection: UTF16Selection(location: 24, length: 0),
+                insertion: " continuation",
+                acceptanceScope: .nextWord,
+                context: PersonalizationContext(
+                    editorIdentifier: "editor"
+                )
+            )
+        )
+        try await fixture.database.record(capture)
+        let beforeDerivedData =
+            try await fixture.database.storageStatistics()
+
+        try await fixture.database.saveEmbedding(
+            eventID: eventID,
+            modelIdentifier: "test-512",
+            vector: Array(repeating: 0.25, count: 512)
+        )
+        try await fixture.database.saveVoiceAssessment(
+            VoiceAssessment(
+                summary: "I write concise messages.",
+                sampleCount: 10,
+                sourceEventCount: 10,
+                generatedAt: Date()
+            )
+        )
+        let afterDerivedData =
+            try await fixture.database.storageStatistics()
+
+        XCTAssertGreaterThan(
+            afterDerivedData.encryptedPayloadBytes,
+            beforeDerivedData.encryptedPayloadBytes
+        )
+        let removed = try await fixture.database.enforceRetention(
+            PersonalizationRetentionPolicy(
+                maximumAge: nil,
+                maximumEncryptedBytes:
+                    beforeDerivedData.encryptedPayloadBytes
+            )
+        )
+        XCTAssertEqual(removed, 1)
+        let remainingEmbeddings =
+            try await fixture.database.embeddings()
+        XCTAssertEqual(remainingEmbeddings, [])
+    }
+
     private func makeDatabase() throws -> (
         database: PersonalizationDatabase,
         directory: URL

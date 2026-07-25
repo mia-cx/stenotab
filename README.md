@@ -42,6 +42,19 @@ sound like the person typing—not an assistant answering them.
 - Local GGUF inference through a StenoTab-managed `llama-server`.
 - Model discovery and downloads in the shared Hugging Face cache.
 - Editable, modular Markdown prompt components and a live composed preview.
+- Encrypted, local writing history with full-field/cursor snapshots for
+  accepted suggestions and completed writing episodes.
+- Personal vocabulary, preferred capitalization, one-to-five-token phrase
+  learning, recency decay, per-app/input-kind ranking, and negative feedback
+  from immediately reverted suggestions.
+- High-confidence local phrase completion that can avoid model inference.
+- Frecent writing examples and opt-in semantically relevant examples, using
+  encrypted Apple Natural Language embeddings generated off the keystroke
+  path.
+- Periodic, inspectable voice summaries based on observable local writing
+  traits.
+- Personalization controls for retention, encrypted storage limits,
+  inspection, export, per-record/per-app deletion, and delete-all.
 - OpenAI-compatible provider support in the core and through developer
   configuration.
 
@@ -167,8 +180,9 @@ Current context support:
 | Bundled seed writing examples | Working fallback | On |
 | Current website | Not connected | Off |
 | Focused-window screenshot and local OCR | Working | Off |
-| Retrieved input history | Designed, not implemented | Off |
-| Periodic voice assessment | Designed, not implemented | Off |
+| Frecent writing examples | Working from encrypted local history | On |
+| Semantically relevant examples | Working with local encrypted embeddings | Off |
+| Periodic voice assessment | Working from local history | Off |
 | Custom voice instructions | Working | Empty |
 
 [`docs/PROMPT_DRAFT.md`](docs/PROMPT_DRAFT.md) contains a full human-editable
@@ -187,12 +201,20 @@ sample with data for every planned component.
   cached result is stale. Vision recognizes the text locally, the screenshot is
   discarded immediately, and up to 6,000 characters of normalized OCR text are
   retained in memory for the current editor.
-- Separately, accepting a suggestion currently inserts text by temporarily
-  replacing the system pasteboard and simulating Command–V. Only prior
-  plain-text clipboard content is restored.
-- Current editor context is not yet written to a typing-history database.
-- Current-website, history, and voice-assessment sources are still disabled in
-  Context & Privacy because they do not yet provide runtime data.
+- Suggestion acceptance posts literal Unicode keyboard events; it does not
+  paste clipboard content or replace the pasteboard.
+- Personalization collection is enabled by default and can be disabled in
+  **Settings → Personalization**. Canonical full-field events, scope values,
+  derived language models, embeddings, and voice assessments are encrypted at
+  rest with a Keychain-backed key. Only HMAC lookup keys, event kinds,
+  timestamps, vector dimensions, and model identifiers remain queryable
+  metadata.
+- Personalization work runs in a background actor. Key callbacks only update
+  the in-memory shadow buffer and schedule work.
+- Export is an explicit user action and produces readable JSON at the selected
+  destination.
+- Current-website detection remains unavailable, so website-scoped learning is
+  represented in the schema but not populated yet.
 - Remote OpenAI-compatible providers can send enabled context off-device; that
   path is intended for explicit developer configuration and is not the exposed
   default in this alpha.
@@ -231,7 +253,10 @@ Tab acceptance + caret reanchoring
 ```
 
 - `CompletionCore` contains platform-light prompt, scheduling, policy,
-  sanitization, acceptance, and geometry logic.
+  sanitization, acceptance, geometry, retrieval, vocabulary/n-gram learning,
+  and voice-analysis logic.
+- `StenoTabPersistence` owns the encrypted SQLite event ledger, encrypted
+  projections, embedding rows, retention, export, and deletion operations.
 - `StenoTab` contains the AppKit/SwiftUI shell, global event tap,
   Accessibility reader, overlay, provider runtime, Settings, and menu bar.
 - `CompletionCoreTests` contains the deterministic behavior suite.
@@ -252,7 +277,20 @@ The suite covers prompt composition, partial-word handling, completion
 sanitization, request coalescing, exact-match consumption, word-by-word
 acceptance, streamed-response cancellation and overlap tracking, refill
 behavior, per-app policy, model selection, permission state, caret geometry,
-and typography calibration.
+and typography calibration, plus encrypted personalization persistence,
+full-field history, feedback capture, vocabulary/n-gram ranking, retrieval,
+Unicode-safe deletion, and voice assessment.
+
+Run the deterministic personalization latency benchmark in release mode:
+
+```sh
+swift run -c release PersonalizationBenchmark
+```
+
+The benchmark covers warmed local completion, Apple Natural Language query
+embedding, frecent top-five retrieval over 10,000 examples, and cosine
+retrieval over 2,000 512-dimensional vectors. Baselines and acceptance budgets
+are documented in [`Benchmarks/README.md`](Benchmarks/README.md).
 
 Benchmark fixtures can be inspected with:
 
@@ -267,10 +305,10 @@ Benchmark fixtures can be inspected with:
   locations; it is not bundled by the current build script.
 - Completion quality and prompt wording are still being tuned.
 - Accessibility quality varies between editors and frameworks.
-- Suggestion acceptance temporarily replaces the system pasteboard and restores
-  only prior plain-text content; rich or non-text clipboard data can be lost.
-- Website detection, history retrieval, and learned voice assessment are
-  unfinished.
+- Website detection is unfinished, so website-scoped personalization is not
+  populated.
+- Semantic retrieval currently embeds accepted-suggestion inputs; directly
+  typed examples participate in frecent retrieval but not the semantic index.
 - Persistent ACP sessions for installed Codex and Claude are planned, not
   implemented.
 - Provider selection in the current Settings UI is intentionally locked to

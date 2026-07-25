@@ -555,7 +555,23 @@ public actor PersonalizationDatabase {
             """
             SELECT
                 COUNT(*),
-                COALESCE(SUM(LENGTH(payload_sealed)), 0),
+                (
+                    COALESCE(SUM(LENGTH(payload_sealed)), 0)
+                    + (
+                        SELECT COALESCE(
+                            SUM(LENGTH(vector_sealed)),
+                            0
+                        )
+                        FROM personalization_embedding
+                    )
+                    + (
+                        SELECT COALESCE(
+                            SUM(LENGTH(payload_sealed)),
+                            0
+                        )
+                        FROM personalization_projection
+                    )
+                ),
                 MIN(captured_at_ms),
                 MAX(captured_at_ms)
             FROM personalization_event
@@ -602,16 +618,13 @@ public actor PersonalizationDatabase {
                 if payloadBytes > maximumBytes {
                     let oldest = try connection.query(
                         """
-                        SELECT id, LENGTH(payload_sealed)
+                        SELECT id
                         FROM personalization_event
                         ORDER BY captured_at_ms ASC, sequence ASC
                         """
                     )
                     for row in oldest where payloadBytes > maximumBytes {
-                        guard
-                            let id = row.text(at: 0),
-                            let bytes = row.integer(at: 1)
-                        else {
+                        guard let id = row.text(at: 0) else {
                             continue
                         }
                         try connection.execute(
@@ -620,7 +633,7 @@ public actor PersonalizationDatabase {
                             """,
                             bindings: [.text(id)]
                         )
-                        payloadBytes -= Int(bytes)
+                        payloadBytes = try encryptedPayloadBytes()
                     }
                 }
             }
@@ -633,8 +646,28 @@ public actor PersonalizationDatabase {
         Int(
             try connection.query(
                 """
-                SELECT COALESCE(SUM(LENGTH(payload_sealed)), 0)
-                FROM personalization_event
+                SELECT
+                    (
+                        SELECT COALESCE(
+                            SUM(LENGTH(payload_sealed)),
+                            0
+                        )
+                        FROM personalization_event
+                    )
+                    + (
+                        SELECT COALESCE(
+                            SUM(LENGTH(vector_sealed)),
+                            0
+                        )
+                        FROM personalization_embedding
+                    )
+                    + (
+                        SELECT COALESCE(
+                            SUM(LENGTH(payload_sealed)),
+                            0
+                        )
+                        FROM personalization_projection
+                    )
                 """
             ).first?.integer(at: 0) ?? 0
         )

@@ -1,5 +1,10 @@
 import Foundation
 
+public enum UTF16DeletionDirection: Sendable, Equatable {
+    case backward
+    case forward
+}
+
 public struct UTF16Selection: Codable, Sendable, Equatable {
     public let location: Int
     public let length: Int
@@ -15,6 +20,50 @@ public struct UTF16Selection: Codable, Sendable, Equatable {
             && length >= 0
             && location <= count
             && length <= count - location
+    }
+
+    public func selectionForDeletion(
+        in text: String,
+        direction: UTF16DeletionDirection
+    ) -> UTF16Selection? {
+        guard isValid(for: text) else { return nil }
+        if length > 0 {
+            return self
+        }
+        let utf16 = text.utf16
+        let utf16Caret = utf16.index(
+            utf16.startIndex,
+            offsetBy: location
+        )
+        guard let caret = String.Index(utf16Caret, within: text) else {
+            return nil
+        }
+        let characterRange: Range<String.Index>
+        switch direction {
+        case .backward:
+            guard caret > text.startIndex else { return nil }
+            characterRange = text.index(before: caret)..<caret
+        case .forward:
+            guard caret < text.endIndex else { return nil }
+            characterRange = caret..<text.index(after: caret)
+        }
+        guard
+            let utf16Start = characterRange.lowerBound.samePosition(
+                in: utf16
+            ),
+            let utf16End = characterRange.upperBound.samePosition(
+                in: utf16
+            )
+        else {
+            return nil
+        }
+        return UTF16Selection(
+            location: utf16.distance(
+                from: utf16.startIndex,
+                to: utf16Start
+            ),
+            length: utf16.distance(from: utf16Start, to: utf16End)
+        )
     }
 }
 
