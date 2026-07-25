@@ -195,7 +195,7 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func deleteAll() {
         guard let modelWorker else { return }
-        onHistoryReset?()
+        invalidateDerivedPersonalization()
         completionEpisodeDeleteAllBoundary = Date()
         collectionGeneration &+= 1
         let generation = collectionGeneration
@@ -341,6 +341,7 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func deleteEvent(id: UUID) {
         guard let modelWorker else { return }
+        invalidateDerivedPersonalization()
         collectionGeneration &+= 1
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
@@ -360,7 +361,7 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func deleteApplicationHistory(bundleIdentifier: String) {
         guard let modelWorker else { return }
-        onHistoryReset?()
+        invalidateDerivedPersonalization()
         completionEpisodeApplicationDeletionBoundaries[bundleIdentifier] =
             Date()
         collectionGeneration &+= 1
@@ -407,6 +408,7 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func enforceRetention() {
         guard let modelWorker else { return }
+        invalidateDerivedPersonalization()
         collectionGeneration &+= 1
         let generation = collectionGeneration
         let policy = retentionPolicy
@@ -423,6 +425,12 @@ final class PersonalizationSettingsStore: ObservableObject {
                 operationError = String(describing: error)
             }
         }
+    }
+
+    private func invalidateDerivedPersonalization() {
+        languageModel = PersonalLanguageModel()
+        voiceAssessment = nil
+        onHistoryReset?()
     }
 
     func report(error: Error) {

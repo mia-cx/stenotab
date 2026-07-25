@@ -348,6 +348,191 @@ final class PersonalizationIntegrationTests: XCTestCase {
         XCTAssertEqual(storedEpisodes, [])
     }
 
+    @MainActor
+    func testStoreRecordsCurrentGenerationCompletionEpisode()
+        async throws
+    {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        store.attach(database: database)
+        await store.flushPendingPersistence()
+        let episode = makeCompletionEpisode(
+            context: PersonalizationContext(
+                applicationBundleIdentifier: "com.example.Writer",
+                editorIdentifier: "editor"
+            ),
+            index: 0,
+            collectionGeneration: store.captureGeneration,
+            date: Date()
+        )
+
+        store.record(episode)
+        await store.flushPendingPersistence()
+
+        let storedEpisodes = try await database.completionEpisodes()
+        XCTAssertEqual(storedEpisodes, [episode])
+    }
+
+    @MainActor
+    func testApplicationDeleteRejectsOlderTargetEpisodeAndKeepsOtherApp()
+        async throws
+    {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        store.attach(database: database)
+        await store.flushPendingPersistence()
+        let targetBundleIdentifier = "com.example.Target"
+        let targetContext = PersonalizationContext(
+            applicationBundleIdentifier: targetBundleIdentifier,
+            editorIdentifier: "target-editor"
+        )
+        let otherContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Other",
+            editorIdentifier: "other-editor"
+        )
+        let generation = store.captureGeneration
+        let targetEpisode = makeCompletionEpisode(
+            context: targetContext,
+            index: 0,
+            collectionGeneration: generation,
+            date: Date()
+        )
+        let otherEpisode = makeCompletionEpisode(
+            context: otherContext,
+            index: 1,
+            collectionGeneration: generation,
+            date: Date().addingTimeInterval(1)
+        )
+        let staleTargetEpisode = makeCompletionEpisode(
+            context: targetContext,
+            index: 2,
+            collectionGeneration: generation,
+            date: Date(timeIntervalSinceNow: 24 * 60 * 60)
+        )
+        store.record(targetEpisode)
+        store.record(otherEpisode)
+        await store.flushPendingPersistence()
+        var didResetHistory = false
+        store.onHistoryReset = {
+            didResetHistory = true
+        }
+
+        store.deleteApplicationHistory(
+            bundleIdentifier: targetBundleIdentifier
+        )
+
+        XCTAssertTrue(didResetHistory)
+        await store.flushPendingPersistence()
+        store.record(staleTargetEpisode)
+        await store.flushPendingPersistence()
+
+        let storedEpisodes = try await database.completionEpisodes()
+        XCTAssertEqual(storedEpisodes.map(\.id), [otherEpisode.id])
+        XCTAssertEqual(
+            storedEpisodes.map(\.invocation.context),
+            [otherContext]
+        )
+    }
+
+    @MainActor
+    func testDeleteEventImmediatelyInvalidatesDerivedPersonalization()
+        async throws
+    {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        store.attach(database: database)
+        await store.flushPendingPersistence()
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "QuasarUniqueToken",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(
+                applicationBundleIdentifier: "com.example.Writer",
+                editorIdentifier: "editor"
+            ),
+            capturedAt: Date()
+        )
+        store.record(capture)
+        await store.flushPendingPersistence()
+        XCTAssertEqual(
+            store.vocabularyEntries.map(\.normalized),
+            ["quasaruniquetoken"]
+        )
+        var didResetHistory = false
+        store.onHistoryReset = {
+            didResetHistory = true
+        }
+
+        store.deleteEvent(id: capture.id)
+
+        XCTAssertTrue(didResetHistory)
+        XCTAssertTrue(store.vocabularyEntries.isEmpty)
+        await store.flushPendingPersistence()
+        let storedSuggestions = try await database.acceptedSuggestions()
+        XCTAssertEqual(storedSuggestions, [])
+    }
+
     private func makeCompletionEpisode(
         context: PersonalizationContext,
         index: Int,
