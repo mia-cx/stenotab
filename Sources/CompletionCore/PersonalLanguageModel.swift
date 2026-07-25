@@ -1000,7 +1000,10 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             predictedPrefix.isEmpty
             ? 0
             : (
-                authoritativeAfter.hasPrefix(predictedPrefix)
+                hasLiteralUTF16Prefix(
+                    authoritativeAfter,
+                    prefix: predictedPrefix
+                )
                     ? predictedPrefix.utf16.count
                     : nil
             )
@@ -1008,7 +1011,10 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             predictedSuffix.isEmpty
             ? authoritativeCount
             : (
-                authoritativeAfter.hasSuffix(predictedSuffix)
+                hasLiteralUTF16Suffix(
+                    authoritativeAfter,
+                    suffix: predictedSuffix
+                )
                     ? authoritativeCount - predictedSuffix.utf16.count
                     : nil
             )
@@ -1054,7 +1060,139 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
                 return candidate
             }
         }
+        let anchoredStart =
+            mappedStart
+            ?? boundaryAfterSuffixAnchor(
+                predictedPrefix,
+                in: authoritativeAfter,
+                beforeUTF16Offset: mappedEnd ?? authoritativeCount
+            )
+        let anchoredEnd =
+            mappedEnd
+            ?? boundaryBeforePrefixAnchor(
+                predictedSuffix,
+                in: authoritativeAfter,
+                afterUTF16Offset: anchoredStart ?? 0
+            )
+        if
+            let anchoredStart,
+            let anchoredEnd,
+            anchoredStart <= anchoredEnd
+        {
+            let candidate = UTF16Selection(
+                location: anchoredStart,
+                length: anchoredEnd - anchoredStart
+            )
+            if candidate.isValid(for: authoritativeAfter) {
+                return candidate
+            }
+        }
         return nil
+    }
+
+    private static func boundaryAfterSuffixAnchor(
+        _ predictedPrefix: String,
+        in authoritativeText: String,
+        beforeUTF16Offset upperOffset: Int
+    ) -> Int? {
+        let predictedUnits = Array(predictedPrefix.utf16)
+        let authoritativeUnits = Array(authoritativeText.utf16)
+        let maximumLength = min(predictedUnits.count, 128)
+        guard maximumLength >= 2 else { return nil }
+        for length in stride(
+            from: maximumLength,
+            through: 2,
+            by: -1
+        ) {
+            let predictedSelection = UTF16Selection(
+                location: predictedUnits.count - length,
+                length: length
+            )
+            guard predictedSelection.isValid(for: predictedPrefix) else {
+                continue
+            }
+            let anchor = predictedUnits.suffix(length)
+            guard upperOffset >= length else { continue }
+            for start in stride(
+                from: upperOffset - length,
+                through: 0,
+                by: -1
+            ) {
+                let boundary = start + length
+                if
+                    authoritativeUnits[start..<boundary]
+                        .elementsEqual(anchor),
+                    UTF16Selection(location: boundary, length: 0)
+                        .isValid(for: authoritativeText)
+                {
+                    return boundary
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func boundaryBeforePrefixAnchor(
+        _ predictedSuffix: String,
+        in authoritativeText: String,
+        afterUTF16Offset lowerOffset: Int
+    ) -> Int? {
+        let predictedUnits = Array(predictedSuffix.utf16)
+        let authoritativeUnits = Array(authoritativeText.utf16)
+        let maximumLength = min(predictedUnits.count, 128)
+        guard maximumLength >= 2 else { return nil }
+        for length in stride(
+            from: maximumLength,
+            through: 2,
+            by: -1
+        ) {
+            let predictedSelection = UTF16Selection(
+                location: 0,
+                length: length
+            )
+            guard predictedSelection.isValid(for: predictedSuffix) else {
+                continue
+            }
+            let anchor = predictedUnits.prefix(length)
+            guard
+                lowerOffset <= authoritativeUnits.count - length
+            else {
+                continue
+            }
+            for start in lowerOffset...(
+                authoritativeUnits.count - length
+            ) {
+                if
+                    authoritativeUnits[start..<(start + length)]
+                        .elementsEqual(anchor),
+                    UTF16Selection(location: start, length: 0)
+                        .isValid(for: authoritativeText)
+                {
+                    return start
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func hasLiteralUTF16Prefix(
+        _ text: String,
+        prefix: String
+    ) -> Bool {
+        let textUnits = text.utf16
+        let prefixUnits = prefix.utf16
+        guard prefixUnits.count <= textUnits.count else { return false }
+        return textUnits.prefix(prefixUnits.count).elementsEqual(prefixUnits)
+    }
+
+    private static func hasLiteralUTF16Suffix(
+        _ text: String,
+        suffix: String
+    ) -> Bool {
+        let textUnits = text.utf16
+        let suffixUnits = suffix.utf16
+        guard suffixUnits.count <= textUnits.count else { return false }
+        return textUnits.suffix(suffixUnits.count).elementsEqual(suffixUnits)
     }
 
     private static func resolvedFieldAfter(
