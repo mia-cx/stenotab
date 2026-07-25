@@ -876,6 +876,7 @@ final class CompletionCoordinator: NSObject {
                 ]?.scale ?? 1
             ),
             foregroundColor: snapshot.foregroundColor,
+            backgroundColor: snapshot.backgroundColor,
             leadingWhitespaceCompensation: CGFloat(
                 (
                     whitespaceCalibrationByEditor[snapshot.editorIdentifier]

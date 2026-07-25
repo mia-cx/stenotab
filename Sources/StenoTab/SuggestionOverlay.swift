@@ -41,6 +41,7 @@ final class SuggestionOverlay {
         at caretRect: CGRect,
         typography: EditorTypography,
         foregroundColor: CGColor?,
+        backgroundColor: CGColor?,
         leadingWhitespaceCompensation: CGFloat,
         useNativeTextLayoutMetrics: Bool
     ) {
@@ -53,8 +54,15 @@ final class SuggestionOverlay {
         let font = typography.fontName.flatMap {
             NSFont(name: $0, size: pointSize)
         } ?? .systemFont(ofSize: pointSize)
-        let sourceColor = foregroundColor.flatMap(NSColor.init(cgColor:))
-            ?? .labelColor
+        let fallbackColor = rgbComponents(of: .labelColor)
+            ?? OverlayRGBColor(red: 0, green: 0, blue: 0)
+        let sourceColor = nsColor(
+            OverlayContrast.foreground(
+                explicitForeground: rgbComponents(of: foregroundColor),
+                background: rgbComponents(of: backgroundColor),
+                fallback: fallbackColor
+            )
+        )
         let coreTextFont = CTFontCreateWithName(
             font.fontName as CFString,
             font.pointSize,
@@ -86,6 +94,31 @@ final class SuggestionOverlay {
             leadingWhitespaceCompensation: leadingWhitespaceCompensation,
             nativeLineHeight: nativeLineHeight,
             nativeBaselineOffsetFromTop: nativeBaselineOffsetFromTop
+        )
+    }
+
+    private func rgbComponents(of color: CGColor?) -> OverlayRGBColor? {
+        color.flatMap(NSColor.init(cgColor:)).flatMap(rgbComponents(of:))
+    }
+
+    private func rgbComponents(of color: NSColor) -> OverlayRGBColor? {
+        guard let converted = color.usingColorSpace(.sRGB) else {
+            return nil
+        }
+        return OverlayRGBColor(
+            red: converted.redComponent,
+            green: converted.greenComponent,
+            blue: converted.blueComponent,
+            alpha: converted.alphaComponent
+        )
+    }
+
+    private func nsColor(_ color: OverlayRGBColor) -> NSColor {
+        NSColor(
+            srgbRed: color.red,
+            green: color.green,
+            blue: color.blue,
+            alpha: color.alpha
         )
     }
 

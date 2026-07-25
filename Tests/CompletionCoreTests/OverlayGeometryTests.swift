@@ -3,6 +3,33 @@ import XCTest
 @testable import CompletionCore
 
 final class OverlayGeometryTests: XCTestCase {
+    func testChoosesForegroundFromActualEditorBackground() {
+        XCTAssertEqual(
+            OverlayContrast.foreground(
+                explicitForeground: nil,
+                background: OverlayRGBColor(
+                    red: 0.96,
+                    green: 0.96,
+                    blue: 0.96
+                ),
+                fallback: OverlayRGBColor(red: 1, green: 0, blue: 0)
+            ),
+            OverlayRGBColor(red: 0, green: 0, blue: 0)
+        )
+        XCTAssertEqual(
+            OverlayContrast.foreground(
+                explicitForeground: nil,
+                background: OverlayRGBColor(
+                    red: 0.08,
+                    green: 0.04,
+                    blue: 0.12
+                ),
+                fallback: OverlayRGBColor(red: 1, green: 0, blue: 0)
+            ),
+            OverlayRGBColor(red: 1, green: 1, blue: 1)
+        )
+    }
+
     func testAlignsOverlayOriginToPhysicalPixels() {
         XCTAssertEqual(
             OverlayGeometry.pixelAlignedOrigin(
