@@ -124,6 +124,44 @@ final class CompletionPromptTests: XCTestCase {
         }
     }
 
+    func testOCRContextIsIncludedOnlyWhenEnabled() {
+        let context = CompletionContext(
+            applicationName: "Discord",
+            inputKind: "message box",
+            ocrContent: "Alex: Are you still free tomorrow?"
+        )
+        let disabled = CompletionPrompt.compose(
+            prefix: "yeah I can",
+            suffix: "",
+            context: context,
+            configuration: .defaults
+        )
+        var enabledConfiguration = PromptConfiguration.defaults
+        enabledConfiguration.context.includeOCR = true
+        let enabled = CompletionPrompt.compose(
+            prefix: "yeah I can",
+            suffix: "",
+            context: context,
+            configuration: enabledConfiguration
+        )
+
+        XCTAssertFalse(
+            disabled.textCompletionPrompt.contains(
+                "Alex: Are you still free tomorrow?"
+            )
+        )
+        XCTAssertTrue(
+            enabled.textCompletionPrompt.contains(
+                "Alex: Are you still free tomorrow?"
+            )
+        )
+        XCTAssertTrue(
+            enabled.userMessage.contains(
+                "Alex: Are you still free tomorrow?"
+            )
+        )
+    }
+
     func testStructuredFramingChangesChatWhileBaseUsesFirstPersonContext() {
         var configuration = PromptConfiguration.defaults
         configuration.framing.applicationPrefix = "Working inside:"

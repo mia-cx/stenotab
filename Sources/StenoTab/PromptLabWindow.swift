@@ -212,12 +212,10 @@ private struct ContextPrivacyView: View {
                     ContextPrivacyToggleRow(
                         title: "Snapshots / OCR",
                         detail:
-                            "Screenshot capture and local OCR are not "
-                            + "connected yet, so StenoTab cannot enable this "
-                            + "source.",
-                        badge: "Coming soon",
-                        isOn: .constant(false),
-                        isEnabled: false
+                            "Capture the focused app window when an editor "
+                            + "gains focus or a new typing burst begins. Text "
+                            + "is recognized locally and kept only in memory.",
+                        isOn: configuration.context.includeOCR
                     )
                     Divider()
                     ContextPrivacyToggleRow(
@@ -1331,8 +1329,9 @@ private struct PromptLabView: View {
             Divider()
             PromptToggleRow(
                 title: "Snapshots / OCR",
-                detail: "Include locally extracted text surrounding the current input.",
-                badge: "Source pending",
+                detail:
+                    "Include text recognized locally from the focused app "
+                    + "window.",
                 isOn: configuration.context.includeOCR,
                 debugMode: store.configuration.debugMode,
                 framing: configuration.framing.ocrHeading,

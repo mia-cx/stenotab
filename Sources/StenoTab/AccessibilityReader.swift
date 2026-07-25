@@ -12,6 +12,7 @@ struct EditorSnapshot {
     let processID: pid_t
     let isWebBacked: Bool
     let editorIdentifier: String
+    let focusedWindowFrame: CGRect?
     let applicationName: String?
     let applicationBundleIdentifier: String?
     let applicationBundleURL: URL?
@@ -125,6 +126,7 @@ final class AccessibilityReader {
             processID: pid,
             isWebBacked: appIsWebBacked,
             editorIdentifier: elementIdentity(focused),
+            focusedWindowFrame: focusedWindowFrame(for: pid),
             applicationName: frontmostApp?.localizedName,
             applicationBundleIdentifier: frontmostApp?.bundleIdentifier,
             applicationBundleURL: frontmostApp?.bundleURL,
@@ -490,6 +492,22 @@ final class AccessibilityReader {
             return nil
         }
         return unsafeDowncast(raw, to: AXUIElement.self)
+    }
+
+    private func focusedWindowFrame(for processID: pid_t) -> CGRect? {
+        let application = AXUIElementCreateApplication(processID)
+        guard
+            let raw = copyRawAttribute(
+                kAXFocusedWindowAttribute,
+                from: application
+            ),
+            CFGetTypeID(raw) == AXUIElementGetTypeID()
+        else {
+            return nil
+        }
+        let window = unsafeDowncast(raw, to: AXUIElement.self)
+        return rectAttribute("AXFrame", from: window)
+            .map(cocoaRect(fromAccessibilityRect:))
     }
 
     private func childElements(of element: AXUIElement) -> [AXUIElement] {

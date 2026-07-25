@@ -1,9 +1,16 @@
 import AppKit
 import ApplicationServices
 import CompletionCore
+import OSLog
 
 @MainActor
 final class CompletionCoordinator: NSObject {
+    private struct CachedOCRContext {
+        let editorIdentifier: String
+        let capturedAt: Date
+        let text: String?
+    }
+
     private struct RefillKey: Equatable {
         let prefix: String
         let suffix: String
@@ -12,6 +19,11 @@ final class CompletionCoordinator: NSObject {
 
     private let accessibility = AccessibilityReader()
     private let overlay = SuggestionOverlay()
+    private let ocrCapture = ScreenOCRContextCapture()
+    private let ocrLogger = Logger(
+        subsystem: "cx.mia.stenotab",
+        category: "OCR"
+    )
     private let provider: any CompletionProvider
     private let promptConfiguration: @MainActor () -> PromptConfiguration
     private let applicationCompletionsAreEnabled:
@@ -22,6 +34,11 @@ final class CompletionCoordinator: NSObject {
     private var inputMonitor: GlobalInputMonitor?
     private var reconciliationTimer: Timer?
     private var debounceTask: Task<Void, Never>?
+    private var ocrCaptureTask: Task<Void, Never>?
+    private var ocrCaptureEditorIdentifier: String?
+    private var ocrCaptureRequestID: UInt64 = 0
+    private var cachedOCRContext: CachedOCRContext?
+    private var lastInsertionAt: Date?
 
     private var buffer = ShadowTextBuffer()
     private var lastSnapshot: EditorSnapshot?
@@ -185,6 +202,7 @@ final class CompletionCoordinator: NSObject {
         sender.state = enabled ? .on : .off
         if !enabled {
             invalidatePendingCompletion()
+            clearOCRContext()
             clearSuggestion()
         } else {
             reconcile()
@@ -193,6 +211,7 @@ final class CompletionCoordinator: NSObject {
 
     func applicationPolicyDidChange() {
         invalidatePendingCompletion()
+        clearOCRContext()
         clearSuggestion()
         reconcile()
     }
@@ -203,7 +222,27 @@ final class CompletionCoordinator: NSObject {
             clearSuggestion()
             return
         }
+        let now = Date()
+        let beginsTypingBurst: Bool
+        if case let .insert(text) = mutation, !text.isEmpty {
+            beginsTypingBurst = OCRCapturePolicy.beginsTypingBurst(
+                previousInsertionAt: lastInsertionAt,
+                now: now
+            )
+            lastInsertionAt = now
+        } else {
+            beginsTypingBurst = false
+        }
+
         buffer.apply(mutation)
+        if beginsTypingBurst, let snapshot = lastSnapshot {
+            requestOCRContext(
+                for: snapshot,
+                reason: .typingBurstStarted,
+                editorText: buffer.prefix + buffer.suffix,
+                now: now
+            )
+        }
 
         if case let .insert(text) = mutation,
            var consumption = suggestionConsumption {
@@ -244,11 +283,13 @@ final class CompletionCoordinator: NSObject {
 
     private func reconcile() {
         guard enabled else {
+            clearOCRContext()
             clearSuggestion()
             return
         }
         guard policyAllowsCurrentApplication() else {
             invalidatePendingCompletion()
+            clearOCRContext()
             clearSuggestion()
             return
         }
@@ -282,6 +323,18 @@ final class CompletionCoordinator: NSObject {
         }
         updateTypographyScale(from: previousSnapshot, to: snapshot)
         lastSnapshot = snapshot
+        if focusChanged {
+            lastInsertionAt = nil
+            if cachedOCRContext?.editorIdentifier
+                != snapshot.editorIdentifier {
+                cachedOCRContext = nil
+            }
+            requestOCRContext(
+                for: snapshot,
+                reason: .focusChanged,
+                editorText: snapshot.prefix + snapshot.suffix
+            )
+        }
         if !CompletionRequestPolicy.shouldRequest(prefix: snapshot.prefix) {
             _ = buffer.reconcile(
                 prefix: snapshot.prefix,
@@ -426,6 +479,7 @@ final class CompletionCoordinator: NSObject {
                 applicationName: snapshot?.applicationName,
                 website: nil,
                 inputKind: snapshot?.inputKind,
+                ocrContent: ocrContent(for: snapshot),
                 clipboardContent: clipboardContent(
                     configuration: configuration
                 )
@@ -448,6 +502,122 @@ final class CompletionCoordinator: NSObject {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return String(trimmed.prefix(2_000))
+    }
+
+    private func ocrContent(for snapshot: EditorSnapshot?) -> String? {
+        guard
+            promptConfiguration().context.includeOCR,
+            CGPreflightScreenCaptureAccess(),
+            let snapshot,
+            cachedOCRContext?.editorIdentifier == snapshot.editorIdentifier
+        else {
+            return nil
+        }
+        return cachedOCRContext?.text
+    }
+
+    private func requestOCRContext(
+        for snapshot: EditorSnapshot,
+        reason: OCRCaptureReason,
+        editorText: String,
+        now: Date = Date()
+    ) {
+        let configuration = promptConfiguration()
+        guard configuration.context.includeOCR else {
+            clearOCRContext()
+            return
+        }
+        guard CGPreflightScreenCaptureAccess() else {
+            ocrLogger.error(
+                "OCR is enabled but Screen Recording access is unavailable"
+            )
+            clearOCRContext()
+            return
+        }
+        guard
+            policyAllowsCurrentApplication(),
+            NSWorkspace.shared.frontmostApplication?.processIdentifier
+                == snapshot.processID
+        else {
+            clearOCRContext()
+            return
+        }
+        guard OCRCapturePolicy.shouldCapture(
+            reason: reason,
+            editorIdentifier: snapshot.editorIdentifier,
+            cachedEditorIdentifier: cachedOCRContext?.editorIdentifier,
+            cachedAt: cachedOCRContext?.capturedAt,
+            inFlightEditorIdentifier: ocrCaptureEditorIdentifier,
+            now: now
+        ) else {
+            return
+        }
+
+        ocrCaptureTask?.cancel()
+        ocrCaptureRequestID &+= 1
+        let requestID = ocrCaptureRequestID
+        ocrCaptureEditorIdentifier = snapshot.editorIdentifier
+        let target = OCRCaptureTarget(
+            editorIdentifier: snapshot.editorIdentifier,
+            processID: snapshot.processID,
+            caretRect: snapshot.caretRect,
+            focusedWindowFrame: snapshot.focusedWindowFrame,
+            editorText: editorText
+        )
+        ocrCaptureTask = Task { [weak self, ocrCapture] in
+            let text: String?
+            do {
+                text = try await ocrCapture.recognizeText(for: target)
+            } catch is CancellationError {
+                return
+            } catch {
+                self?.ocrLogger.error(
+                    "Focused-window OCR failed: \(error.localizedDescription)"
+                )
+                text = nil
+            }
+            guard !Task.isCancelled, let self else { return }
+            guard
+                self.ocrCaptureRequestID == requestID,
+                self.lastSnapshot?.editorIdentifier
+                    == target.editorIdentifier,
+                NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    == target.processID,
+                self.promptConfiguration().context.includeOCR,
+                self.policyAllowsCurrentApplication()
+            else {
+                return
+            }
+            self.ocrCaptureTask = nil
+            self.ocrCaptureEditorIdentifier = nil
+            self.cachedOCRContext = CachedOCRContext(
+                editorIdentifier: target.editorIdentifier,
+                capturedAt: Date(),
+                text: text
+            )
+            self.ocrLogger.notice(
+                "Focused-window OCR cached \(text?.count ?? 0) characters"
+            )
+
+            if
+                self.suggestion == nil,
+                self.suggestionConsumption == nil,
+                CompletionRequestPolicy.shouldRequest(
+                    prefix: self.buffer.prefix
+                )
+            {
+                self.scheduleCompletion()
+            }
+        }
+    }
+
+    private func clearOCRContext() {
+        ocrCaptureTask?.cancel()
+        ocrCaptureTask = nil
+        ocrCaptureEditorIdentifier = nil
+        ocrCaptureRequestID &+= 1
+        cachedOCRContext = nil
+        lastInsertionAt = nil
     }
 
     private func incompleteWordFragment(in prefix: String) -> String? {

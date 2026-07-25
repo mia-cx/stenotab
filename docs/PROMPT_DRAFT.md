@@ -12,7 +12,7 @@ each stable fragment into its corresponding file under
 | Current application | Live, on by default | Frontmost macOS application |
 | Current website | Not connected yet | Planned browser context |
 | Input kind | Live, on by default | AX role, subrole, placeholder, title, and description |
-| Snapshot text / OCR | Not connected yet, off by default | Planned local screen capture and OCR |
+| Snapshot text / OCR | Live, off by default | Focused app window through ScreenCaptureKit and local Vision OCR |
 | Clipboard | Live, off by default | Current text clipboard contents |
 | Input history | Not connected yet, off by default | Planned encrypted local history retrieval |
 | Voice assessment | Not connected yet, off by default | Planned local periodic assessment |

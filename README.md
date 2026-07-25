@@ -33,6 +33,9 @@ sound like the person typing—not an assistant answering them.
 - Setup, Models, Context & Privacy, Prompt Lab, and App Settings pages.
 - Per-app enable/disable overrides and a quick toggle for the focused app.
 - Launch at login.
+- Opt-in focused-window screenshots with local Vision OCR. Captures run when
+  focus enters an editor and, when the cached context is stale, at the start of
+  a new typing burst.
 - Local GGUF inference through a StenoTab-managed `llama-server`.
 - Model discovery and downloads in the shared Hugging Face cache.
 - Editable, modular Markdown prompt components and a live composed preview.
@@ -84,8 +87,8 @@ Open **StenoTab → Settings** from the menu-bar item.
 
 1. In **Setup**, grant Accessibility permission. StenoTab cannot locate text
    fields, render at the caret, or insert accepted text without it.
-2. Screen Recording is optional today. It is reserved for the local
-   screenshot/OCR context path, which is not connected yet.
+2. Screen Recording is optional. Grant it only if you want to enable local
+   screenshot/OCR context in **Context & Privacy**.
 3. If Setup reports that macOS inline predictive text or suggested replies are
    enabled, click **Turn Off**. The row turns green when both competing
    suggestion features are disabled.
@@ -158,7 +161,7 @@ Current context support:
 | Clipboard text, up to 2,000 characters | Working | Off |
 | Bundled seed writing examples | Working fallback | On |
 | Current website | Not connected | Off |
-| Screenshot and local OCR | Not connected | Off |
+| Focused-window screenshot and local OCR | Working | Off |
 | Retrieved input history | Designed, not implemented | Off |
 | Periodic voice assessment | Designed, not implemented | Off |
 | Custom voice instructions | Working | Empty |
@@ -173,14 +176,18 @@ sample with data for every planned component.
   on the Mac. Changing that URL can send enabled context to another host.
 - Reading clipboard text for prompt context is opt-in, limited to 2,000
   characters, assembled in memory, and not retained.
+- Screenshot/OCR context is opt-in and requires Screen Recording permission.
+  StenoTab captures only the focused app window—not the full display—when focus
+  enters an editor. A new typing burst refreshes the capture only when the
+  cached result is stale. Vision recognizes the text locally, the screenshot is
+  discarded immediately, and up to 6,000 characters of normalized OCR text are
+  retained in memory for the current editor.
 - Separately, accepting a suggestion currently inserts text by temporarily
   replacing the system pasteboard and simulating Command–V. Only prior
   plain-text clipboard content is restored.
 - Current editor context is not yet written to a typing-history database.
-- Website and screenshot/OCR sources are disabled in Context & Privacy. Prompt
-  Lab exposes source-pending website, OCR, history, and voice-assessment
-  switches for prompt design, but those sources currently provide no runtime
-  data.
+- Current-website, history, and voice-assessment sources are still disabled in
+  Context & Privacy because they do not yet provide runtime data.
 - Remote OpenAI-compatible providers can send enabled context off-device; that
   path is intended for explicit developer configuration and is not the exposed
   default in this alpha.
@@ -256,7 +263,8 @@ Benchmark fixtures can be inspected with:
 - Accessibility quality varies between editors and frameworks.
 - Suggestion acceptance temporarily replaces the system pasteboard and restores
   only prior plain-text content; rich or non-text clipboard data can be lost.
-- Website, OCR, history retrieval, and learned voice assessment are unfinished.
+- Website detection, history retrieval, and learned voice assessment are
+  unfinished.
 - Persistent ACP sessions for installed Codex and Claude are planned, not
   implemented.
 - Provider selection in the current Settings UI is intentionally locked to
