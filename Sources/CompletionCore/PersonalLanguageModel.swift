@@ -948,19 +948,156 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             }
             originalText = selectedText
         }
+        guard
+            let predictedAfter = resolvedFieldAfter(edit),
+            let authoritativeRange = authoritativeRange(
+                for: edit,
+                replacementLocation: replacementLocation,
+                predictedAfter: predictedAfter.text,
+                authoritativeAfter: authoritativeAfter
+            )
+        else {
+            return nil
+        }
         return replacing(
-            UTF16Selection(
-                location: replacementLocation,
-                length: edit.insertedText.utf16.count
-            ),
+            authoritativeRange,
             in: authoritativeAfter,
             with: originalText
+        )
+    }
+
+    private static func authoritativeRange(
+        for edit: WritingEditCapture,
+        replacementLocation: Int,
+        predictedAfter: String,
+        authoritativeAfter: String
+    ) -> UTF16Selection? {
+        let insertedLength = edit.insertedText.utf16.count
+        guard
+            let predictedPrefix = utf16Substring(
+                in: predictedAfter,
+                selection: UTF16Selection(
+                    location: 0,
+                    length: replacementLocation
+                )
+            ),
+            let predictedSuffix = utf16Substring(
+                in: predictedAfter,
+                selection: UTF16Selection(
+                    location: replacementLocation + insertedLength,
+                    length:
+                        predictedAfter.utf16.count
+                        - replacementLocation
+                        - insertedLength
+                )
+            )
+        else {
+            return nil
+        }
+
+        let authoritativeCount = authoritativeAfter.utf16.count
+        let mappedStart =
+            predictedPrefix.isEmpty
+            ? 0
+            : (
+                authoritativeAfter.hasPrefix(predictedPrefix)
+                    ? predictedPrefix.utf16.count
+                    : nil
+            )
+        let mappedEnd =
+            predictedSuffix.isEmpty
+            ? authoritativeCount
+            : (
+                authoritativeAfter.hasSuffix(predictedSuffix)
+                    ? authoritativeCount - predictedSuffix.utf16.count
+                    : nil
+            )
+
+        if
+            let mappedStart,
+            let mappedEnd,
+            mappedStart <= mappedEnd
+        {
+            return UTF16Selection(
+                location: mappedStart,
+                length: mappedEnd - mappedStart
+            )
+        }
+        if let mappedStart {
+            let candidate = UTF16Selection(
+                location: mappedStart,
+                length: insertedLength
+            )
+            if
+                utf16Substring(
+                    in: authoritativeAfter,
+                    selection: candidate
+                ) == edit.insertedText
+            {
+                return candidate
+            }
+        }
+        if
+            let mappedEnd,
+            mappedEnd >= insertedLength
+        {
+            let candidate = UTF16Selection(
+                location: mappedEnd - insertedLength,
+                length: insertedLength
+            )
+            if
+                utf16Substring(
+                    in: authoritativeAfter,
+                    selection: candidate
+                ) == edit.insertedText
+            {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private static func resolvedFieldAfter(
+        _ edit: WritingEditCapture
+    ) -> CapturedFieldState? {
+        if let fieldAfter = edit.fieldAfter {
+            return fieldAfter
+        }
+        guard let fieldBefore = edit.fieldBefore else { return nil }
+        let replacementSelection: UTF16Selection
+        if let deletedText = edit.deletedText, !deletedText.isEmpty {
+            replacementSelection = UTF16Selection(
+                location: edit.selectionAfter.location,
+                length: deletedText.utf16.count
+            )
+        } else {
+            replacementSelection = edit.selectionBefore
+        }
+        guard
+            let text = replacing(
+                replacementSelection,
+                in: fieldBefore.text,
+                with: edit.insertedText
+            )
+        else {
+            return nil
+        }
+        return CapturedFieldState(
+            text: text,
+            selection: edit.selectionAfter
         )
     }
 
     private static func selectedText(
         _ selection: UTF16Selection,
         in text: String
+    ) -> String? {
+        utf16Substring(in: text, selection: selection)
+    }
+
+    private static func utf16Substring(
+        in text: String,
+        selection: UTF16Selection
     ) -> String? {
         guard selection.isValid(for: text) else { return nil }
         let utf16 = text.utf16

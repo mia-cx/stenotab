@@ -390,6 +390,10 @@ final class PersonalizationIntegrationTests: XCTestCase {
         let store = PersonalizationSettingsStore(defaults: defaults)
         store.attach(database: database)
         await store.flushPendingPersistence()
+        let captureDate = Date(
+            timeIntervalSince1970:
+                floor(Date().timeIntervalSince1970)
+        )
         let episode = makeCompletionEpisode(
             context: PersonalizationContext(
                 applicationBundleIdentifier: "com.example.Writer",
@@ -397,7 +401,7 @@ final class PersonalizationIntegrationTests: XCTestCase {
             ),
             index: 0,
             collectionGeneration: store.captureGeneration,
-            date: Date()
+            date: captureDate
         )
 
         store.record(episode)
@@ -408,7 +412,7 @@ final class PersonalizationIntegrationTests: XCTestCase {
     }
 
     @MainActor
-    func testApplicationDeleteRejectsOlderTargetEpisodeAndKeepsOtherApp()
+    func testApplicationDeleteUsesGenerationBeforeWallClockBoundary()
         async throws
     {
         let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
@@ -501,10 +505,13 @@ final class PersonalizationIntegrationTests: XCTestCase {
         await store.flushPendingPersistence()
 
         let storedEpisodes = try await database.completionEpisodes()
-        XCTAssertEqual(storedEpisodes.map(\.id), [otherEpisode.id])
+        XCTAssertEqual(
+            storedEpisodes.map(\.id),
+            [otherEpisode.id, boundaryTargetEpisode.id]
+        )
         XCTAssertEqual(
             storedEpisodes.map(\.invocation.context),
-            [otherContext]
+            [otherContext, targetContext]
         )
     }
 
@@ -561,6 +568,18 @@ final class PersonalizationIntegrationTests: XCTestCase {
             context: context
         )
         XCTAssertNotEqual(promptContext, .empty)
+        store.promptContextDidLoadForTesting = {
+            store.deleteEvent(id: capture.id)
+        }
+        let overlappingPromptContext = await store.promptContext(
+            for: "QuasarUniqueToken",
+            context: context
+        )
+        XCTAssertEqual(overlappingPromptContext, .empty)
+        await store.flushPendingPersistence()
+
+        store.record(capture)
+        await store.flushPendingPersistence()
         var didResetHistory = false
         store.onHistoryReset = {
             didResetHistory = true

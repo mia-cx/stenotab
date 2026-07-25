@@ -88,6 +88,9 @@ final class PersonalizationSettingsStore: ObservableObject {
     private var modelWorker: PersonalizationModelWorker?
     private var pendingPersistenceTasks: [UUID: Task<Void, Never>] = [:]
     private var persistenceTail: Task<Void, Never>?
+#if DEBUG
+    var promptContextDidLoadForTesting: (() -> Void)?
+#endif
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -314,18 +317,19 @@ final class PersonalizationSettingsStore: ObservableObject {
             episode.invocation.collectionGeneration
         {
             guard invocationGeneration == collectionGeneration else { return }
-        }
-        let applicationDeletedAt =
-            episode.invocation.context.applicationBundleIdentifier
-                .flatMap {
-                    completionEpisodeApplicationDeletionBoundaries[$0]
-                }
-        guard CompletionEpisodeDeletionBoundaryPolicy.allowsCapture(
-            invocationStartedAt: episode.invocation.startedAt,
-            deleteAllAt: completionEpisodeDeleteAllBoundary,
-            applicationDeletedAt: applicationDeletedAt
-        ) else {
-            return
+        } else {
+            let applicationDeletedAt =
+                episode.invocation.context.applicationBundleIdentifier
+                    .flatMap {
+                        completionEpisodeApplicationDeletionBoundaries[$0]
+                    }
+            guard CompletionEpisodeDeletionBoundaryPolicy.allowsCapture(
+                invocationStartedAt: episode.invocation.startedAt,
+                deleteAllAt: completionEpisodeDeleteAllBoundary,
+                applicationDeletedAt: applicationDeletedAt
+            ) else {
+                return
+            }
         }
         let policy = retentionPolicy
         let generation = collectionGeneration
@@ -548,11 +552,25 @@ final class PersonalizationSettingsStore: ObservableObject {
         else {
             return .empty
         }
+        let generation = collectionGeneration
         do {
-            return try await modelWorker.promptContext(
+            let promptContext = try await modelWorker.promptContext(
                 for: prefix,
                 context: context
             )
+#if DEBUG
+            let didLoad = promptContextDidLoadForTesting
+            promptContextDidLoadForTesting = nil
+            didLoad?()
+#endif
+            guard
+                collectionEnabled,
+                generation == collectionGeneration,
+                !derivedPersonalizationIsInvalidated
+            else {
+                return .empty
+            }
+            return promptContext
         } catch {
             operationError = String(describing: error)
             return .empty

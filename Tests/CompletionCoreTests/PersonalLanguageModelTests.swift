@@ -898,6 +898,124 @@ final class PersonalLanguageModelTests: XCTestCase {
         )
     }
 
+    func testLengthChangingCorrectionPreservesMixedEditProvenance() {
+        let date = Date(timeIntervalSince1970: 130)
+        let initial = CapturedFieldState(
+            text: "",
+            selection: UTF16Selection(location: 0, length: 0)
+        )
+        let afterDirectTyping = CapturedFieldState(
+            text: "dont ",
+            selection: UTF16Selection(location: 5, length: 0)
+        )
+        let predictedFinal = CapturedFieldState(
+            text: "dont accepted",
+            selection: UTF16Selection(location: 13, length: 0)
+        )
+        let authoritativeFinal = CapturedFieldState(
+            text: "don't accepted",
+            selection: UTF16Selection(location: 14, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: authoritativeFinal,
+            edits: [
+                WritingEditCapture(
+                    insertedText: "dont ",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: afterDirectTyping.selection,
+                    fieldBefore: initial,
+                    fieldAfter: afterDirectTyping,
+                    startedAt: date,
+                    endedAt: date
+                ),
+                WritingEditCapture(
+                    insertedText: "accepted",
+                    provenance: .acceptedSuggestion,
+                    selectionBefore: afterDirectTyping.selection,
+                    selectionAfter: predictedFinal.selection,
+                    fieldBefore: afterDirectTyping,
+                    fieldAfter: predictedFinal,
+                    startedAt: date.addingTimeInterval(1),
+                    endedAt: date.addingTimeInterval(1)
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date.addingTimeInterval(1),
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(
+            model.vocabularyEntries().map(\.normalized),
+            ["don't"]
+        )
+    }
+
+    func testAuthoritativeReconstructionUsesUTF16EditLengths() {
+        let date = Date(timeIntervalSince1970: 131)
+        let initial = CapturedFieldState(
+            text: "",
+            selection: UTF16Selection(location: 0, length: 0)
+        )
+        let afterDirectTyping = CapturedFieldState(
+            text: "😀 teh ",
+            selection: UTF16Selection(location: 7, length: 0)
+        )
+        let predictedFinal = CapturedFieldState(
+            text: "😀 teh accepted",
+            selection: UTF16Selection(location: 15, length: 0)
+        )
+        let authoritativeFinal = CapturedFieldState(
+            text: "😀 the accepted",
+            selection: UTF16Selection(location: 15, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: authoritativeFinal,
+            edits: [
+                WritingEditCapture(
+                    insertedText: "😀 teh ",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: afterDirectTyping.selection,
+                    fieldBefore: initial,
+                    fieldAfter: afterDirectTyping,
+                    startedAt: date,
+                    endedAt: date
+                ),
+                WritingEditCapture(
+                    insertedText: "accepted",
+                    provenance: .acceptedSuggestion,
+                    selectionBefore: afterDirectTyping.selection,
+                    selectionAfter: predictedFinal.selection,
+                    fieldBefore: afterDirectTyping,
+                    fieldAfter: predictedFinal,
+                    startedAt: date.addingTimeInterval(1),
+                    endedAt: date.addingTimeInterval(1)
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date.addingTimeInterval(1),
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(
+            model.vocabularyEntries().map(\.normalized),
+            ["the"]
+        )
+    }
+
     func testVocabularyEntriesExposePreferredCasingAndFeedbackEvidence() {
         var model = PersonalLanguageModel()
         let context = PersonalizationContext(editorIdentifier: "editor")
