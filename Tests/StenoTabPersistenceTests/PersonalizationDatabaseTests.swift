@@ -789,6 +789,33 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(afterDeletingBoth.encryptedTextChunkBytes, 0)
     }
 
+    func testMultilineProviderPrefixRoundTripsAcrossChunkBoundaries()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let firstParagraph = String(
+            repeating: "first paragraph content ",
+            count: 18
+        )
+        let secondParagraph = String(
+            repeating: "second paragraph content ",
+            count: 90
+        )
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: firstParagraph + "\n\n" + secondParagraph,
+            suggestion: " exact suggestion",
+            outcome: " exact outcome",
+            date: Date(timeIntervalSince1970: 799)
+        )
+
+        try await fixture.database.record(episode)
+
+        let stored = try await fixture.database.completionEpisodes()
+        XCTAssertEqual(stored, [episode])
+    }
+
     func testWritingEpisodesCanBeInspectedAndDeletedByRecordOrScope()
         async throws
     {
@@ -919,6 +946,51 @@ final class PersonalizationDatabaseTests: XCTestCase {
             .removeCompletionEpisodeSourceIndexForTesting(
                 completionEventID: dependent.id
             )
+
+        try await fixture.database.deleteEvent(id: source.id)
+
+        let eventCount = try await fixture.database.eventCount()
+        let completionEpisodes =
+            try await fixture.database.completionEpisodes()
+        XCTAssertEqual(eventCount, 0)
+        XCTAssertEqual(completionEpisodes, [])
+    }
+
+    func testDeletingSourceCascadesThroughNestedCompletionLineage()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let recursiveTriggersEnabled =
+            try await fixture.database.recursiveTriggersEnabled()
+        XCTAssertTrue(recursiveTriggersEnabled)
+        let source = makeEpisode(
+            id: UUID(),
+            text: "source writing",
+            app: "com.example.Source",
+            editor: "source"
+        )
+        let dependent = makeCompletionEpisode(
+            id: UUID(),
+            input: "dependent input",
+            suggestion: " dependent",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 850),
+            sourceEventIDs: [source.id],
+            sourceContexts: [source.context]
+        )
+        let nested = makeCompletionEpisode(
+            id: UUID(),
+            input: "nested input",
+            suggestion: " nested",
+            outcome: " outcome",
+            date: Date(timeIntervalSince1970: 851),
+            sourceEventIDs: [dependent.id],
+            sourceContexts: [dependent.invocation.context]
+        )
+        try await fixture.database.record(source)
+        try await fixture.database.record(dependent)
+        try await fixture.database.record(nested)
 
         try await fixture.database.deleteEvent(id: source.id)
 

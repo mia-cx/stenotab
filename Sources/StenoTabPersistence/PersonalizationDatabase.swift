@@ -158,6 +158,7 @@ public actor PersonalizationDatabase {
         decoder.dateDecodingStrategy = .millisecondsSince1970
 
         try connection.execute("PRAGMA foreign_keys = ON")
+        try connection.execute("PRAGMA recursive_triggers = ON")
         try connection.execute("PRAGMA journal_mode = DELETE")
         try connection.execute("PRAGMA secure_delete = ON")
         try connection.execute(Self.schema)
@@ -475,7 +476,7 @@ public actor PersonalizationDatabase {
             var referencedChunks = Set<Data>()
             let initialText = episode.invocation.field.text
             let initialTextReference = try storedTextReference(
-                for: initialText,
+                forUTF8: Data(initialText.utf8),
                 referencedChunks: &referencedChunks
             )
             let promptInput = textBeforeSelection(
@@ -586,6 +587,11 @@ public actor PersonalizationDatabase {
 
     func foreignKeyEnforcementEnabled() throws -> Bool {
         try connection.query("PRAGMA foreign_keys").first?
+            .integer(at: 0) == 1
+    }
+
+    func recursiveTriggersEnabled() throws -> Bool {
+        try connection.query("PRAGMA recursive_triggers").first?
             .integer(at: 0) == 1
     }
 

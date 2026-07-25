@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum PersonalizationExampleSource:
@@ -18,6 +19,7 @@ public struct PersonalizationExample:
     public let context: PersonalizationContext
     public let capturedAt: Date
     public let source: PersonalizationExampleSource
+    public let sourceEventID: UUID?
 
     public init(
         id: UUID,
@@ -25,7 +27,8 @@ public struct PersonalizationExample:
         insertion: String,
         context: PersonalizationContext,
         capturedAt: Date,
-        source: PersonalizationExampleSource
+        source: PersonalizationExampleSource,
+        sourceEventID: UUID? = nil
     ) {
         self.id = id
         self.inputText = inputText
@@ -33,6 +36,7 @@ public struct PersonalizationExample:
         self.context = context
         self.capturedAt = capturedAt
         self.source = source
+        self.sourceEventID = sourceEventID
     }
 
     public init(_ capture: AcceptedSuggestionCapture) {
@@ -42,7 +46,8 @@ public struct PersonalizationExample:
             insertion: capture.insertion,
             context: capture.context,
             capturedAt: capture.capturedAt,
-            source: .acceptedSuggestion
+            source: .acceptedSuggestion,
+            sourceEventID: capture.id
         )
     }
 
@@ -67,7 +72,7 @@ public struct PersonalizationExample:
     public static func directlyTyped(
         from episode: WritingEpisodeCapture
     ) -> [PersonalizationExample] {
-        episode.edits.compactMap { edit in
+        episode.edits.enumerated().compactMap { index, edit in
             guard
                 edit.provenance == .directlyTyped,
                 !edit.insertedText.isEmpty,
@@ -76,14 +81,39 @@ public struct PersonalizationExample:
                 return nil
             }
             return PersonalizationExample(
-                id: episode.id,
+                id: stableEditID(
+                    episodeID: episode.id,
+                    editIndex: index
+                ),
                 inputText: fieldBefore.text,
                 insertion: edit.insertedText,
                 context: episode.context,
                 capturedAt: edit.endedAt,
-                source: .directlyTyped
+                source: .directlyTyped,
+                sourceEventID: episode.id
             )
         }
+    }
+
+    private static func stableEditID(
+        episodeID: UUID,
+        editIndex: Int
+    ) -> UUID {
+        let seed = Data(
+            "\(episodeID.uuidString):\(editIndex)".utf8
+        )
+        let hex = SHA256.hash(data: seed)
+            .prefix(16)
+            .map { String(format: "%02X", $0) }
+            .joined()
+        let groups = [
+            String(hex.prefix(8)),
+            String(hex.dropFirst(8).prefix(4)),
+            String(hex.dropFirst(12).prefix(4)),
+            String(hex.dropFirst(16).prefix(4)),
+            String(hex.dropFirst(20).prefix(12)),
+        ]
+        return UUID(uuidString: groups.joined(separator: "-"))!
     }
 }
 

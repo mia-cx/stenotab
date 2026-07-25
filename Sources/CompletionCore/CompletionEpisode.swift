@@ -230,22 +230,28 @@ public enum CompletionEpisodeReconciliationPolicy {
     public static func decision(
         previousEditorIdentifier: String?,
         observedEditorIdentifier: String,
-        previousAuthoritativeField: CapturedFieldState?,
-        invalidatedField: CapturedFieldState?,
+        authoritativeBaselineField: CapturedFieldState?,
+        expectedField: CapturedFieldState?,
         observedField: CapturedFieldState
     ) -> CompletionEpisodeReconciliationDecision {
-        guard let invalidatedField else {
+        guard
+            let authoritativeBaselineField,
+            let expectedField
+        else {
             return .reconcile
         }
         let focusChanged =
             previousEditorIdentifier != observedEditorIdentifier
-        if !focusChanged, observedField == invalidatedField {
+        if
+            !focusChanged,
+            expectedField != authoritativeBaselineField,
+            observedField == authoritativeBaselineField
+        {
             return .waitForAuthoritativeChange
         }
         if
             focusChanged,
-            let previousAuthoritativeField,
-            invalidatedField != previousAuthoritativeField
+            expectedField != authoritativeBaselineField
         {
             return .discardUnconfirmedAndReconcile
         }

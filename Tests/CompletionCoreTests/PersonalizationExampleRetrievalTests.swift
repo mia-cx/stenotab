@@ -110,6 +110,68 @@ final class PersonalizationExampleRetrievalTests: XCTestCase {
         )
     }
 
+    func testDirectlyTypedEditsHaveStableDistinctRetrievalIdentities() {
+        let episodeID = UUID()
+        let firstField = CapturedFieldState(
+            text: "hello",
+            selection: UTF16Selection(location: 5, length: 0)
+        )
+        let secondField = CapturedFieldState(
+            text: "hello there",
+            selection: UTF16Selection(location: 11, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: episodeID,
+            initialField: firstField,
+            finalField: CapturedFieldState(
+                text: "hello there friend",
+                selection: UTF16Selection(location: 18, length: 0)
+            ),
+            edits: [
+                WritingEditCapture(
+                    insertedText: " there",
+                    provenance: .directlyTyped,
+                    selectionBefore: firstField.selection,
+                    selectionAfter: secondField.selection,
+                    fieldBefore: firstField,
+                    fieldAfter: secondField,
+                    startedAt: Date(timeIntervalSince1970: 1),
+                    endedAt: Date(timeIntervalSince1970: 2)
+                ),
+                WritingEditCapture(
+                    insertedText: " friend",
+                    provenance: .directlyTyped,
+                    selectionBefore: secondField.selection,
+                    selectionAfter:
+                        UTF16Selection(location: 18, length: 0),
+                    fieldBefore: secondField,
+                    fieldAfter: CapturedFieldState(
+                        text: "hello there friend",
+                        selection:
+                            UTF16Selection(location: 18, length: 0)
+                    ),
+                    startedAt: Date(timeIntervalSince1970: 3),
+                    endedAt: Date(timeIntervalSince1970: 4)
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: Date(timeIntervalSince1970: 1),
+            endedAt: Date(timeIntervalSince1970: 4),
+            boundary: .idle
+        )
+
+        let firstPass = PersonalizationExample.directlyTyped(from: episode)
+        let secondPass = PersonalizationExample.directlyTyped(from: episode)
+
+        XCTAssertEqual(firstPass.count, 2)
+        XCTAssertNotEqual(firstPass[0].id, firstPass[1].id)
+        XCTAssertEqual(firstPass.map(\.id), secondPass.map(\.id))
+        XCTAssertEqual(
+            firstPass.compactMap(\.sourceEventID),
+            [episodeID, episodeID]
+        )
+    }
+
     func testFrecentRetrievalDeduplicatesAndPrefersMatchingScope() {
         let now = Date(timeIntervalSince1970: 10_000)
         let chat = PersonalizationContext(

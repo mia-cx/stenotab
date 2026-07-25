@@ -7,12 +7,16 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
             text: "before",
             selection: UTF16Selection(location: 6, length: 0)
         )
+        let expected = CapturedFieldState(
+            text: "before after",
+            selection: UTF16Selection(location: 12, length: 0)
+        )
 
         let decision = CompletionEpisodeReconciliationPolicy.decision(
             previousEditorIdentifier: "editor",
             observedEditorIdentifier: "editor",
-            previousAuthoritativeField: before,
-            invalidatedField: before,
+            authoritativeBaselineField: before,
+            expectedField: expected,
             observedField: before
         )
 
@@ -32,8 +36,8 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
         let decision = CompletionEpisodeReconciliationPolicy.decision(
             previousEditorIdentifier: "editor",
             observedEditorIdentifier: "editor",
-            previousAuthoritativeField: before,
-            invalidatedField: before,
+            authoritativeBaselineField: before,
+            expectedField: after,
             observedField: after
         )
 
@@ -53,8 +57,8 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
         let decision = CompletionEpisodeReconciliationPolicy.decision(
             previousEditorIdentifier: "old-editor",
             observedEditorIdentifier: "new-editor",
-            previousAuthoritativeField: authoritative,
-            invalidatedField: predicted,
+            authoritativeBaselineField: authoritative,
+            expectedField: predicted,
             observedField: CapturedFieldState(
                 text: "new",
                 selection: UTF16Selection(location: 3, length: 0)
@@ -62,6 +66,23 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
         )
 
         XCTAssertEqual(decision, .discardUnconfirmedAndReconcile)
+    }
+
+    func testUnchangedInvalidationReconcilesWithoutPolling() {
+        let unchanged = CapturedFieldState(
+            text: "before",
+            selection: UTF16Selection(location: 6, length: 0)
+        )
+
+        let decision = CompletionEpisodeReconciliationPolicy.decision(
+            previousEditorIdentifier: "editor",
+            observedEditorIdentifier: "editor",
+            authoritativeBaselineField: unchanged,
+            expectedField: unchanged,
+            observedField: unchanged
+        )
+
+        XCTAssertEqual(decision, .reconcile)
     }
 
     func testPendingTerminalResolutionCannotBeOverwrittenByAbandonment() {

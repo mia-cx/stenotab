@@ -719,8 +719,9 @@ actor PersonalizationModelWorker {
         from examples: [PersonalizationExample]
     ) -> [UUID] {
         examples.reduce(into: []) { result, example in
-            if !result.contains(example.id) {
-                result.append(example.id)
+            let sourceEventID = example.sourceEventID ?? example.id
+            if !result.contains(sourceEventID) {
+                result.append(sourceEventID)
             }
         }
     }

@@ -97,7 +97,9 @@ final class CompletionCoordinator: NSObject {
         CompletionEpisodeResolution?
     private var invalidationReconciliationNotBefore: Date?
     private var invalidationReconciliationGeneration: UInt64 = 0
-    private var invalidatedCompletionEpisodeField:
+    private var completionEpisodeAuthoritativeBaselineField:
+        CapturedFieldState?
+    private var completionEpisodeExpectedField:
         CapturedFieldState?
     private var typedSuggestionOrigin: CapturedFieldState?
     private let completionEpisodeCollectionIsEnabled:
@@ -256,7 +258,7 @@ final class CompletionCoordinator: NSObject {
         invalidatePendingCompletion()
         clearOCRContext()
         if
-            invalidatedCompletionEpisodeField != nil,
+            completionEpisodeExpectedField != nil,
             let snapshot = accessibility.snapshot(),
             snapshot.editorIdentifier == lastSnapshot?.editorIdentifier
         {
@@ -424,8 +426,7 @@ final class CompletionCoordinator: NSObject {
                     resolution:
                         completionEpisodeTracker
                         .completedSuggestionResolution
-                        ?? .typedThrough,
-                    untilFieldChangesFrom: fieldBeforeMutation
+                        ?? .typedThrough
                 )
                 suggestionConsumption = .waitingForWhitespace()
                 return
@@ -433,8 +434,7 @@ final class CompletionCoordinator: NSObject {
                 deferCompletionEpisodeFinalization(
                     resolution:
                         completionEpisodeTracker
-                        .abandonedSuggestionResolution,
-                    untilFieldChangesFrom: fieldBeforeMutation
+                        .abandonedSuggestionResolution
                 )
                 scheduleCompletion()
                 return
@@ -442,8 +442,7 @@ final class CompletionCoordinator: NSObject {
                 deferCompletionEpisodeFinalization(
                     resolution:
                         completionEpisodeTracker
-                        .abandonedSuggestionResolution,
-                    untilFieldChangesFrom: fieldBeforeMutation
+                        .abandonedSuggestionResolution
                 )
                 scheduleCompletion()
                 return
@@ -455,8 +454,7 @@ final class CompletionCoordinator: NSObject {
             deferCompletionEpisodeFinalization(
                 resolution:
                     completionEpisodeTracker
-                    .abandonedSuggestionResolution,
-                untilFieldChangesFrom: fieldBeforeMutation
+                    .abandonedSuggestionResolution
             )
             return
         }
@@ -465,8 +463,7 @@ final class CompletionCoordinator: NSObject {
             deferCompletionEpisodeFinalization(
                 resolution:
                     completionEpisodeTracker
-                    .abandonedSuggestionResolution,
-                untilFieldChangesFrom: fieldBeforeMutation
+                    .abandonedSuggestionResolution
             )
             return
         }
@@ -479,8 +476,7 @@ final class CompletionCoordinator: NSObject {
             deferCompletionEpisodeFinalization(
                 resolution:
                     completionEpisodeTracker
-                    .abandonedSuggestionResolution,
-                untilFieldChangesFrom: fieldBeforeMutation
+                    .abandonedSuggestionResolution
             )
             scheduleCompletion()
             return
@@ -536,7 +532,7 @@ final class CompletionCoordinator: NSObject {
             lastOCRFocusedEditorIdentifier = nil
         }
         guard let snapshot = accessibility.snapshot() else {
-            if invalidatedCompletionEpisodeField != nil {
+            if completionEpisodeExpectedField != nil {
                 scheduleInvalidationReconciliation()
                 return
             }
@@ -567,20 +563,16 @@ final class CompletionCoordinator: NSObject {
         let focusChanged = previousSnapshot.map {
             $0.editorIdentifier != snapshot.editorIdentifier
         } ?? true
-        let hadInvalidatedField =
-            invalidatedCompletionEpisodeField != nil
+        let hadPendingAuthoritativeObservation =
+            completionEpisodeExpectedField != nil
         let reconciliationDecision =
             CompletionEpisodeReconciliationPolicy.decision(
                 previousEditorIdentifier:
                     previousSnapshot?.editorIdentifier,
                 observedEditorIdentifier: snapshot.editorIdentifier,
-                previousAuthoritativeField: previousSnapshot.map {
-                    CapturedFieldState(
-                        text: $0.fieldText,
-                        selection: $0.selection
-                    )
-                },
-                invalidatedField: invalidatedCompletionEpisodeField,
+                authoritativeBaselineField:
+                    completionEpisodeAuthoritativeBaselineField,
+                expectedField: completionEpisodeExpectedField,
                 observedField: CapturedFieldState(
                     text: snapshot.fieldText,
                     selection: snapshot.selection
@@ -590,7 +582,8 @@ final class CompletionCoordinator: NSObject {
             scheduleInvalidationReconciliation()
             return
         }
-        invalidatedCompletionEpisodeField = nil
+        completionEpisodeAuthoritativeBaselineField = nil
+        completionEpisodeExpectedField = nil
         if
             reconciliationDecision
                 == .discardUnconfirmedAndReconcile
@@ -647,7 +640,17 @@ final class CompletionCoordinator: NSObject {
 
         let neededReconciliation = buffer.needsReconciliation
         if focusChanged || neededReconciliation ||
-            (buffer.prefix != snapshot.prefix && suggestion == nil) ||
+            (
+                (
+                    buffer.prefix != snapshot.prefix
+                        || buffer.suffix != snapshot.suffix
+                )
+                    && suggestion == nil
+                    && (
+                        suggestionConsumption == nil
+                            || hadPendingAuthoritativeObservation
+                    )
+            ) ||
             recoveringFromSnapshotFailure {
             let contentChanged = buffer.reconcile(
                 prefix: snapshot.prefix,
@@ -670,7 +673,7 @@ final class CompletionCoordinator: NSObject {
                 scheduleCompletion()
             }
         }
-        if hadInvalidatedField, !focusChanged {
+        if hadPendingAuthoritativeObservation, !focusChanged {
             finalizePendingCompletionEpisodeIfNeeded()
         }
     }
@@ -821,7 +824,7 @@ final class CompletionCoordinator: NSObject {
         }
         let liveSnapshot = accessibility.snapshot()
         if
-            invalidatedCompletionEpisodeField != nil,
+            completionEpisodeExpectedField != nil,
             liveSnapshot == nil
         {
             return nil
@@ -839,13 +842,9 @@ final class CompletionCoordinator: NSObject {
                 previousEditorIdentifier:
                     previousSnapshot?.editorIdentifier,
                 observedEditorIdentifier: snapshot.editorIdentifier,
-                previousAuthoritativeField: previousSnapshot.map {
-                    CapturedFieldState(
-                        text: $0.fieldText,
-                        selection: $0.selection
-                    )
-                },
-                invalidatedField: invalidatedCompletionEpisodeField,
+                authoritativeBaselineField:
+                    completionEpisodeAuthoritativeBaselineField,
+                expectedField: completionEpisodeExpectedField,
                 observedField: CapturedFieldState(
                     text: snapshot.fieldText,
                     selection: snapshot.selection
@@ -854,7 +853,8 @@ final class CompletionCoordinator: NSObject {
         if reconciliationDecision == .waitForAuthoritativeChange {
             return nil
         }
-        invalidatedCompletionEpisodeField = nil
+        completionEpisodeAuthoritativeBaselineField = nil
+        completionEpisodeExpectedField = nil
         if
             reconciliationDecision
                 == .discardUnconfirmedAndReconcile
@@ -1210,7 +1210,7 @@ final class CompletionCoordinator: NSObject {
             if let suggestionConsumption {
                 recordTypedSuggestionMatch(from: suggestionConsumption)
             }
-            finalizeCompletionEpisode(
+            deferCompletionEpisodeFinalization(
                 resolution:
                     completionEpisodeTracker
                     .completedSuggestionResolution
@@ -1461,16 +1461,14 @@ final class CompletionCoordinator: NSObject {
                 resolution:
                     completionEpisodeTracker
                     .completedSuggestionResolution
-                    ?? .accepted,
-                untilFieldChangesFrom: fieldBeforeAcceptance
+                    ?? .accepted
             )
             if !promoteOrAwaitRefill(for: buffer.prefix) {
                 scheduleCompletion()
             }
         case .triggerInference, .diverged:
             deferCompletionEpisodeFinalization(
-                resolution: .partiallyAccepted,
-                untilFieldChangesFrom: fieldBeforeAcceptance
+                resolution: .partiallyAccepted
             )
             scheduleCompletion()
         }
@@ -2010,7 +2008,8 @@ final class CompletionCoordinator: NSObject {
     private func resetCompletionEpisodeFinalizationState() {
         pendingCompletionEpisodeResolution = nil
         invalidationReconciliationNotBefore = nil
-        invalidatedCompletionEpisodeField = nil
+        completionEpisodeAuthoritativeBaselineField = nil
+        completionEpisodeExpectedField = nil
         invalidationReconciliationGeneration &+= 1
         activeCompletionEpisodeToken = nil
     }
@@ -2026,21 +2025,43 @@ final class CompletionCoordinator: NSObject {
     }
 
     private func deferCompletionEpisodeFinalization(
-        resolution: CompletionEpisodeResolution,
-        untilFieldChangesFrom field: CapturedFieldState? = nil
+        resolution: CompletionEpisodeResolution
     ) {
+        guard completionEpisodeTracker.activeInvocationID != nil else {
+            resetCompletionEpisodeFinalizationState()
+            suggestion = nil
+            suggestionConsumption = nil
+            suggestionAssociationToken = nil
+            typedSuggestionOrigin = nil
+            overlay.hide()
+            return
+        }
         pendingCompletionEpisodeResolution =
             CompletionEpisodePendingResolutionPolicy.resolve(
                 existing: pendingCompletionEpisodeResolution,
                 proposed: resolution
             )
-        if let field {
-            invalidatedCompletionEpisodeField = field
+        let authoritativeBaseline = lastSnapshot.map {
+            CapturedFieldState(
+                text: $0.fieldText,
+                selection: $0.selection
+            )
+        }
+        let expectedField = currentCapturedFieldFromBuffer()
+        if
+            let authoritativeBaseline,
+            expectedField != authoritativeBaseline
+        {
+            completionEpisodeAuthoritativeBaselineField =
+                authoritativeBaseline
+            completionEpisodeExpectedField = expectedField
             let now = Date()
             invalidationReconciliationNotBefore =
                 now.addingTimeInterval(0.05)
             invalidationReconciliationGeneration &+= 1
             scheduleInvalidationReconciliation()
+        } else {
+            finalizeCompletionEpisode(resolution: resolution)
         }
         suggestion = nil
         suggestionConsumption = nil
