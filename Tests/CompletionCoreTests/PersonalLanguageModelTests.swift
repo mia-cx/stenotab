@@ -683,6 +683,106 @@ final class PersonalLanguageModelTests: XCTestCase {
         )
     }
 
+    func testSubmittedEpisodeDoesNotLearnEarlierPausedWordFragment() {
+        let date = Date(timeIntervalSince1970: 126)
+        let initial = CapturedFieldState(
+            text: "",
+            selection: UTF16Selection(location: 0, length: 0)
+        )
+        let afterFirstBurst = CapturedFieldState(
+            text: "th",
+            selection: UTF16Selection(location: 2, length: 0)
+        )
+        let final = CapturedFieldState(
+            text: "the ",
+            selection: UTF16Selection(location: 4, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: final,
+            edits: [
+                WritingEditCapture(
+                    insertedText: "th",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: afterFirstBurst.selection,
+                    fieldBefore: initial,
+                    fieldAfter: afterFirstBurst,
+                    startedAt: date,
+                    endedAt: date
+                ),
+                WritingEditCapture(
+                    insertedText: "e ",
+                    provenance: .directlyTyped,
+                    selectionBefore: afterFirstBurst.selection,
+                    selectionAfter: final.selection,
+                    fieldBefore: afterFirstBurst,
+                    fieldAfter: final,
+                    startedAt: date.addingTimeInterval(1),
+                    endedAt: date.addingTimeInterval(1)
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date.addingTimeInterval(1),
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(
+            model.vocabularyEntries().map(\.normalized),
+            ["the"]
+        )
+    }
+
+    func testDirectTypingLearnsAuthoritativeFinalField() {
+        let date = Date(timeIntervalSince1970: 127)
+        let initial = CapturedFieldState(
+            text: "",
+            selection: UTF16Selection(location: 0, length: 0)
+        )
+        let predicted = CapturedFieldState(
+            text: "teh",
+            selection: UTF16Selection(location: 3, length: 0)
+        )
+        let authoritative = CapturedFieldState(
+            text: "the",
+            selection: UTF16Selection(location: 3, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: authoritative,
+            edits: [
+                WritingEditCapture(
+                    insertedText: "teh",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: predicted.selection,
+                    fieldBefore: initial,
+                    fieldAfter: predicted,
+                    startedAt: date,
+                    endedAt: date
+                )
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date,
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(
+            model.vocabularyEntries().map(\.normalized),
+            ["the"]
+        )
+    }
+
     func testVocabularyEntriesExposePreferredCasingAndFeedbackEvidence() {
         var model = PersonalLanguageModel()
         let context = PersonalizationContext(editorIdentifier: "editor")

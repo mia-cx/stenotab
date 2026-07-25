@@ -83,7 +83,7 @@ public struct PersonalVocabularyEntry:
 }
 
 public struct PersonalLanguageModel: Codable, Sendable, Equatable {
-    private static let currentProjectionVersion = 6
+    private static let currentProjectionVersion = 7
 
     private struct WordOccurrence {
         let display: String
@@ -164,15 +164,23 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
     }
 
     public mutating func ingest(_ episode: WritingEpisodeCapture) {
+        let authoritativeWords = Set(
+            Self.words(in: episode.finalField.text).map(Self.normalize)
+        )
         let directlyTypedEdits = episode.edits.enumerated().filter {
             $0.element.provenance == .directlyTyped
         }
         for indexedEdit in directlyTypedEdits {
             let editIndex = indexedEdit.offset
             let edit = indexedEdit.element
+            let isFinalEpisodeEdit =
+                editIndex == episode.edits.indices.last
             guard
                 let fieldBefore = edit.fieldBefore,
-                let fieldAfter = Self.resolvedFieldAfter(edit)
+                let fieldAfter =
+                    isFinalEpisodeEdit
+                    ? episode.finalField
+                    : Self.resolvedFieldAfter(edit)
             else {
                 continue
             }
@@ -191,7 +199,9 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
                 includeBoundaryTouch:
                     !immediatelyFollowsAcceptedSuggestion,
                 excludeUnterminatedTrailingWord:
-                    episode.boundary == .idle
+                    !isFinalEpisodeEdit
+                    || episode.boundary == .idle,
+                allowedNormalizedWords: authoritativeWords
             )
         }
     }
@@ -362,7 +372,8 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         context: PersonalizationContext,
         at date: Date,
         includeBoundaryTouch: Bool? = nil,
-        excludeUnterminatedTrailingWord: Bool = false
+        excludeUnterminatedTrailingWord: Bool = false,
+        allowedNormalizedWords: Set<String>? = nil
     ) {
         let words = Self.wordOccurrences(in: after)
         guard
@@ -387,7 +398,11 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             )
             let isUnterminatedTail =
                 trailingWordIsUnterminated && $0 == words.count - 1
-            return intersects && !isUnterminatedTail
+            let isAuthoritative =
+                allowedNormalizedWords?.contains(
+                    Self.normalize(words[$0].display)
+                ) ?? true
+            return intersects && !isUnterminatedTail && isAuthoritative
         }
         guard !affectedIndices.isEmpty else { return }
         let scopeKeys = Self.scopeKeys(for: context)
