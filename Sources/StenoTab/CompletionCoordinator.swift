@@ -922,6 +922,7 @@ final class CompletionCoordinator: NSObject {
                     completionEpisodeObservationDeadlineExceeded
             )
         if reconciliationDecision == .waitForAuthoritativeChange {
+            scheduleModelCompletion()
             return nil
         }
         let authoritativeBaselineField =
@@ -1437,23 +1438,25 @@ final class CompletionCoordinator: NSObject {
         else {
             return false
         }
-        let liveEditorIdentifier = accessibility.snapshot()?.editorIdentifier
-        guard
-            CompletionEpisodeLiveEditorPolicy.allowsCapture(
-                activeEditorIdentifier: lastSnapshot?.editorIdentifier,
-                liveEditorIdentifier: liveEditorIdentifier
-            )
-        else {
-            invalidatePendingCompletion()
-            clearOCRContext()
-            finalizeCompletionEpisode(
-                resolution:
-                    completionEpisodeTracker.abandonedSuggestionResolution,
-                finalField: lastSnapshot.map(capturedField)
-            )
-            discardCompletionEpisodeAndSuggestion()
-            buffer.apply(.invalidate)
-            return false
+        if CompletionEpisodeLiveEditorPolicy.requiresVerification(
+            activeInvocationID:
+                completionEpisodeTracker.activeInvocationID
+        ) {
+            let liveEditorIdentifier =
+                accessibility.snapshot()?.editorIdentifier
+            guard
+                CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                    activeEditorIdentifier:
+                        lastSnapshot?.editorIdentifier,
+                    liveEditorIdentifier: liveEditorIdentifier
+                )
+            else {
+                invalidatePendingCompletion()
+                clearOCRContext()
+                discardCompletionEpisodeAndSuggestion()
+                buffer.apply(.invalidate)
+                return false
+            }
         }
         caretReanchorTask?.cancel()
         let acceptance = SuggestionAcceptance.slice(
