@@ -146,11 +146,217 @@ final class PersonalizationIntegrationTests: XCTestCase {
         XCTAssertNil(restartedVoiceAssessment)
     }
 
+    func testWorkerSuppliesPromptRecordCharacterCounts() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let worker = PersonalizationModelWorker(database: database)
+        _ = try await worker.prepare()
+        let context = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Writer",
+            inputKind: "document",
+            editorIdentifier: "editor"
+        )
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text:
+                    String(repeating: "a", count: 1_500)
+                    + PersonalizationExample.promptRecordSeparator
+                    + String(repeating: "b", count: 1_500),
+                selection: UTF16Selection(location: 3_001, length: 0)
+            ),
+            insertion: " completed",
+            acceptanceScope: .entireSuggestion,
+            context: context,
+            capturedAt: Date(timeIntervalSince1970: 2_000)
+        )
+        _ = try await worker.record(
+            capture,
+            retentionPolicy: PersonalizationRetentionPolicy(
+                maximumAge: nil,
+                maximumEncryptedBytes: nil
+            ),
+            generation: 0
+        )
+
+        let promptContext = try await worker.promptContext(
+            for: "",
+            context: context
+        )
+
+        XCTAssertEqual(
+            promptContext.frecentRecordCharacterCounts,
+            [PersonalizationExample(capture).promptText.count]
+        )
+    }
+
+    func testPreparePurgesUnlineagedVoiceAssessmentBelowThreshold()
+        async throws
+    {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        try await database.saveVoiceAssessment(
+            VoiceAssessment(
+                summary: "Legacy private voice summary.",
+                sampleCount: 20,
+                sourceEventCount: 20,
+                generatedAt: Date(timeIntervalSince1970: 2_000),
+                analyzerVersion: nil
+            )
+        )
+        let worker = PersonalizationModelWorker(database: database)
+
+        _ = try await worker.prepare()
+
+        let workerAssessment = await worker.voiceAssessmentSnapshot()
+        let storedAssessment = try await database.loadVoiceAssessment()
+        XCTAssertNil(workerAssessment)
+        XCTAssertNil(storedAssessment)
+    }
+
+    @MainActor
+    func testDeleteAllSynchronouslyInvalidatesPendingCaptureState()
+        async throws
+    {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        store.attach(database: database)
+        await store.flushPendingPersistence()
+        var didInvalidatePendingCaptureState = false
+        store.onHistoryReset = {
+            didInvalidatePendingCaptureState = true
+        }
+
+        store.deleteAll()
+
+        XCTAssertTrue(didInvalidatePendingCaptureState)
+        await store.flushPendingPersistence()
+    }
+
+    @MainActor
+    func testClearingSuggestionDiscardsUnobservedPendingOutcome() {
+        let expected = CapturedFieldState(
+            text: "before after",
+            selection: UTF16Selection(location: 12, length: 0)
+        )
+
+        XCTAssertTrue(
+            CompletionCoordinator.shouldDiscardPendingOutcomeBeforeClearing(
+                pendingResolution: .accepted,
+                expectedField: expected
+            )
+        )
+        XCTAssertFalse(
+            CompletionCoordinator.shouldDiscardPendingOutcomeBeforeClearing(
+                pendingResolution: nil,
+                expectedField: expected
+            )
+        )
+        XCTAssertFalse(
+            CompletionCoordinator.shouldDiscardPendingOutcomeBeforeClearing(
+                pendingResolution: .accepted,
+                expectedField: nil
+            )
+        )
+    }
+
+    @MainActor
+    func testDeleteAllRejectsOlderGenerationDespiteFutureWallClock()
+        async throws
+    {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        store.attach(database: database)
+        await store.flushPendingPersistence()
+        let episode = makeCompletionEpisode(
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            index: 0,
+            collectionGeneration: store.captureGeneration,
+            date: Date(timeIntervalSinceNow: 24 * 60 * 60)
+        )
+
+        store.deleteAll()
+        await store.flushPendingPersistence()
+        store.record(episode)
+        await store.flushPendingPersistence()
+
+        let storedEpisodes = try await database.completionEpisodes()
+        XCTAssertEqual(storedEpisodes, [])
+    }
+
     private func makeCompletionEpisode(
         context: PersonalizationContext,
-        index: Int
+        index: Int,
+        collectionGeneration: UInt64? = nil,
+        date suppliedDate: Date? = nil
     ) -> CompletionEpisodeCapture {
-        let date = Date(timeIntervalSince1970: 1_000 + Double(index))
+        let date =
+            suppliedDate
+            ?? Date(timeIntervalSince1970: 1_000 + Double(index))
         let id = UUID()
         let initialText = "quasarUniqueToken input \(index)"
         let finalText = initialText + " generatedUniqueToken\(index)"
@@ -177,6 +383,7 @@ final class PersonalizationIntegrationTests: XCTestCase {
                     stopSequences: []
                 ),
                 context: context,
+                collectionGeneration: collectionGeneration,
                 startedAt: date
             ),
             suggestionRevisions: [

@@ -137,6 +137,30 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
         )
     }
 
+    func testFocusChangeRetainsDismissedSuggestionFromKnownBaseline() {
+        let authoritative = CapturedFieldState(
+            text: "before",
+            selection: UTF16Selection(location: 6, length: 0)
+        )
+
+        let decision = CompletionEpisodeReconciliationPolicy.decision(
+            previousEditorIdentifier: "old-editor",
+            observedEditorIdentifier: "new-editor",
+            authoritativeBaselineField: authoritative,
+            expectedField: authoritative,
+            observedField: CapturedFieldState(
+                text: "new",
+                selection: UTF16Selection(location: 3, length: 0)
+            ),
+            requiresPostEventObservation: true
+        )
+
+        XCTAssertEqual(
+            decision,
+            .finalizeFromAuthoritativeBaselineAndReconcile
+        )
+    }
+
     func testDeletionBoundaryRejectsOnlyPreDeletionInvocations() {
         let startedAt = Date(timeIntervalSince1970: 100)
 

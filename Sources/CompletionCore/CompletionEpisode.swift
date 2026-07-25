@@ -66,6 +66,7 @@ public struct CompletionInvocationCapture:
     public let context: PersonalizationContext
     public let sourceEventIDs: [UUID]
     public let sourceContexts: [PersonalizationContext]
+    public let collectionGeneration: UInt64?
     public let startedAt: Date
 
     public init(
@@ -76,6 +77,7 @@ public struct CompletionInvocationCapture:
         context: PersonalizationContext,
         sourceEventIDs: [UUID] = [],
         sourceContexts: [PersonalizationContext] = [],
+        collectionGeneration: UInt64? = nil,
         startedAt: Date
     ) {
         self.id = id
@@ -85,6 +87,7 @@ public struct CompletionInvocationCapture:
         self.context = context
         self.sourceEventIDs = sourceEventIDs
         self.sourceContexts = sourceContexts
+        self.collectionGeneration = collectionGeneration
         self.startedAt = startedAt
     }
 
@@ -96,6 +99,7 @@ public struct CompletionInvocationCapture:
         case context
         case sourceEventIDs
         case sourceContexts
+        case collectionGeneration
         case startedAt
     }
 
@@ -123,6 +127,10 @@ public struct CompletionInvocationCapture:
             [PersonalizationContext].self,
             forKey: .sourceContexts
         ) ?? []
+        collectionGeneration = try container.decodeIfPresent(
+            UInt64.self,
+            forKey: .collectionGeneration
+        )
         startedAt = try container.decode(Date.self, forKey: .startedAt)
     }
 }
@@ -223,6 +231,7 @@ public enum CompletionEpisodeReconciliationDecision:
 {
     case waitForAuthoritativeChange
     case reconcile
+    case finalizeFromAuthoritativeBaselineAndReconcile
     case discardUnobservedAndReconcile
 }
 
@@ -261,7 +270,9 @@ public enum CompletionEpisodeReconciliationPolicy {
             return .waitForAuthoritativeChange
         }
         if focusChanged {
-            return .discardUnobservedAndReconcile
+            return expectedField == authoritativeBaselineField
+                ? .finalizeFromAuthoritativeBaselineAndReconcile
+                : .discardUnobservedAndReconcile
         }
         return .reconcile
     }

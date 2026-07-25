@@ -78,6 +78,7 @@ struct StoredCompletionInvocation: Codable, Sendable, Equatable {
     let context: PersonalizationContext
     let sourceEventIDs: [UUID]?
     let sourceContexts: [PersonalizationContext]?
+    let collectionGeneration: UInt64?
     let startedAt: Date
 }
 
@@ -175,6 +176,7 @@ struct StoredCompletionEpisode: Codable, Sendable, Equatable {
                 context: invocation.context,
                 sourceEventIDs: invocation.sourceEventIDs ?? [],
                 sourceContexts: invocation.sourceContexts ?? [],
+                collectionGeneration: invocation.collectionGeneration,
                 startedAt: invocation.startedAt
             ),
             suggestionRevisions: revisions,

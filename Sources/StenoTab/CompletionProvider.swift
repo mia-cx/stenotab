@@ -7,7 +7,26 @@ struct CompletionInvocationSeed: Sendable {
     let context: PersonalizationContext
     let sourceEventIDs: [UUID]
     let sourceContexts: [PersonalizationContext]
+    let collectionGeneration: UInt64
     let startedAt: Date
+
+    init(
+        id: UUID,
+        field: CapturedFieldState,
+        context: PersonalizationContext,
+        sourceEventIDs: [UUID],
+        sourceContexts: [PersonalizationContext],
+        collectionGeneration: UInt64 = 0,
+        startedAt: Date
+    ) {
+        self.id = id
+        self.field = field
+        self.context = context
+        self.sourceEventIDs = sourceEventIDs
+        self.sourceContexts = sourceContexts
+        self.collectionGeneration = collectionGeneration
+        self.startedAt = startedAt
+    }
 }
 
 struct CompletionRequest: Sendable {
@@ -300,6 +319,7 @@ struct OpenAICompatibleCompletionProvider: CompletionProvider {
                     includesPersonalizationSources
                     ? $0.sourceContexts
                     : [],
+                collectionGeneration: $0.collectionGeneration,
                 startedAt: $0.startedAt
             )
         }

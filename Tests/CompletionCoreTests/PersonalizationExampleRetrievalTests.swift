@@ -79,7 +79,8 @@ final class PersonalizationExampleRetrievalTests: XCTestCase {
                     PersonalizationExample.promptRecordSeparator
             ),
             frecentSourceEventIDs: ids,
-            frecentSourceContexts: contexts
+            frecentSourceContexts: contexts,
+            frecentRecordCharacterCounts: records.map(\.count)
         )
 
         XCTAssertEqual(

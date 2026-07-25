@@ -83,7 +83,7 @@ public struct PersonalVocabularyEntry:
 }
 
 public struct PersonalLanguageModel: Codable, Sendable, Equatable {
-    private static let currentProjectionVersion = 5
+    private static let currentProjectionVersion = 6
 
     private struct WordOccurrence {
         let display: String
@@ -167,7 +167,7 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         let directlyTypedEdits = episode.edits.enumerated().filter {
             $0.element.provenance == .directlyTyped
         }
-        for (directIndex, indexedEdit) in directlyTypedEdits.enumerated() {
+        for indexedEdit in directlyTypedEdits {
             let editIndex = indexedEdit.offset
             let edit = indexedEdit.element
             guard
@@ -176,9 +176,6 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             else {
                 continue
             }
-            let delimiterOnly = !edit.insertedText.contains(
-                where: Self.isWordCharacter
-            )
             let immediatelyFollowsAcceptedSuggestion =
                 episode.edits[..<editIndex].last.map {
                     $0.provenance == .acceptedSuggestion
@@ -192,11 +189,9 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
                 context: episode.context,
                 at: edit.endedAt,
                 includeBoundaryTouch:
-                    !(delimiterOnly
-                        && immediatelyFollowsAcceptedSuggestion),
+                    !immediatelyFollowsAcceptedSuggestion,
                 excludeUnterminatedTrailingWord:
                     episode.boundary == .idle
-                    && directIndex == directlyTypedEdits.count - 1
             )
         }
     }

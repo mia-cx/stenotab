@@ -74,6 +74,9 @@ final class PersonalizationSettingsStore: ObservableObject {
     @Published private(set) var languageModel = PersonalLanguageModel()
     @Published private(set) var voiceAssessment: VoiceAssessment?
 
+    var onHistoryReset: (() -> Void)?
+    var captureGeneration: UInt64 { collectionGeneration }
+
     private let defaults: UserDefaults
     private var collectionGeneration: UInt64 = 0
     private var completionEpisodeDeleteAllBoundary: Date?
@@ -192,6 +195,7 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func deleteAll() {
         guard let modelWorker else { return }
+        onHistoryReset?()
         completionEpisodeDeleteAllBoundary = Date()
         collectionGeneration &+= 1
         let generation = collectionGeneration
@@ -279,6 +283,11 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func record(_ episode: CompletionEpisodeCapture) {
         guard collectionEnabled, let modelWorker else { return }
+        if let invocationGeneration =
+            episode.invocation.collectionGeneration
+        {
+            guard invocationGeneration == collectionGeneration else { return }
+        }
         let applicationDeletedAt =
             episode.invocation.context.applicationBundleIdentifier
                 .flatMap {
@@ -351,6 +360,7 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func deleteApplicationHistory(bundleIdentifier: String) {
         guard let modelWorker else { return }
+        onHistoryReset?()
         completionEpisodeApplicationDeletionBoundaries[bundleIdentifier] =
             Date()
         collectionGeneration &+= 1
@@ -865,14 +875,19 @@ actor PersonalizationModelWorker {
     ) async throws {
         let sourceEventCount = voiceSourceEventCount
         if sourceEventCount < 10 {
-            if force, voiceAssessment != nil {
+            if voiceAssessment != nil {
                 voiceAssessment = nil
                 try await database.deleteVoiceAssessment()
             }
             return
         }
+        let assessmentNeedsLineageRefresh =
+            voiceAssessment.map {
+                $0.sourceEventIDs.isEmpty || $0.sourceContexts.isEmpty
+            } ?? false
         guard
             force
+                || assessmentNeedsLineageRefresh
                 || VoiceAssessmentSchedule.shouldAssess(
                     existing: voiceAssessment,
                     sourceEventCount: sourceEventCount

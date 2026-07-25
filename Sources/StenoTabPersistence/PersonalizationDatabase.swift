@@ -183,19 +183,18 @@ public actor PersonalizationDatabase {
         }
         let rows = try connection.query(
             """
-            SELECT id, payload_sealed, payload_hmac
+            SELECT id, kind, payload_sealed, payload_hmac
             FROM personalization_event
-            WHERE kind = ?
-            """,
-            bindings: [.text(Self.completionEpisodeKind)]
+            """
         )
         var legacyIDs: [String] = []
         var currentEpisodes: [StoredCompletionEpisode] = []
         for row in rows {
             guard
                 let id = row.text(at: 0),
-                let sealedPayload = row.blob(at: 1),
-                let storedHMAC = row.blob(at: 2)
+                let kind = row.text(at: 1),
+                let sealedPayload = row.blob(at: 2),
+                let storedHMAC = row.blob(at: 3)
             else {
                 return
             }
@@ -240,8 +239,14 @@ public actor PersonalizationDatabase {
                     legacy.id.uuidString == id
                 {
                     legacyIDs.append(id)
-                } else {
+                } else if kind == Self.completionEpisodeKind {
+                    // A row claiming to be a completion episode could be
+                    // corrupt or a different event with a substituted kind.
+                    // Leave the database untouched rather than using that
+                    // unauthenticated index value destructively.
                     return
+                } else {
+                    continue
                 }
                 continue
             }
@@ -530,6 +535,8 @@ public actor PersonalizationDatabase {
                     context: episode.invocation.context,
                     sourceEventIDs: sourceEventIDs,
                     sourceContexts: episode.invocation.sourceContexts,
+                    collectionGeneration:
+                        episode.invocation.collectionGeneration,
                     startedAt: episode.invocation.startedAt
                 ),
                 suggestionRevisions: storedRevisions,

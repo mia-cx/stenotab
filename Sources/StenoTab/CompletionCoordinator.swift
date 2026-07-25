@@ -106,6 +106,8 @@ final class CompletionCoordinator: NSObject {
     private var typedSuggestionOrigin: CapturedFieldState?
     private let completionEpisodeCollectionIsEnabled:
         @MainActor () -> Bool
+    private let completionEpisodeCollectionGeneration:
+        @MainActor () -> UInt64
 
     private lazy var requestPump = LatestStreamPump<
         CompletionRequest,
@@ -147,6 +149,8 @@ final class CompletionCoordinator: NSObject {
         ) -> Void = { _ in },
         completionEpisodeCollectionIsEnabled:
             @escaping @MainActor () -> Bool = { true },
+        completionEpisodeCollectionGeneration:
+            @escaping @MainActor () -> UInt64 = { 0 },
         personalCompletion: @escaping @MainActor (
             String,
             PersonalizationContext
@@ -168,6 +172,8 @@ final class CompletionCoordinator: NSObject {
         self.onCompletionEpisode = onCompletionEpisode
         self.completionEpisodeCollectionIsEnabled =
             completionEpisodeCollectionIsEnabled
+        self.completionEpisodeCollectionGeneration =
+            completionEpisodeCollectionGeneration
         self.personalCompletion = personalCompletion
         self.personalizationPromptContext = personalizationPromptContext
         super.init()
@@ -330,6 +336,21 @@ final class CompletionCoordinator: NSObject {
                 completionEpisodeTracker.abandonedSuggestionResolution
         )
         reconcile()
+    }
+
+    func personalizationHistoryWillReset() {
+        invalidatePendingCompletion()
+        clearOCRContext()
+        discardCompletionEpisodeAndSuggestion()
+        writingHistoryTracker = WritingHistoryTracker()
+        completionReversionTracker = CompletionReversionTracker()
+    }
+
+    static func shouldDiscardPendingOutcomeBeforeClearing(
+        pendingResolution: CompletionEpisodeResolution?,
+        expectedField: CapturedFieldState?
+    ) -> Bool {
+        pendingResolution != nil && expectedField != nil
     }
 
     private func handle(_ mutation: ShadowTextBuffer.Mutation) {
@@ -609,6 +630,8 @@ final class CompletionCoordinator: NSObject {
             scheduleInvalidationReconciliation()
             return
         }
+        let authoritativeBaselineField =
+            completionEpisodeAuthoritativeBaselineField
         completionEpisodeAuthoritativeBaselineField = nil
         completionEpisodeExpectedField = nil
         completionEpisodeRequiresPostEventObservation = false
@@ -617,6 +640,12 @@ final class CompletionCoordinator: NSObject {
             == .discardUnobservedAndReconcile
         {
             discardPendingCompletionEpisode()
+        } else if reconciliationDecision
+            == .finalizeFromAuthoritativeBaselineAndReconcile
+        {
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: authoritativeBaselineField
+            )
         }
         if focusChanged {
             invalidatePendingCompletion()
@@ -888,6 +917,8 @@ final class CompletionCoordinator: NSObject {
         if reconciliationDecision == .waitForAuthoritativeChange {
             return nil
         }
+        let authoritativeBaselineField =
+            completionEpisodeAuthoritativeBaselineField
         completionEpisodeAuthoritativeBaselineField = nil
         completionEpisodeExpectedField = nil
         completionEpisodeRequiresPostEventObservation = false
@@ -896,6 +927,12 @@ final class CompletionCoordinator: NSObject {
             == .discardUnobservedAndReconcile
         {
             discardPendingCompletionEpisode()
+        } else if reconciliationDecision
+            == .finalizeFromAuthoritativeBaselineAndReconcile
+        {
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: authoritativeBaselineField
+            )
         }
         if focusChanged {
             finalizeCompletionEpisode(
@@ -967,6 +1004,8 @@ final class CompletionCoordinator: NSObject {
                             includeRelevant: includeRelevant,
                             includeVoiceAssessment: includeVoiceAssessment
                         ),
+                        collectionGeneration:
+                            completionEpisodeCollectionGeneration(),
                         startedAt: Date()
                     )
                 }
@@ -2175,7 +2214,14 @@ final class CompletionCoordinator: NSObject {
         caretReanchorTask?.cancel()
         suggestion = nil
         if resetConsumption {
-            finalizeCompletionEpisode(resolution: resolution)
+            if Self.shouldDiscardPendingOutcomeBeforeClearing(
+                pendingResolution: pendingCompletionEpisodeResolution,
+                expectedField: completionEpisodeExpectedField
+            ) {
+                discardPendingCompletionEpisode()
+            } else {
+                finalizeCompletionEpisode(resolution: resolution)
+            }
             suggestionConsumption = nil
             suggestionAssociationToken = nil
             typedSuggestionOrigin = nil

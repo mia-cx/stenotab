@@ -89,6 +89,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                 [personalizationSettings] in
                 personalizationSettings.collectionEnabled
             },
+            completionEpisodeCollectionGeneration: {
+                [personalizationSettings] in
+                personalizationSettings.captureGeneration
+            },
             personalCompletion: { [personalizationSettings] prefix, context in
                 personalizationSettings.personalCompletion(
                     for: prefix,
@@ -104,6 +108,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             }
         )
         self.coordinator = coordinator
+        personalizationSettings.onHistoryReset = { [weak coordinator] in
+            coordinator?.personalizationHistoryWillReset()
+        }
         applicationPolicy.onChange = { [weak coordinator] in
             coordinator?.applicationPolicyDidChange()
         }

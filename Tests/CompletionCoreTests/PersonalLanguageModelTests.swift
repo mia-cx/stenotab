@@ -251,6 +251,61 @@ final class PersonalLanguageModelTests: XCTestCase {
         XCTAssertTrue(model.vocabularyEntries().isEmpty)
     }
 
+    func testMergedTypedBurstDoesNotRelabelAcceptedBoundaryWord() {
+        let date = Date(timeIntervalSince1970: 77.75)
+        let initial = CapturedFieldState(
+            text: "hello",
+            selection: UTF16Selection(location: 5, length: 0)
+        )
+        let afterAcceptance = CapturedFieldState(
+            text: "hello world",
+            selection: UTF16Selection(location: 11, length: 0)
+        )
+        let final = CapturedFieldState(
+            text: "hello world please",
+            selection: UTF16Selection(location: 18, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: final,
+            edits: [
+                WritingEditCapture(
+                    insertedText: " world",
+                    provenance: .acceptedSuggestion,
+                    selectionBefore: initial.selection,
+                    selectionAfter: afterAcceptance.selection,
+                    fieldBefore: initial,
+                    fieldAfter: afterAcceptance,
+                    startedAt: date,
+                    endedAt: date
+                ),
+                WritingEditCapture(
+                    insertedText: " please",
+                    provenance: .directlyTyped,
+                    selectionBefore: afterAcceptance.selection,
+                    selectionAfter: final.selection,
+                    fieldBefore: afterAcceptance,
+                    fieldAfter: final,
+                    startedAt: date,
+                    endedAt: date
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date,
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(
+            model.vocabularyEntries().map(\.normalized),
+            ["please"]
+        )
+    }
+
     func testAcceptedSeparatorDoesNotReinforceUnchangedBoundaryWord() throws {
         let capture = try XCTUnwrap(
             PersonalizationCapture.acceptedSuggestion(
@@ -566,6 +621,61 @@ final class PersonalLanguageModelTests: XCTestCase {
                 boundary: .idle
             )
         )
+
+        XCTAssertEqual(
+            model.vocabularyEntries().map(\.normalized),
+            ["the"]
+        )
+    }
+
+    func testIdleEpisodeDoesNotLearnEarlierPausedWordFragment() {
+        let date = Date(timeIntervalSince1970: 125)
+        let initial = CapturedFieldState(
+            text: "",
+            selection: UTF16Selection(location: 0, length: 0)
+        )
+        let afterFirstBurst = CapturedFieldState(
+            text: "th",
+            selection: UTF16Selection(location: 2, length: 0)
+        )
+        let final = CapturedFieldState(
+            text: "the ",
+            selection: UTF16Selection(location: 4, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: final,
+            edits: [
+                WritingEditCapture(
+                    insertedText: "th",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: afterFirstBurst.selection,
+                    fieldBefore: initial,
+                    fieldAfter: afterFirstBurst,
+                    startedAt: date,
+                    endedAt: date
+                ),
+                WritingEditCapture(
+                    insertedText: "e ",
+                    provenance: .directlyTyped,
+                    selectionBefore: afterFirstBurst.selection,
+                    selectionAfter: final.selection,
+                    fieldBefore: afterFirstBurst,
+                    fieldAfter: final,
+                    startedAt: date.addingTimeInterval(1),
+                    endedAt: date.addingTimeInterval(1)
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date.addingTimeInterval(1),
+            boundary: .idle
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
 
         XCTAssertEqual(
             model.vocabularyEntries().map(\.normalized),

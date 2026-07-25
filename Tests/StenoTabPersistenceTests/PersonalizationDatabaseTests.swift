@@ -357,6 +357,52 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(countAfterDelete, 0)
     }
 
+    func testLegacyMigrationFindsEpisodesWithSubstitutedKinds()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let legacy = makeCompletionEpisode(
+            id: UUID(),
+            input: "legacy private input",
+            suggestion: " legacy",
+            outcome: " legacy outcome",
+            date: Date(timeIntervalSince1970: 405)
+        )
+        let current = makeCompletionEpisode(
+            id: UUID(),
+            input: "current private input",
+            suggestion: " current",
+            outcome: " current outcome",
+            date: Date(timeIntervalSince1970: 406)
+        )
+        try await fixture.database
+            .recordVersionTwoCompletionEpisodeForTesting(legacy)
+        try await fixture.database.record(current)
+        try await fixture.database.replaceEventKindForTesting(
+            eventID: current.id,
+            kind: "accepted_suggestion"
+        )
+
+        let reopened = try PersonalizationDatabase(
+            databaseURL: fixture.directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+
+        let countAfterMigration = try await reopened.eventCount()
+        let storage =
+            try await reopened.completionEpisodeStorageStatistics()
+        XCTAssertEqual(countAfterMigration, 1)
+        XCTAssertGreaterThan(storage.uniqueTextChunkCount, 0)
+        try await reopened.deleteAll()
+        let countAfterDelete = try await reopened.eventCount()
+        XCTAssertEqual(countAfterDelete, 0)
+    }
+
     func testCorruptEpisodeCanReopenAndDeleteAll() async throws {
         let fixture = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
