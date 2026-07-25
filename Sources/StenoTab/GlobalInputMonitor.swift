@@ -5,12 +5,14 @@ final class GlobalInputMonitor {
     typealias MutationHandler = (ShadowTextBuffer.Mutation) -> Void
     typealias TabHandler = (SuggestionAcceptance.Scope) -> Bool
     typealias FocusHandler = () -> Void
+    typealias SubmitHandler = () -> Bool
 
     private static let syntheticMarker: Int64 = 0x5441_4243
 
     private let onMutation: MutationHandler
     private let onTab: TabHandler
     private let onFocus: FocusHandler
+    private let onSubmit: SubmitHandler
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var isSelectingScreenshotRegion = false
@@ -23,11 +25,13 @@ final class GlobalInputMonitor {
     init(
         onMutation: @escaping MutationHandler,
         onTab: @escaping TabHandler,
-        onFocus: @escaping FocusHandler
+        onFocus: @escaping FocusHandler,
+        onSubmit: @escaping SubmitHandler = { false }
     ) {
         self.onMutation = onMutation
         self.onTab = onTab
         self.onFocus = onFocus
+        self.onSubmit = onSubmit
     }
 
     @MainActor
@@ -173,6 +177,13 @@ final class GlobalInputMonitor {
         }
         if keyCode == 117 {
             monitor.onMutation(.deleteForward)
+            return Unmanaged.passUnretained(event)
+        }
+        if (keyCode == 36 || keyCode == 76),
+           !flags.contains(.maskShift),
+           !flags.contains(.maskAlternate),
+           monitor.onSubmit() {
+            monitor.onMutation(.invalidate)
             return Unmanaged.passUnretained(event)
         }
 

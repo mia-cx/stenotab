@@ -207,6 +207,61 @@ private struct PersonalizationSettingsView: View {
                         .frame(width: 54, alignment: .trailing)
                     }
                     .padding(.vertical, 3)
+                    Divider()
+                    HStack(alignment: .top, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Learn from directly typed text")
+                                .font(.headline)
+                            Text(
+                                "Store completed writing episodes even when "
+                                + "you did not accept a suggestion."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Toggle(
+                            "Learn from directly typed text",
+                            isOn: $store.collectDirectTyping
+                        )
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .frame(width: 54, alignment: .trailing)
+                    }
+                    .padding(.vertical, 3)
+                }
+
+                SettingsSection(title: "Retention") {
+                    LabeledContent("Keep history") {
+                        Picker(
+                            "Keep history",
+                            selection: $store.retentionDays
+                        ) {
+                            Text("30 days").tag(30)
+                            Text("90 days").tag(90)
+                            Text("1 year").tag(365)
+                            Text("Forever").tag(0)
+                        }
+                        .labelsHidden()
+                        .frame(width: 150)
+                    }
+                    Divider()
+                    LabeledContent("Maximum encrypted data") {
+                        Picker(
+                            "Maximum encrypted data",
+                            selection: $store.maximumStorageMegabytes
+                        ) {
+                            Text("25 MB").tag(25)
+                            Text("100 MB").tag(100)
+                            Text("500 MB").tag(500)
+                            Text("Unlimited").tag(0)
+                        }
+                        .labelsHidden()
+                        .frame(width: 150)
+                    }
                 }
 
                 SettingsSection(title: "Stored Data") {
@@ -226,17 +281,63 @@ private struct PersonalizationSettingsView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
 
+                        Button("Export…") {
+                            exportHistory()
+                        }
+                        .disabled(store.storedEventCount == 0)
                         Button("Delete All…") {
                             confirmsDeletion = true
                         }
                         .disabled(store.storedEventCount == 0)
                     }
 
+                    Text(
+                        ByteCountFormatter.string(
+                            fromByteCount:
+                                Int64(store.encryptedPayloadBytes),
+                            countStyle: .file
+                        )
+                        + " of encrypted event payloads"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                     if let operationError = store.operationError {
                         Divider()
                         Text(operationError)
                             .font(.caption)
                             .foregroundStyle(.red)
+                    }
+                }
+
+                if !store.recentEpisodes.isEmpty {
+                    SettingsSection(title: "Recent Writing") {
+                        ForEach(
+                            Array(store.recentEpisodes.reversed()),
+                            id: \.id
+                        ) { episode in
+                            WritingEpisodeHistoryRow(
+                                episode: episode,
+                                delete: {
+                                    store.deleteEvent(id: episode.id)
+                                },
+                                deleteApplication: {
+                                    guard let bundleIdentifier =
+                                        episode.context
+                                            .applicationBundleIdentifier
+                                    else {
+                                        return
+                                    }
+                                    store.deleteApplicationHistory(
+                                        bundleIdentifier:
+                                            bundleIdentifier
+                                    )
+                                }
+                            )
+                            if episode.id != store.recentEpisodes.first?.id {
+                                Divider()
+                            }
+                        }
                     }
                 }
             }
@@ -261,6 +362,78 @@ private struct PersonalizationSettingsView: View {
                 + "and all learned personalization derived from it."
             )
         }
+    }
+
+    private func exportHistory() {
+        Task {
+            do {
+                let data = try await store.exportData()
+                let panel = NSSavePanel()
+                panel.nameFieldStringValue =
+                    "StenoTab Personalization Export.json"
+                panel.canCreateDirectories = true
+                guard
+                    panel.runModal() == .OK,
+                    let url = panel.url
+                else {
+                    return
+                }
+                try data.write(to: url, options: .atomic)
+            } catch {
+                store.report(error: error)
+            }
+        }
+    }
+}
+
+private struct WritingEpisodeHistoryRow: View {
+    let episode: WritingEpisodeCapture
+    let delete: () -> Void
+    let deleteApplication: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(episode.finalField.text)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 6) {
+                    Text(
+                        episode.context.applicationBundleIdentifier
+                            ?? "Unknown application"
+                    )
+                    Text("•")
+                    Text(episode.boundary.rawValue.replacingOccurrences(
+                        of: "_",
+                        with: " "
+                    ))
+                    Text("•")
+                    Text(episode.endedAt, style: .relative)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+
+            Menu {
+                Button("Delete This Record", role: .destructive) {
+                    delete()
+                }
+                if episode.context.applicationBundleIdentifier != nil {
+                    Button(
+                        "Delete All from This App",
+                        role: .destructive
+                    ) {
+                        deleteApplication()
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+        .padding(.vertical, 4)
     }
 }
 

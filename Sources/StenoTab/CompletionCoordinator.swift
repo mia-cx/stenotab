@@ -32,6 +32,8 @@ final class CompletionCoordinator: NSObject {
     private let onSuggestionAccepted: @MainActor (String) -> Void
     private let onPersonalizationCapture:
         @MainActor (AcceptedSuggestionCapture) -> Void
+    private let onWritingEpisode:
+        @MainActor (WritingEpisodeCapture) -> Void
     private var inputMonitor: GlobalInputMonitor?
     private var reconciliationTimer: Timer?
     private var debounceTask: Task<Void, Never>?
@@ -64,6 +66,7 @@ final class CompletionCoordinator: NSObject {
     private var prefetchedRefill: (key: RefillKey, text: String)?
     private var refillRequestID: UInt64 = 0
     private var consecutiveSnapshotFailures = 0
+    private var writingHistoryTracker = WritingHistoryTracker()
 
     private lazy var requestPump = LatestStreamPump<
         CompletionRequest,
@@ -93,6 +96,9 @@ final class CompletionCoordinator: NSObject {
         onSuggestionAccepted: @escaping @MainActor (String) -> Void = { _ in },
         onPersonalizationCapture: @escaping @MainActor (
             AcceptedSuggestionCapture
+        ) -> Void = { _ in },
+        onWritingEpisode: @escaping @MainActor (
+            WritingEpisodeCapture
         ) -> Void = { _ in }
     ) {
         self.provider = provider
@@ -102,6 +108,7 @@ final class CompletionCoordinator: NSObject {
         self.onApplicationObserved = onApplicationObserved
         self.onSuggestionAccepted = onSuggestionAccepted
         self.onPersonalizationCapture = onPersonalizationCapture
+        self.onWritingEpisode = onWritingEpisode
         super.init()
     }
 
@@ -119,6 +126,9 @@ final class CompletionCoordinator: NSObject {
             },
             onFocus: { [weak self] in
                 self?.reconcile(captureFocusedEditor: true)
+            },
+            onSubmit: { [weak self] in
+                self?.finalizeSubmittedWritingEpisode() ?? false
             }
         )
         inputMonitor = monitor
@@ -133,6 +143,7 @@ final class CompletionCoordinator: NSObject {
                     _ = self?.inputMonitor?.start()
                 }
                 self?.publishPermissionState()
+                self?.finalizeIdleWritingEpisode()
                 self?.reconcile()
             }
         }
@@ -232,7 +243,18 @@ final class CompletionCoordinator: NSObject {
             return
         }
         let snapshotBeforeMutation = lastSnapshot
+        let fieldBeforeMutation = currentCapturedField()
         buffer.apply(mutation)
+        if case let .insert(text) = mutation,
+           let fieldBeforeMutation {
+            writingHistoryTracker.recordInsertion(
+                text,
+                provenance: .directlyTyped,
+                fieldBefore: fieldBeforeMutation,
+                fieldAfter: currentCapturedFieldFromBuffer(),
+                at: Date()
+            )
+        }
 
         if case let .insert(text) = mutation,
            var consumption = suggestionConsumption {
@@ -330,6 +352,16 @@ final class CompletionCoordinator: NSObject {
             clearSuggestion()
         }
         updateTypographyScale(from: previousSnapshot, to: snapshot)
+        if let completed = writingHistoryTracker.observe(
+            field: CapturedFieldState(
+                text: snapshot.fieldText,
+                selection: snapshot.selection
+            ),
+            context: personalizationContext(for: snapshot),
+            at: Date()
+        ) {
+            onWritingEpisode(completed)
+        }
         lastSnapshot = snapshot
         if focusChanged {
             if cachedOCRContext?.editorIdentifier
@@ -804,14 +836,30 @@ final class CompletionCoordinator: NSObject {
                 selection: $0.selection,
                 insertion: acceptance.accepted,
                 acceptanceScope: scope,
-                context: PersonalizationContext(
-                    applicationBundleIdentifier:
-                        $0.applicationBundleIdentifier,
-                    website: nil,
-                    inputKind: $0.inputKind,
-                    detectedLanguage: nil,
-                    editorIdentifier: $0.editorIdentifier
-                )
+                context: personalizationContext(for: $0)
+            )
+        }
+        if let fieldBefore = currentCapturedField() {
+            let insertedUTF16Count = acceptance.accepted.utf16.count
+            let afterText = replacingSelection(
+                in: fieldBefore.text,
+                selection: fieldBefore.selection,
+                with: acceptance.accepted
+            )
+            writingHistoryTracker.recordInsertion(
+                acceptance.accepted,
+                provenance: .acceptedSuggestion,
+                fieldBefore: fieldBefore,
+                fieldAfter: CapturedFieldState(
+                    text: afterText,
+                    selection: UTF16Selection(
+                        location:
+                            fieldBefore.selection.location
+                            + insertedUTF16Count,
+                        length: 0
+                    )
+                ),
+                at: Date()
             )
         }
         inputMonitor?.insertText(acceptance.accepted)
@@ -900,6 +948,91 @@ final class CompletionCoordinator: NSObject {
             guard !Task.isCancelled, let self else { return }
             self.receiveRefill(response, for: key)
         }
+    }
+
+    private func personalizationContext(
+        for snapshot: EditorSnapshot
+    ) -> PersonalizationContext {
+        PersonalizationContext(
+            applicationBundleIdentifier:
+                snapshot.applicationBundleIdentifier,
+            website: nil,
+            inputKind: snapshot.inputKind,
+            detectedLanguage: nil,
+            editorIdentifier: snapshot.editorIdentifier
+        )
+    }
+
+    private func currentCapturedField() -> CapturedFieldState? {
+        if buffer.needsReconciliation, let lastSnapshot {
+            return CapturedFieldState(
+                text: lastSnapshot.fieldText,
+                selection: lastSnapshot.selection
+            )
+        }
+        return currentCapturedFieldFromBuffer()
+    }
+
+    private func currentCapturedFieldFromBuffer() -> CapturedFieldState {
+        CapturedFieldState(
+            text: buffer.prefix + buffer.suffix,
+            selection: UTF16Selection(
+                location: buffer.prefix.utf16.count,
+                length: 0
+            )
+        )
+    }
+
+    private func replacingSelection(
+        in text: String,
+        selection: UTF16Selection,
+        with insertion: String
+    ) -> String {
+        guard selection.isValid(for: text) else {
+            return text + insertion
+        }
+        let utf16 = text.utf16
+        let start = utf16.index(
+            utf16.startIndex,
+            offsetBy: selection.location
+        )
+        let end = utf16.index(start, offsetBy: selection.length)
+        return String(decoding: utf16[..<start], as: UTF16.self)
+            + insertion
+            + String(decoding: utf16[end...], as: UTF16.self)
+    }
+
+    private func finalizeIdleWritingEpisode() {
+        if let completed = writingHistoryTracker.finalizeIfIdle(
+            at: Date(),
+            timeout: 2
+        ) {
+            onWritingEpisode(completed)
+        }
+    }
+
+    private func finalizeSubmittedWritingEpisode() -> Bool {
+        let submissionKinds: Set<String> = [
+            "comment",
+            "email",
+            "message",
+            "post",
+            "reply",
+            "search"
+        ]
+        guard
+            let inputKind = lastSnapshot?.inputKind,
+            submissionKinds.contains(inputKind)
+        else {
+            return false
+        }
+        if let completed = writingHistoryTracker.finalize(
+            boundary: .submitted,
+            at: Date()
+        ) {
+            onWritingEpisode(completed)
+        }
+        return true
     }
 
     private func receiveRefill(

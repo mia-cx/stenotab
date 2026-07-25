@@ -74,6 +74,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             },
             onPersonalizationCapture: { [weak self] capture in
                 self?.recordPersonalizationCapture(capture)
+            },
+            onWritingEpisode: { [weak self] episode in
+                self?.recordWritingEpisode(episode)
             }
         )
         self.coordinator = coordinator
@@ -316,6 +319,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             } catch {
                 personalizationLogger.error(
                     "Could not record personalization event: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+    }
+
+    private func recordWritingEpisode(_ episode: WritingEpisodeCapture) {
+        guard
+            personalizationSettings.collectionEnabled,
+            personalizationSettings.collectDirectTyping,
+            let personalizationDatabase
+        else {
+            return
+        }
+
+        Task { [personalizationLogger] in
+            do {
+                try await personalizationDatabase.record(episode)
+                await MainActor.run {
+                    personalizationSettings.enforceRetention()
+                }
+            } catch {
+                personalizationLogger.error(
+                    "Could not record writing episode: \(String(describing: error), privacy: .public)"
                 )
             }
         }

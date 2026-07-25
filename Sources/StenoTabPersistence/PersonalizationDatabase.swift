@@ -10,8 +10,60 @@ public enum PersonalizationPersistenceError: Error, Equatable {
     case unsupportedEventKind(String)
 }
 
+public struct PersonalizationRetentionPolicy: Sendable, Equatable {
+    public let maximumAge: TimeInterval?
+    public let maximumEncryptedBytes: Int?
+
+    public init(
+        maximumAge: TimeInterval?,
+        maximumEncryptedBytes: Int?
+    ) {
+        self.maximumAge = maximumAge
+        self.maximumEncryptedBytes = maximumEncryptedBytes
+    }
+}
+
+public struct PersonalizationStorageStatistics: Sendable, Equatable {
+    public let eventCount: Int
+    public let encryptedPayloadBytes: Int
+    public let oldestEventAt: Date?
+    public let newestEventAt: Date?
+
+    public init(
+        eventCount: Int,
+        encryptedPayloadBytes: Int,
+        oldestEventAt: Date?,
+        newestEventAt: Date?
+    ) {
+        self.eventCount = eventCount
+        self.encryptedPayloadBytes = encryptedPayloadBytes
+        self.oldestEventAt = oldestEventAt
+        self.newestEventAt = newestEventAt
+    }
+}
+
+public struct PersonalizationCorpusExport: Codable, Sendable, Equatable {
+    public let formatVersion: Int
+    public let exportedAt: Date
+    public let acceptedSuggestions: [AcceptedSuggestionCapture]
+    public let writingEpisodes: [WritingEpisodeCapture]
+
+    public init(
+        formatVersion: Int = 1,
+        exportedAt: Date,
+        acceptedSuggestions: [AcceptedSuggestionCapture],
+        writingEpisodes: [WritingEpisodeCapture]
+    ) {
+        self.formatVersion = formatVersion
+        self.exportedAt = exportedAt
+        self.acceptedSuggestions = acceptedSuggestions
+        self.writingEpisodes = writingEpisodes
+    }
+}
+
 public actor PersonalizationDatabase {
     private static let acceptedSuggestionKind = "accepted_suggestion"
+    private static let writingEpisodeKind = "writing_episode"
     private static let keyVersion = 1
 
     private let connection: SQLiteConnection
@@ -54,7 +106,33 @@ public actor PersonalizationDatabase {
     }
 
     public func record(_ capture: AcceptedSuggestionCapture) throws {
-        let payload = try encoder.encode(capture)
+        try recordEvent(
+            id: capture.id,
+            kind: Self.acceptedSuggestionKind,
+            capturedAt: capture.capturedAt,
+            payload: capture,
+            context: capture.context
+        )
+    }
+
+    public func record(_ episode: WritingEpisodeCapture) throws {
+        try recordEvent(
+            id: episode.id,
+            kind: Self.writingEpisodeKind,
+            capturedAt: episode.endedAt,
+            payload: episode,
+            context: episode.context
+        )
+    }
+
+    private func recordEvent<Payload: Encodable>(
+        id: UUID,
+        kind: String,
+        capturedAt: Date,
+        payload value: Payload,
+        context: PersonalizationContext
+    ) throws {
+        let payload = try encoder.encode(value)
         let sealedPayload = try PersonalizationCryptography.seal(
             payload,
             keyData: keyData
@@ -77,10 +155,10 @@ public actor PersonalizationDatabase {
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 bindings: [
-                    .text(capture.id.uuidString),
-                    .text(Self.acceptedSuggestionKind),
+                    .text(id.uuidString),
+                    .text(kind),
                     .integer(
-                        Int64(capture.capturedAt.timeIntervalSince1970 * 1_000)
+                        Int64(capturedAt.timeIntervalSince1970 * 1_000)
                     ),
                     .blob(sealedPayload),
                     .blob(payloadHMAC),
@@ -88,7 +166,7 @@ public actor PersonalizationDatabase {
                 ]
             )
 
-            for scope in scopes(from: capture.context) {
+            for scope in scopes(from: context) {
                 let scopeID = try upsertScope(scope)
                 try connection.execute(
                     """
@@ -96,7 +174,7 @@ public actor PersonalizationDatabase {
                     VALUES (?, ?)
                     """,
                     bindings: [
-                        .text(capture.id.uuidString),
+                        .text(id.uuidString),
                         .integer(scopeID)
                     ]
                 )
@@ -105,20 +183,43 @@ public actor PersonalizationDatabase {
     }
 
     public func acceptedSuggestions() throws -> [AcceptedSuggestionCapture] {
+        try decodedEvents(
+            kind: Self.acceptedSuggestionKind,
+            as: AcceptedSuggestionCapture.self
+        )
+    }
+
+    public func writingEpisodes(
+        limit: Int? = nil
+    ) throws -> [WritingEpisodeCapture] {
+        try decodedEvents(
+            kind: Self.writingEpisodeKind,
+            as: WritingEpisodeCapture.self,
+            limit: limit
+        )
+    }
+
+    private func decodedEvents<Value: Decodable>(
+        kind expectedKind: String,
+        as type: Value.Type,
+        limit: Int? = nil
+    ) throws -> [Value] {
+        let order = limit == nil ? "ASC" : "DESC"
+        let limitClause = limit.map { " LIMIT \(max(0, $0))" } ?? ""
         let rows = try connection.query(
             """
             SELECT kind, payload_sealed
             FROM personalization_event
             WHERE kind = ?
-            ORDER BY sequence ASC
+            ORDER BY sequence \(order)\(limitClause)
             """,
-            bindings: [.text(Self.acceptedSuggestionKind)]
+            bindings: [.text(expectedKind)]
         )
 
-        return try rows.map { row in
+        let decoded = try rows.map { row in
             guard
                 let kind = row.text(at: 0),
-                kind == Self.acceptedSuggestionKind,
+                kind == expectedKind,
                 let sealedPayload = row.blob(at: 1)
             else {
                 throw PersonalizationPersistenceError.unsupportedEventKind(
@@ -130,11 +231,19 @@ public actor PersonalizationDatabase {
                 sealedPayload,
                 keyData: keyData
             )
-            return try decoder.decode(
-                AcceptedSuggestionCapture.self,
-                from: payload
-            )
+            return try decoder.decode(type, from: payload)
         }
+        return limit == nil ? decoded : Array(decoded.reversed())
+    }
+
+    public func exportCorpus(
+        at date: Date = Date()
+    ) throws -> PersonalizationCorpusExport {
+        PersonalizationCorpusExport(
+            exportedAt: date,
+            acceptedSuggestions: try acceptedSuggestions(),
+            writingEpisodes: try writingEpisodes()
+        )
     }
 
     public func eventCount() throws -> Int {
@@ -151,6 +260,147 @@ public actor PersonalizationDatabase {
             try connection.execute("DELETE FROM personalization_scope")
             try connection.execute("DELETE FROM projection_checkpoint")
         }
+    }
+
+    public func deleteEvent(id: UUID) throws {
+        try connection.transaction {
+            try connection.execute(
+                "DELETE FROM personalization_event WHERE id = ?",
+                bindings: [.text(id.uuidString)]
+            )
+            try pruneUnusedScopes()
+        }
+    }
+
+    @discardableResult
+    public func deleteEvents(
+        scopeKind: String,
+        value: String
+    ) throws -> Int {
+        let lookupHMAC = try PersonalizationCryptography.lookupHMAC(
+            for: value,
+            keyData: keyData
+        )
+        return try connection.transaction {
+            try connection.execute(
+                """
+                DELETE FROM personalization_event
+                WHERE id IN (
+                    SELECT event_scope.event_id
+                    FROM event_scope
+                    JOIN personalization_scope
+                        ON personalization_scope.id = event_scope.scope_id
+                    WHERE personalization_scope.kind = ?
+                        AND personalization_scope.lookup_hmac = ?
+                )
+                """,
+                bindings: [.text(scopeKind), .blob(lookupHMAC)]
+            )
+            let deleted = connection.changedRowCount
+            try pruneUnusedScopes()
+            return deleted
+        }
+    }
+
+    public func storageStatistics() throws
+        -> PersonalizationStorageStatistics
+    {
+        let row = try connection.query(
+            """
+            SELECT
+                COUNT(*),
+                COALESCE(SUM(LENGTH(payload_sealed)), 0),
+                MIN(captured_at_ms),
+                MAX(captured_at_ms)
+            FROM personalization_event
+            """
+        ).first
+        let oldestMilliseconds = row?.integer(at: 2)
+        let newestMilliseconds = row?.integer(at: 3)
+        return PersonalizationStorageStatistics(
+            eventCount: Int(row?.integer(at: 0) ?? 0),
+            encryptedPayloadBytes: Int(row?.integer(at: 1) ?? 0),
+            oldestEventAt: oldestMilliseconds.map {
+                Date(timeIntervalSince1970: TimeInterval($0) / 1_000)
+            },
+            newestEventAt: newestMilliseconds.map {
+                Date(timeIntervalSince1970: TimeInterval($0) / 1_000)
+            }
+        )
+    }
+
+    @discardableResult
+    public func enforceRetention(
+        _ policy: PersonalizationRetentionPolicy,
+        now: Date = Date()
+    ) throws -> Int {
+        let countBefore = try eventCount()
+        try connection.transaction {
+            if let maximumAge = policy.maximumAge {
+                let cutoff = now.addingTimeInterval(-maximumAge)
+                try connection.execute(
+                    """
+                    DELETE FROM personalization_event
+                    WHERE captured_at_ms < ?
+                    """,
+                    bindings: [
+                        .integer(
+                            Int64(cutoff.timeIntervalSince1970 * 1_000)
+                        )
+                    ]
+                )
+            }
+
+            if let maximumBytes = policy.maximumEncryptedBytes {
+                var payloadBytes = try encryptedPayloadBytes()
+                if payloadBytes > maximumBytes {
+                    let oldest = try connection.query(
+                        """
+                        SELECT id, LENGTH(payload_sealed)
+                        FROM personalization_event
+                        ORDER BY captured_at_ms ASC, sequence ASC
+                        """
+                    )
+                    for row in oldest where payloadBytes > maximumBytes {
+                        guard
+                            let id = row.text(at: 0),
+                            let bytes = row.integer(at: 1)
+                        else {
+                            continue
+                        }
+                        try connection.execute(
+                            """
+                            DELETE FROM personalization_event WHERE id = ?
+                            """,
+                            bindings: [.text(id)]
+                        )
+                        payloadBytes -= Int(bytes)
+                    }
+                }
+            }
+            try pruneUnusedScopes()
+        }
+        return countBefore - (try eventCount())
+    }
+
+    private func encryptedPayloadBytes() throws -> Int {
+        Int(
+            try connection.query(
+                """
+                SELECT COALESCE(SUM(LENGTH(payload_sealed)), 0)
+                FROM personalization_event
+                """
+            ).first?.integer(at: 0) ?? 0
+        )
+    }
+
+    private func pruneUnusedScopes() throws {
+        try connection.execute(
+            """
+            DELETE FROM personalization_scope
+            WHERE id NOT IN (SELECT DISTINCT scope_id FROM event_scope)
+            """
+        )
     }
 
     private func upsertScope(_ scope: PersonalizationScope) throws -> Int64 {
@@ -405,15 +655,21 @@ private final class SQLiteConnection: @unchecked Sendable {
         }
     }
 
-    func transaction(_ work: () throws -> Void) throws {
+    @discardableResult
+    func transaction<Value>(_ work: () throws -> Value) throws -> Value {
         try execute("BEGIN IMMEDIATE")
         do {
-            try work()
+            let value = try work()
             try execute("COMMIT")
+            return value
         } catch {
             try? execute("ROLLBACK")
             throw error
         }
+    }
+
+    var changedRowCount: Int {
+        Int(sqlite3_changes(database))
     }
 
     private func prepare(_ sql: String) throws -> OpaquePointer {
