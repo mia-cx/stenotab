@@ -68,6 +68,7 @@ public actor PersonalizationDatabase {
     private static let acceptedSuggestionKind = "accepted_suggestion"
     private static let completionFeedbackKind = "completion_feedback"
     private static let writingEpisodeKind = "writing_episode"
+    private static let languageModelProjection = "personal_language_model"
     private static let keyVersion = 1
 
     private let connection: SQLiteConnection
@@ -270,6 +271,57 @@ public actor PersonalizationDatabase {
         )
     }
 
+    public func saveLanguageModel(
+        _ model: PersonalLanguageModel,
+        at date: Date = Date()
+    ) throws {
+        let payload = try encoder.encode(model)
+        let sealed = try PersonalizationCryptography.seal(
+            payload,
+            keyData: keyData
+        )
+        try connection.execute(
+            """
+            INSERT INTO personalization_projection (
+                name,
+                version,
+                payload_sealed,
+                updated_at_ms
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                version = excluded.version,
+                payload_sealed = excluded.payload_sealed,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            bindings: [
+                .text(Self.languageModelProjection),
+                .integer(1),
+                .blob(sealed),
+                .integer(Int64(date.timeIntervalSince1970 * 1_000))
+            ]
+        )
+    }
+
+    public func loadLanguageModel() throws -> PersonalLanguageModel? {
+        let row = try connection.query(
+            """
+            SELECT payload_sealed
+            FROM personalization_projection
+            WHERE name = ?
+            """,
+            bindings: [.text(Self.languageModelProjection)]
+        ).first
+        guard let sealed = row?.blob(at: 0) else { return nil }
+        let payload = try PersonalizationCryptography.open(
+            sealed,
+            keyData: keyData
+        )
+        return try decoder.decode(
+            PersonalLanguageModel.self,
+            from: payload
+        )
+    }
+
     public func eventCount() throws -> Int {
         let rows = try connection.query(
             "SELECT COUNT(*) FROM personalization_event"
@@ -283,6 +335,7 @@ public actor PersonalizationDatabase {
             try connection.execute("DELETE FROM personalization_event")
             try connection.execute("DELETE FROM personalization_scope")
             try connection.execute("DELETE FROM projection_checkpoint")
+            try connection.execute("DELETE FROM personalization_projection")
         }
     }
 
@@ -532,6 +585,13 @@ public actor PersonalizationDatabase {
             name TEXT PRIMARY KEY,
             version INTEGER NOT NULL,
             last_event_sequence INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS personalization_projection (
+            name TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            payload_sealed BLOB NOT NULL,
+            updated_at_ms INTEGER NOT NULL
         );
         """
 }

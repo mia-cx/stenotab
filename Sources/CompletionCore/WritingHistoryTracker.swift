@@ -12,6 +12,7 @@ public struct WritingEditCapture: Codable, Sendable, Equatable {
     public let provenance: WritingEditProvenance
     public let selectionBefore: UTF16Selection
     public let selectionAfter: UTF16Selection
+    public let fieldBefore: CapturedFieldState?
     public let startedAt: Date
     public let endedAt: Date
 
@@ -21,6 +22,7 @@ public struct WritingEditCapture: Codable, Sendable, Equatable {
         provenance: WritingEditProvenance,
         selectionBefore: UTF16Selection,
         selectionAfter: UTF16Selection,
+        fieldBefore: CapturedFieldState? = nil,
         startedAt: Date,
         endedAt: Date
     ) {
@@ -29,6 +31,7 @@ public struct WritingEditCapture: Codable, Sendable, Equatable {
         self.provenance = provenance
         self.selectionBefore = selectionBefore
         self.selectionAfter = selectionAfter
+        self.fieldBefore = fieldBefore
         self.startedAt = startedAt
         self.endedAt = endedAt
     }
@@ -164,6 +167,7 @@ public struct WritingHistoryTracker: Sendable {
             provenance: provenance,
             selectionBefore: fieldBefore.selection,
             selectionAfter: fieldAfter.selection,
+            fieldBefore: fieldBefore,
             startedAt: date,
             endedAt: date
         )
@@ -175,6 +179,7 @@ public struct WritingHistoryTracker: Sendable {
                     provenance: provenance,
                     selectionBefore: previous.selectionBefore,
                     selectionAfter: edit.selectionAfter,
+                    fieldBefore: previous.fieldBefore,
                     startedAt: previous.startedAt,
                     endedAt: date
                 )
@@ -208,6 +213,7 @@ public struct WritingHistoryTracker: Sendable {
                 provenance: .directlyTyped,
                 selectionBefore: fieldBefore.selection,
                 selectionAfter: fieldAfter.selection,
+                fieldBefore: fieldBefore,
                 startedAt: date,
                 endedAt: date
             )

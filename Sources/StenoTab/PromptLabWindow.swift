@@ -232,6 +232,32 @@ private struct PersonalizationSettingsView: View {
                         .frame(width: 54, alignment: .trailing)
                     }
                     .padding(.vertical, 3)
+                    Divider()
+                    HStack(alignment: .top, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Use high-confidence local completions")
+                                .font(.headline)
+                            Text(
+                                "Use learned vocabulary and phrases without "
+                                + "calling the AI model when local evidence "
+                                + "is strong enough."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Toggle(
+                            "Use high-confidence local completions",
+                            isOn: $store.useLocalCompletions
+                        )
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .frame(width: 54, alignment: .trailing)
+                    }
+                    .padding(.vertical, 3)
                 }
 
                 SettingsSection(title: "Retention") {

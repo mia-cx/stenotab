@@ -36,6 +36,8 @@ final class CompletionCoordinator: NSObject {
         @MainActor (WritingEpisodeCapture) -> Void
     private let onCompletionFeedback:
         @MainActor (CompletionFeedbackCapture) -> Void
+    private let personalCompletion:
+        @MainActor (String, PersonalizationContext) -> PersonalCompletion?
     private var inputMonitor: GlobalInputMonitor?
     private var reconciliationTimer: Timer?
     private var debounceTask: Task<Void, Never>?
@@ -106,7 +108,11 @@ final class CompletionCoordinator: NSObject {
         ) -> Void = { _ in },
         onCompletionFeedback: @escaping @MainActor (
             CompletionFeedbackCapture
-        ) -> Void = { _ in }
+        ) -> Void = { _ in },
+        personalCompletion: @escaping @MainActor (
+            String,
+            PersonalizationContext
+        ) -> PersonalCompletion? = { _, _ in nil }
     ) {
         self.provider = provider
         self.promptConfiguration = promptConfiguration
@@ -117,6 +123,7 @@ final class CompletionCoordinator: NSObject {
         self.onPersonalizationCapture = onPersonalizationCapture
         self.onWritingEpisode = onWritingEpisode
         self.onCompletionFeedback = onCompletionFeedback
+        self.personalCompletion = personalCompletion
         super.init()
     }
 
@@ -468,6 +475,25 @@ final class CompletionCoordinator: NSObject {
         else {
             invalidatePendingCompletion()
             clearSuggestion()
+            return
+        }
+        if let snapshot = lastSnapshot,
+           let completion = personalCompletion(
+                buffer.prefix,
+                personalizationContext(for: snapshot)
+           ),
+           completion.confidence >= 0.7 {
+            debounceTask?.cancel()
+            newestRequestID &+= 1
+            preparedRequestSnapshot = nil
+            suggestionRequestID = nil
+            suggestion = completion.insertion
+            suggestionConsumption = SuggestionConsumption(
+                suggestion: completion.insertion,
+                isFinal: true
+            )
+            typedSuggestionOrigin = currentCapturedField()
+            overlay.show(completion.insertion)
             return
         }
 

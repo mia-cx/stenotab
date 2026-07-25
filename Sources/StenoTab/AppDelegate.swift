@@ -80,6 +80,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             },
             onCompletionFeedback: { [weak self] feedback in
                 self?.recordCompletionFeedback(feedback)
+            },
+            personalCompletion: { [personalizationSettings] prefix, context in
+                personalizationSettings.personalCompletion(
+                    for: prefix,
+                    context: context
+                )
             }
         )
         self.coordinator = coordinator
@@ -306,72 +312,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     private func recordPersonalizationCapture(
         _ capture: AcceptedSuggestionCapture
     ) {
-        guard
-            personalizationSettings.collectionEnabled,
-            let personalizationDatabase
-        else {
-            return
-        }
-
-        Task { [personalizationLogger] in
-            do {
-                try await personalizationDatabase.record(capture)
-                await MainActor.run {
-                    personalizationSettings.didRecordEvent()
-                }
-            } catch {
-                personalizationLogger.error(
-                    "Could not record personalization event: \(String(describing: error), privacy: .public)"
-                )
-            }
-        }
+        personalizationSettings.record(capture)
     }
 
     private func recordWritingEpisode(_ episode: WritingEpisodeCapture) {
-        guard
-            personalizationSettings.collectionEnabled,
-            personalizationSettings.collectDirectTyping,
-            let personalizationDatabase
-        else {
-            return
-        }
-
-        Task { [personalizationLogger] in
-            do {
-                try await personalizationDatabase.record(episode)
-                await MainActor.run {
-                    personalizationSettings.enforceRetention()
-                }
-            } catch {
-                personalizationLogger.error(
-                    "Could not record writing episode: \(String(describing: error), privacy: .public)"
-                )
-            }
-        }
+        personalizationSettings.record(episode)
     }
 
     private func recordCompletionFeedback(
         _ feedback: CompletionFeedbackCapture
     ) {
-        guard
-            personalizationSettings.collectionEnabled,
-            let personalizationDatabase
-        else {
-            return
-        }
-
-        Task { [personalizationLogger] in
-            do {
-                try await personalizationDatabase.record(feedback)
-                await MainActor.run {
-                    personalizationSettings.didRecordEvent()
-                }
-            } catch {
-                personalizationLogger.error(
-                    "Could not record completion feedback: \(String(describing: error), privacy: .public)"
-                )
-            }
-        }
+        personalizationSettings.record(feedback)
     }
 
     private func observeCalendarDayChanges() {

@@ -211,6 +211,37 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertNil(raw.range(of: Data("private suffix".utf8)))
     }
 
+    func testPersonalLanguageModelSnapshotRoundTripsEncrypted() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        var model = PersonalLanguageModel()
+        let learnedAt = Date(timeIntervalSince1970: 1_234)
+        for _ in 0..<3 {
+            model.learn(
+                insertedText: "ExtremelyPrivateVocabulary",
+                precedingText: "use ",
+                signal: .directlyTyped,
+                context: PersonalizationContext(editorIdentifier: "editor"),
+                at: learnedAt
+            )
+        }
+
+        try await fixture.database.saveLanguageModel(model)
+        let stored = try await fixture.database.loadLanguageModel()
+
+        XCTAssertEqual(stored, model)
+        let raw = try Data(
+            contentsOf: fixture.directory.appending(
+                path: "personalization.sqlite"
+            )
+        )
+        XCTAssertNil(
+            raw.range(
+                of: Data("ExtremelyPrivateVocabulary".utf8)
+            )
+        )
+    }
+
     private func makeDatabase() throws -> (
         database: PersonalizationDatabase,
         directory: URL
