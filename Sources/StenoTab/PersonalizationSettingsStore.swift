@@ -31,6 +31,15 @@ final class PersonalizationSettingsStore: ObservableObject {
                 forKey: Keys.collectionEnabled
             )
             if oldValue, !collectionEnabled {
+                collectionGeneration &+= 1
+                let generation = collectionGeneration
+                if let modelWorker {
+                    Task {
+                        await modelWorker.advanceCollectionGeneration(
+                            to: generation
+                        )
+                    }
+                }
                 onHistoryReset?()
             }
         }
@@ -234,6 +243,12 @@ final class PersonalizationSettingsStore: ObservableObject {
         let policy = retentionPolicy
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
+            guard
+                collectionEnabled,
+                generation == collectionGeneration
+            else {
+                return
+            }
             do {
                 let updatedModel = try await modelWorker.record(
                     capture,
@@ -267,6 +282,13 @@ final class PersonalizationSettingsStore: ObservableObject {
         let policy = retentionPolicy
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
+            guard
+                collectionEnabled,
+                collectDirectTyping,
+                generation == collectionGeneration
+            else {
+                return
+            }
             do {
                 let updatedModel = try await modelWorker.record(
                     episode,
@@ -294,6 +316,12 @@ final class PersonalizationSettingsStore: ObservableObject {
         let policy = retentionPolicy
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
+            guard
+                collectionEnabled,
+                generation == collectionGeneration
+            else {
+                return
+            }
             do {
                 let updatedModel = try await modelWorker.record(
                     feedback,
@@ -337,6 +365,12 @@ final class PersonalizationSettingsStore: ObservableObject {
         let policy = retentionPolicy
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
+            guard
+                collectionEnabled,
+                generation == collectionGeneration
+            else {
+                return
+            }
             do {
                 let updatedModel = try await modelWorker.record(
                     episode,
@@ -621,6 +655,10 @@ actor PersonalizationModelWorker {
         try await reloadRetrievalIndex()
         try await updateVoiceAssessmentIfNeeded()
         return model
+    }
+
+    func advanceCollectionGeneration(to generation: UInt64) {
+        collectionGeneration = max(collectionGeneration, generation)
     }
 
     func record(

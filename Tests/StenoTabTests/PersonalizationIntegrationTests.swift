@@ -24,6 +24,77 @@ final class PersonalizationIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testDisablingCollectionRejectsLoadedPromptsAndQueuedWrites()
+        async throws
+    {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        store.attach(database: database)
+        await store.flushPendingPersistence()
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        let storedCapture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "StoredUniqueToken",
+            acceptanceScope: .entireSuggestion,
+            context: context,
+            capturedAt: Date()
+        )
+        store.record(storedCapture)
+        await store.flushPendingPersistence()
+        store.promptContextDidLoadForTesting = {
+            store.collectionEnabled = false
+        }
+
+        let loadedAfterDisable = await store.promptContext(
+            for: "StoredUniqueToken",
+            context: context
+        )
+
+        XCTAssertEqual(loadedAfterDisable, .empty)
+        store.collectionEnabled = true
+        let queuedCapture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "QueuedUniqueToken",
+            acceptanceScope: .entireSuggestion,
+            context: context,
+            capturedAt: Date()
+        )
+        store.record(queuedCapture)
+        store.collectionEnabled = false
+        await store.flushPendingPersistence()
+
+        let storedSuggestions = try await database.acceptedSuggestions()
+        XCTAssertEqual(storedSuggestions.map(\.id), [storedCapture.id])
+    }
+
+    @MainActor
     func testSettingsLoadDisablesLegacyClipboardAndOCROptIns() throws {
         let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(
