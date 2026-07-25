@@ -13,8 +13,8 @@ sound like the person typing—not an assistant answering them.
 
 > [!WARNING]
 > StenoTab is a public alpha. It is under active development, has no packaged
-> release or notarized distribution build yet, and currently has no license
-> file. Expect rough edges and breaking changes.
+> release or notarized distribution build yet. Expect rough edges and breaking
+> changes.
 
 ## What works today
 
@@ -325,6 +325,10 @@ are described in
 
 The repository is public so the implementation and design can be inspected and
 discussed early. A contribution guide, code of conduct, issue templates, and
-license still need to be selected. Until then, please use
-[GitHub Issues](https://github.com/mia-cx/stenotab/issues) for bugs and design
-discussion before investing in a large change.
+other project-governance details still need to be selected. Until then, please
+use [GitHub Issues](https://github.com/mia-cx/stenotab/issues) for bugs and
+design discussion before investing in a large change.
+
+## License
+
+StenoTab is licensed under the [MCX License (mia.cx), v1.0](LICENSE).
