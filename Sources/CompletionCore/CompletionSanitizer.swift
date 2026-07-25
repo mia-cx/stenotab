@@ -11,6 +11,12 @@ public enum CompletionSanitizer {
         while candidate.first == "\n" || candidate.first == "\r" {
             candidate.removeFirst()
         }
+        // The section sign is prompt-only corpus framing. If a base model
+        // echoes it at the generation boundary, do not insert it into the
+        // user's editor.
+        if candidate.first == "§" {
+            candidate.removeFirst()
+        }
         let visibleStart = candidate.drop(while: \.isWhitespace)
             .lowercased()
         if visibleStart.hasPrefix("[")
@@ -41,12 +47,24 @@ public enum CompletionSanitizer {
                 "website i am typing on:",
                 "kind of input i am typing in:",
                 "text visible on screen around where i am typing:",
+                "some text that is on screen around where i am typing:",
+                "i have this saved to my clipboard:",
                 "recent examples of my writing:",
+                "i have recently written text like:",
+                "other relevant examples of my writing are:",
                 "what i have noticed about my writing:",
+                "i have noticed that my writing typically looks like this:",
                 "my writing style:",
+                "i describe myself like this:",
+                "some additional context that may or may not be relevant to my writing:",
+                "some text that is visible on the screen around where i am typing:",
+                "i am not an assistant and won't explain more than what the conversation requires",
+                "from this point forward i will only write real text",
                 "i am typing the text at the end on my mac",
+                "i am typing the text at the end of this document on my computer",
                 "i'm writing this on my mac",
                 "i'm writing a message in ",
+                "i am writing a message in ",
             ].contains(where: visibleStart.hasPrefix) {
             return ""
         }

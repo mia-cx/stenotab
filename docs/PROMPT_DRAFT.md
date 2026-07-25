@@ -14,71 +14,169 @@ each stable fragment into its corresponding file under
 | Input kind | Live, on by default | AX role, subrole, placeholder, title, and description |
 | Snapshot text / OCR | Live, off by default | Focused app window through ScreenCaptureKit and local Vision OCR |
 | Clipboard | Live, off by default | Current text clipboard contents |
-| Input history | Not connected yet, off by default | Planned encrypted local history retrieval |
+| Frecent input history | Not connected yet; bundled seed fallback is on | Planned encrypted local history retrieval |
+| Semantically relevant history | Not connected yet, off by default | Planned embedding retrieval |
 | Voice assessment | Not connected yet, off by default | Planned local periodic assessment |
-| Custom voice | Live | Prompt Lab setting |
+| Custom personalization | Live | Prompt Lab setting |
 | Text before and after cursor | Live | Focused editor through Accessibility |
 | Shipped seed examples | Live fallback | Bundled Markdown examples; replaced by real history |
 
 ## Full base-model sample
 
 ```text
-I am typing the text at the end on my Mac. Additional context; some of it could be irrelevant:
+I am typing the text at the end of this document on my computer.
 
-I'm writing a comment on youtube.com in Safari.
+Some additional context that may or may not be relevant to my writing:
 
-Text visible on screen around where I am typing:
+I am writing a comment on youtube.com in Safari.
+
+I have recently written text like:
+
+§yeah, deleting the stale permission entry fixed it for me too
+
+§I think the signature changed between those two builds.
+
+Other relevant examples of my writing are:
+
+§yeah, re-adding the signed build fixed Accessibility permissions here too
+
+I have noticed that my writing typically looks like this:
+
+I usually write concise, conversational replies. I use lowercase for casual messages, contractions, direct questions, and technical terminology when it is relevant.
+
+I describe myself like this:
+
+My name is Mia. I usually type in English or Dutch. I keep my writing short and direct.
+
+I am not an assistant and won't explain more than what the conversation requires.
+
+Some text that is visible on the screen around where I am typing:
 
 Alex: This shortcut stopped working after the latest macOS update. Has anyone found a fix?
 
 Robin: Removing the old Accessibility entry and adding the newly signed app fixed it for me.
 
-Clipboard contents:
+I have this saved to my clipboard:
 
 The app needs a stable signing identity so macOS can preserve Accessibility consent between builds.
 
-Recent examples of my writing:
+From this point forward I will only write real text.
 
 My writing:
-yeah, deleting the stale permission entry fixed it for me too
+§oh nice, I didn't realise
+```
+
+## Decomposed prompt
+
+Static first instruction:
+
+```md
+I am typing the text at the end of this document on my computer.
+```
+
+### Focused app context
+
+```md
+Some additional context that may or may not be relevant to my writing:
+
+I am <activity /> [on <website />] in <app />
+<!-- Example: I am writing a comment on youtube.com in Google Chrome -->
+<!-- Example: I am writing a message in Discord -->
+<!-- Example: I am writing a document in Microsoft Word -->
+```
+
+### Statically frecent examples
+
+```md
+I have recently written text like:
+
+§<example frecency-order=0 />
+§<example frecency-order=1 />
+§<example frecency-order=2 />
+§<example frecency-order=3 />
+§<example frecency-order=4 />
+```
+
+### Semantically relevant examples
+
+```md
+Other relevant examples of my writing are:
+
+§<example embedding-proximity=0 />
+§<example embedding-proximity=1 />
+§<example embedding-proximity=2 />
+§<example embedding-proximity=3 />
+§<example embedding-proximity=4 />
+```
+
+### Periodic automatic re-assessment
+
+```md
+I have noticed that my writing typically looks like this:
+
+<assessment>
+<!-- Example: I usually write concise, conversational replies. I use lowercase for casual messages, contractions, direct questions, and technical terminology when it is relevant. -->
+```
+
+### Custom personalisation
+
+```md
+I describe myself like this:
+
+<custom>
+<!-- Example: My name is Mia. I usually type in English or Dutch. I write in a friendly, professional and empathetic voice. I keep my writing short, concise, to the point, and value readability and skimmability. I talk about a lot of technical concepts and will use jargon. -->
+```
+
+### Static perspective fix
+
+```md
+I am not an assistant and won't explain more than what the conversation requires.
+```
+
+### OCR
+
+```md
+Some text that is visible on the screen around where I am typing:
+
+<ocr-content>
+```
+
+### Clipboard
+
+```md
+I have this saved to my clipboard:
+
+<clipboard>
+```
+
+### Final prompt
+
+```md
+From this point forward I will only write real text.
 
 My writing:
-I think the signature changed between those two builds.
-
-What I have noticed about my writing:
-
-I usually write concise, conversational replies. I use lowercase for casual messages, contractions, direct questions, and technical terminology when it is relevant.
-
-My writing style:
-
-Keep this friendly and direct. Avoid sounding like an assistant or explaining more than the conversation needs.
-
-My writing:
-oh nice, I didn't realise
+§<input>
 ```
 
 ## Seed fallback shape
 
-When no real writing history is available, the `Recent examples of my writing`
+When no real writing history is available, the `Frecent examples`
 section above is replaced by the individually editable files in
 `Resources/Prompts/Seed/Examples`. Its composed shape is:
 
 ```text
 Some examples of my writing:
 
-My writing:
-yo what's up with you?
+§yo what's up with you?
 
-My writing:
-hey, are you around later?
+§hey, are you around later?
 
-My writing:
-yeah that makes sense to me
+§yeah that makes sense to me
 
 …
 
 My writing:
-<LIVE TEXT BEFORE THE CURSOR>
+§<LIVE TEXT BEFORE THE CURSOR>
 ```
 
 For a mid-line completion, the final section instead contains the text before

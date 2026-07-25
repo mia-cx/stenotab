@@ -2,12 +2,13 @@ import CompletionCore
 import XCTest
 
 final class CompletionPromptTests: XCTestCase {
-    func testUnavailableContextSourcesDefaultOff() {
+    func testUnavailableContextSourcesUseOnlyTheSeedFallbackByDefault() {
         let defaults = PromptConfiguration.defaults
 
         XCTAssertFalse(defaults.context.includeCurrentWebsite)
         XCTAssertFalse(defaults.context.includeOCR)
-        XCTAssertFalse(defaults.voice.includeInputHistory)
+        XCTAssertTrue(defaults.voice.includeInputHistory)
+        XCTAssertFalse(defaults.voice.includeRelevantInputHistory)
         XCTAssertFalse(defaults.voice.includePeriodicAssessments)
     }
 
@@ -61,28 +62,105 @@ final class CompletionPromptTests: XCTestCase {
         )
 
         XCTAssertTrue(prompt.hasPrefix(
-            "I am typing the text at the end on my Mac. "
-                + "Additional context; some of it could be irrelevant:"
+            "I am typing the text at the end of this document on my computer."
+                + "\n\nSome additional context that may or may not be "
+                + "relevant to my writing:"
         ))
         XCTAssertTrue(prompt.contains(
-            "I'm writing a message on chatgpt.com in ChatGPT."
+            "I am writing a message on chatgpt.com in ChatGPT."
         ))
         XCTAssertFalse(prompt.contains("Application I am typing in:"))
         XCTAssertFalse(prompt.contains("Kind of input I am typing in:"))
         XCTAssertTrue(prompt.contains("Relevant copied text"))
-        XCTAssertTrue(prompt.contains("My writing style:\nUse concise sentences."))
+        XCTAssertTrue(prompt.contains(
+            "I describe myself like this:\n\nUse concise sentences."
+        ))
         XCTAssertTrue(prompt.contains(
             "What comes right after the part I am currently typing:\n"
                 + "after the caret"
         ))
         XCTAssertTrue(prompt.hasSuffix(
             "The part of my writing I am currently typing:\n"
-                + "this sounds like me"
+                + "§this sounds like me"
         ))
         XCTAssertFalse(prompt.contains("Text to continue:"))
         XCTAssertFalse(prompt.contains("Task:"))
         XCTAssertFalse(prompt.contains("Insertion:"))
         XCTAssertFalse(prompt.contains(configuration.completionInstruction))
+    }
+
+    func testBasePromptMatchesWorkshoppedFullSample() {
+        var configuration = PromptConfiguration.defaults
+        configuration.context.includeCurrentWebsite = true
+        configuration.context.includeOCR = true
+        configuration.context.includeClipboard = true
+        configuration.voice.includeInputHistory = true
+        configuration.voice.includePeriodicAssessments = true
+
+        let prompt = CompletionPrompt.base(
+            prefix: "oh nice, I didn't realise",
+            suffix: "",
+            context: CompletionContext(
+                applicationName: "Safari",
+                website: "youtube.com",
+                inputKind: "comment",
+                ocrContent:
+                    "Alex: This shortcut stopped working after the latest "
+                    + "macOS update. Has anyone found a fix?\n\n"
+                    + "Robin: Removing the old Accessibility entry and adding "
+                    + "the newly signed app fixed it for me.",
+                clipboardContent:
+                    "The app needs a stable signing identity so macOS can "
+                    + "preserve Accessibility consent between builds.",
+                inputHistory:
+                    "yeah, deleting the stale permission entry fixed it for "
+                    + "me too\n\n"
+                    + "I think the signature changed between those two builds.",
+                voiceAssessment:
+                    "I usually write concise, conversational replies. I use "
+                    + "lowercase for casual messages, contractions, direct "
+                    + "questions, and technical terminology when it is relevant."
+            ),
+            configuration: configuration
+        )
+
+        XCTAssertEqual(
+            prompt,
+            """
+            I am typing the text at the end of this document on my computer.
+
+            Some additional context that may or may not be relevant to my writing:
+
+            I am writing a comment on youtube.com in Safari.
+
+            I have recently written text like:
+
+            §yeah, deleting the stale permission entry fixed it for me too
+
+            §I think the signature changed between those two builds.
+
+            I have noticed that my writing typically looks like this:
+
+            I usually write concise, conversational replies. I use lowercase for casual messages, contractions, direct questions, and technical terminology when it is relevant.
+
+            I am not an assistant and won't explain more than what the conversation requires.
+
+            Some text that is visible on the screen around where I am typing:
+
+            Alex: This shortcut stopped working after the latest macOS update. Has anyone found a fix?
+
+            Robin: Removing the old Accessibility entry and adding the newly signed app fixed it for me.
+
+            I have this saved to my clipboard:
+
+            The app needs a stable signing identity so macOS can preserve Accessibility consent between builds.
+
+            From this point forward I will only write real text.
+
+            My writing:
+            §oh nice, I didn't realise
+            """
+        )
     }
 
     func testEveryPromptComponentCanBeDisabledIndependently() {
@@ -93,7 +171,15 @@ final class CompletionPromptTests: XCTestCase {
         configuration.context.includeOCR = false
         configuration.context.includeClipboard = false
         configuration.voice.includeInputHistory = false
+        configuration.voice.includeRelevantInputHistory = false
         configuration.voice.includePeriodicAssessments = false
+        configuration.voice.includeCustomVoice = false
+        configuration.voice.customVoice = "Custom preference"
+        configuration.base.includeOpeningInstruction = false
+        configuration.base.includeFocusedContext = false
+        configuration.base.includePerspectiveFix = false
+        configuration.base.includeFinalBoundary = false
+        configuration.base.includeWritingHeading = false
 
         let composed = CompletionPrompt.compose(
             prefix: "hello",
@@ -105,6 +191,7 @@ final class CompletionPromptTests: XCTestCase {
                 ocrContent: "OCR",
                 clipboardContent: "Clipboard",
                 inputHistory: "History",
+                relevantInputHistory: "Relevant history",
                 voiceAssessment: "Assessment"
             ),
             configuration: configuration
@@ -117,11 +204,141 @@ final class CompletionPromptTests: XCTestCase {
             "OCR",
             "Clipboard",
             "History",
+            "Relevant history",
             "Assessment",
+            "Custom preference",
+            "I am typing the text at the end",
+            "From this point forward",
+            "I am not an assistant",
+            "My writing:",
         ] {
             XCTAssertFalse(composed.userMessage.contains(excluded))
             XCTAssertFalse(composed.textCompletionPrompt.contains(excluded))
         }
+    }
+
+    func testFrecentAndSemanticExamplesAreSeparateOrderedComponents() {
+        var configuration = PromptConfiguration.defaults
+        configuration.voice.includeInputHistory = true
+        configuration.voice.includeRelevantInputHistory = true
+        configuration.voice.includePeriodicAssessments = true
+
+        let prompt = CompletionPrompt.base(
+            prefix: "that fixed it",
+            suffix: "",
+            context: CompletionContext(
+                inputHistory: "recent one\n\nrecent two",
+                relevantInputHistory: "similar one\n\nsimilar two",
+                voiceAssessment: "I usually write short replies."
+            ),
+            configuration: configuration
+        )
+
+        let frecent = """
+        I have recently written text like:
+
+        §recent one
+
+        §recent two
+        """
+        let relevant = """
+        Other relevant examples of my writing are:
+
+        §similar one
+
+        §similar two
+        """
+        XCTAssertTrue(prompt.contains(frecent))
+        XCTAssertTrue(prompt.contains(relevant))
+        XCTAssertLessThan(
+            try XCTUnwrap(prompt.range(of: frecent)?.lowerBound),
+            try XCTUnwrap(prompt.range(of: relevant)?.lowerBound)
+        )
+        XCTAssertLessThan(
+            try XCTUnwrap(prompt.range(of: relevant)?.lowerBound),
+            try XCTUnwrap(
+                prompt.range(
+                    of: "I have noticed that my writing typically looks like this:"
+                )?.lowerBound
+            )
+        )
+    }
+
+    func testEveryBaseFramingToggleControlsOnlyItsOwnComponent() {
+        let context = CompletionContext(
+            applicationName: "Safari",
+            website: "youtube.com",
+            inputKind: "comment"
+        )
+
+        var noOpening = PromptConfiguration.defaults
+        noOpening.base.includeOpeningInstruction = false
+        let openingPrompt = CompletionPrompt.base(
+            prefix: "hello",
+            suffix: "",
+            context: context,
+            configuration: noOpening
+        )
+        XCTAssertFalse(openingPrompt.contains(
+            noOpening.baseFraming.openingInstruction
+        ))
+        XCTAssertTrue(openingPrompt.contains(
+            noOpening.baseFraming.focusedContextHeading
+        ))
+
+        var noFocusedContext = PromptConfiguration.defaults
+        noFocusedContext.base.includeFocusedContext = false
+        let focusedPrompt = CompletionPrompt.base(
+            prefix: "hello",
+            suffix: "",
+            context: context,
+            configuration: noFocusedContext
+        )
+        XCTAssertFalse(focusedPrompt.contains(
+            noFocusedContext.baseFraming.focusedContextHeading
+        ))
+        XCTAssertTrue(focusedPrompt.contains(
+            noFocusedContext.baseFraming.perspectiveFix
+        ))
+
+        var noPerspective = PromptConfiguration.defaults
+        noPerspective.base.includePerspectiveFix = false
+        let perspectivePrompt = CompletionPrompt.base(
+            prefix: "hello",
+            suffix: "",
+            context: context,
+            configuration: noPerspective
+        )
+        XCTAssertFalse(perspectivePrompt.contains(
+            noPerspective.baseFraming.perspectiveFix
+        ))
+        XCTAssertTrue(perspectivePrompt.contains(
+            noPerspective.baseFraming.finalBoundary
+        ))
+
+        var noBoundary = PromptConfiguration.defaults
+        noBoundary.base.includeFinalBoundary = false
+        let boundaryPrompt = CompletionPrompt.base(
+            prefix: "hello",
+            suffix: "",
+            context: context,
+            configuration: noBoundary
+        )
+        XCTAssertFalse(boundaryPrompt.contains(
+            noBoundary.baseFraming.finalBoundary
+        ))
+        XCTAssertTrue(boundaryPrompt.hasSuffix("My writing:\n§hello"))
+
+        var noWritingMarker = PromptConfiguration.defaults
+        noWritingMarker.base.includeWritingHeading = false
+        let markerPrompt = CompletionPrompt.base(
+            prefix: "hello",
+            suffix: "",
+            context: context,
+            configuration: noWritingMarker
+        )
+        XCTAssertFalse(markerPrompt.contains("My writing:"))
+        XCTAssertTrue(markerPrompt.hasSuffix("\n\nhello"))
     }
 
     func testOCRContextIsIncludedOnlyWhenEnabled() {
@@ -177,14 +394,37 @@ final class CompletionPromptTests: XCTestCase {
         XCTAssertTrue(composed.userMessage.contains("Working inside: Xcode"))
         XCTAssertTrue(composed.userMessage.contains("Literal user text:\nship it"))
         XCTAssertTrue(
-            composed.textCompletionPrompt.contains("I'm writing in Xcode.")
+            composed.textCompletionPrompt.contains("I am writing in Xcode.")
         )
         XCTAssertFalse(
             composed.textCompletionPrompt.contains("Working inside: Xcode")
         )
         XCTAssertTrue(
-            composed.textCompletionPrompt.hasSuffix("My writing:\nship it")
+            composed.textCompletionPrompt.hasSuffix("My writing:\n§ship it")
         )
+    }
+
+    func testAdvancedFocusedContextProseChangesTheBasePrompt() {
+        var configuration = PromptConfiguration.defaults
+        configuration.context.includeCurrentWebsite = true
+        configuration.baseFraming.focusedActivityPrefix = "I am composing"
+        configuration.baseFraming.focusedWebsiteConnector = "at"
+        configuration.baseFraming.focusedApplicationConnector = "using"
+
+        let prompt = CompletionPrompt.base(
+            prefix: "ship it",
+            suffix: "",
+            context: CompletionContext(
+                applicationName: "Safari",
+                website: "example.com",
+                inputKind: "comment"
+            ),
+            configuration: configuration
+        )
+
+        XCTAssertTrue(prompt.contains(
+            "I am composing a comment at example.com using Safari."
+        ))
     }
 
     func testBasePromptPreservesTrailingWhitespaceInLiteralUserText() {
@@ -196,7 +436,7 @@ final class CompletionPromptTests: XCTestCase {
         )
 
         XCTAssertTrue(
-            prompt.hasSuffix("My writing:\nhello  ")
+            prompt.hasSuffix("My writing:\n§hello  ")
         )
     }
 
@@ -208,7 +448,7 @@ final class CompletionPromptTests: XCTestCase {
             configuration: .defaults
         )
 
-        XCTAssertTrue(prompt.hasSuffix("My writing:\nDo anyt"))
+        XCTAssertTrue(prompt.hasSuffix("My writing:\n§Do anyt"))
         XCTAssertFalse(prompt.contains("What comes next:"))
         XCTAssertFalse(prompt.contains("Continue the"))
     }
@@ -222,11 +462,11 @@ final class CompletionPromptTests: XCTestCase {
         )
 
         XCTAssertTrue(seeded.contains("Some examples of my writing:"))
-        XCTAssertTrue(seeded.contains("My writing:\nhey, are you around later?"))
+        XCTAssertTrue(seeded.contains("§hey, are you around later?"))
         XCTAssertTrue(seeded.contains(
-            "My writing:\nI'm not sure why it's doing that."
+            "§I'm not sure why it's doing that."
         ))
-        XCTAssertTrue(seeded.hasSuffix("My writing:\nyo what's up"))
+        XCTAssertTrue(seeded.hasSuffix("My writing:\n§yo what's up"))
 
         var withHistory = PromptConfiguration.defaults
         withHistory.voice.includeInputHistory = true
@@ -242,7 +482,8 @@ final class CompletionPromptTests: XCTestCase {
         XCTAssertFalse(personalized.contains("Some examples of my writing:"))
         XCTAssertFalse(personalized.contains("hey, are you around later?"))
         XCTAssertTrue(personalized.contains(
-            "Recent examples of my writing:\nyo, did you see the update?"
+            "I have recently written text like:\n\n"
+                + "§yo, did you see the update?"
         ))
     }
 
@@ -288,10 +529,9 @@ final class CompletionPromptTests: XCTestCase {
             configuration: configuration
         )
         XCTAssertTrue(prompt.hasPrefix(
-            "I am typing the text at the end on my Mac. "
-                + "Additional context; some of it could be irrelevant:"
+            "I am typing the text at the end of this document on my computer."
         ))
-        XCTAssertTrue(prompt.hasSuffix("My writing:\nhello"))
+        XCTAssertTrue(prompt.hasSuffix("My writing:\n§hello"))
     }
 
     func testPromptOverridesFollowNewDefaultsForUntouchedComponents() throws {
@@ -335,8 +575,26 @@ final class CompletionPromptTests: XCTestCase {
         configuration.context.includeOCR = true
         configuration.context.includeClipboard = true
         configuration.voice.includeInputHistory = true
+        configuration.voice.includeRelevantInputHistory = true
         configuration.voice.includePeriodicAssessments = true
+        configuration.voice.includeCustomVoice = false
         configuration.voice.customVoice = "Use my punctuation."
+        configuration.base.includeOpeningInstruction = false
+        configuration.base.includeFocusedContext = false
+        configuration.base.includePerspectiveFix = false
+        configuration.base.includeFinalBoundary = false
+        configuration.base.includeWritingHeading = false
+        configuration.baseFraming.openingInstruction = "Open"
+        configuration.baseFraming.focusedContextHeading = "Focus"
+        configuration.baseFraming.focusedActivityPrefix = "I compose"
+        configuration.baseFraming.focusedWebsiteConnector = "at"
+        configuration.baseFraming.focusedApplicationConnector = "using"
+        configuration.baseFraming.relevantInputHistoryHeading = "Similar"
+        configuration.baseFraming.perspectiveFix =
+            "I will continue as myself."
+        configuration.baseFraming.finalBoundary = "Boundary"
+        configuration.baseFraming.writingHeading = "Mine:"
+        configuration.baseFraming.examplePrefix = "¶"
         configuration.systemInstruction = "System"
         configuration.completionInstruction = "Complete"
         configuration.framing.clipboardHeading = "Copied reference:"
@@ -349,6 +607,40 @@ final class CompletionPromptTests: XCTestCase {
         )
 
         XCTAssertEqual(restored, configuration)
+    }
+
+    func testBasePerspectiveFixPersistsAsAnOverride() throws {
+        let defaults = PromptConfiguration.defaults
+        var customized = defaults
+        customized.baseFraming.perspectiveFix =
+            "I will keep writing naturally."
+
+        let overrides = PromptConfiguration.Overrides(
+            configuration: customized,
+            relativeTo: defaults
+        )
+        let data = try JSONEncoder().encode(overrides)
+        let restored = try JSONDecoder().decode(
+            PromptConfiguration.Overrides.self,
+            from: data
+        )
+
+        XCTAssertEqual(
+            restored.applying(to: defaults).baseFraming.perspectiveFix,
+            "I will keep writing naturally."
+        )
+    }
+
+    func testLegacyConfigurationUsesBundledBasePerspectiveFix() throws {
+        let restored = try JSONDecoder().decode(
+            PromptConfiguration.self,
+            from: Data("{}".utf8)
+        )
+
+        XCTAssertEqual(
+            restored.baseFraming.perspectiveFix,
+            PromptConfiguration.defaults.baseFraming.perspectiveFix
+        )
     }
 
 }

@@ -1276,7 +1276,10 @@ private struct PromptLabView: View {
             VStack(alignment: .leading, spacing: 20) {
                 contextSection
                 voiceSection
-                instructionSection
+                perspectiveSection
+                immediateContextSection
+                finalPromptSection
+                chatInstructionSection
                 previewSection
                 bottomControls
             }
@@ -1290,21 +1293,33 @@ private struct PromptLabView: View {
 
     private var contextSection: some View {
         SettingsSection(title: "Context") {
-            if store.configuration.debugMode {
-                DebugFramingEditor(
-                    label: "Section heading",
-                    text: configuration.framing.contextHeading,
-                    dynamicValue: "CONTEXT_COMPONENTS",
-                    valueOnNewLine: true
-                )
-                Divider()
-            }
+            PromptToggleRow(
+                title: "Opening instruction",
+                detail: "Frame the request as text being written on this Mac.",
+                isOn: configuration.base.includeOpeningInstruction,
+                debugMode: store.configuration.debugMode,
+                framing: configuration.baseFraming.openingInstruction,
+                dynamicValue: ""
+            )
+            Divider()
+            PromptToggleRow(
+                title: "Focused app context",
+                detail:
+                    "Describe the current activity, website, and application "
+                    + "in the writer's first person.",
+                isOn: configuration.base.includeFocusedContext,
+                debugMode: store.configuration.debugMode,
+                framing: configuration.baseFraming.focusedContextHeading,
+                dynamicValue: "FOCUSED_CONTEXT",
+                valueOnNewLine: true
+            )
+            Divider()
             PromptToggleRow(
                 title: "Current application",
                 detail: "Include the name of the app containing the focused editor.",
                 isOn: configuration.context.includeCurrentApplication,
                 debugMode: store.configuration.debugMode,
-                framing: configuration.framing.applicationPrefix,
+                framing: configuration.baseFraming.focusedApplicationConnector,
                 dynamicValue: "CURRENT_APP"
             )
             Divider()
@@ -1314,7 +1329,7 @@ private struct PromptLabView: View {
                 badge: "Source pending",
                 isOn: configuration.context.includeCurrentWebsite,
                 debugMode: store.configuration.debugMode,
-                framing: configuration.framing.websitePrefix,
+                framing: configuration.baseFraming.focusedWebsiteConnector,
                 dynamicValue: "CURRENT_WEBSITE"
             )
             Divider()
@@ -1323,10 +1338,123 @@ private struct PromptLabView: View {
                 detail: "Include whether this looks like a message box, text area, or field.",
                 isOn: configuration.context.includeInputKind,
                 debugMode: store.configuration.debugMode,
-                framing: configuration.framing.inputKindPrefix,
+                framing: configuration.baseFraming.focusedActivityPrefix,
                 dynamicValue: "INPUT_KIND"
             )
+        }
+    }
+
+    private var voiceSection: some View {
+        SettingsSection(title: "User Voice") {
+            PromptToggleRow(
+                title: "Frecent examples",
+                detail:
+                    "Include recent and frequently useful writing examples. "
+                    + "Neutral bundled examples are used until history exists.",
+                badge: "Source pending",
+                isOn: configuration.voice.includeInputHistory,
+                debugMode: store.configuration.debugMode,
+                framing: configuration.framing.inputHistoryHeading,
+                dynamicValue: "FRECENT_EXAMPLES",
+                valueOnNewLine: true
+            )
             Divider()
+            PromptToggleRow(
+                title: "Semantically relevant examples",
+                detail:
+                    "Retrieve writing examples whose input context is closest "
+                    + "to the current text.",
+                badge: "Source pending",
+                isOn: configuration.voice.includeRelevantInputHistory,
+                debugMode: store.configuration.debugMode,
+                framing: configuration.baseFraming.relevantInputHistoryHeading,
+                dynamicValue: "RELEVANT_EXAMPLES",
+                valueOnNewLine: true
+            )
+            Divider()
+            PromptToggleRow(
+                title: "Periodic assessments",
+                detail:
+                    "Include a locally maintained summary of capitalization, "
+                    + "formality, jargon, vocabulary, punctuation, and tone.",
+                badge: "Source pending",
+                isOn: configuration.voice.includePeriodicAssessments,
+                debugMode: store.configuration.debugMode,
+                framing: configuration.framing.assessmentHeading,
+                dynamicValue: "VOICE_ASSESSMENT",
+                valueOnNewLine: true
+            )
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Custom personalization")
+                            .font(.headline)
+                        Text(
+                            "Add durable details and preferences that should "
+                                + "apply to every completion."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Toggle(
+                        "Custom personalization",
+                        isOn: configuration.voice.includeCustomVoice
+                    )
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .frame(width: 54, alignment: .trailing)
+                }
+                TextEditor(text: configuration.voice.customVoice)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .frame(minHeight: 92)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(nsColor: .textBackgroundColor))
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.secondary.opacity(0.22))
+                    }
+                    .disabled(!store.configuration.voice.includeCustomVoice)
+                    .opacity(
+                        store.configuration.voice.includeCustomVoice ? 1 : 0.55
+                    )
+                if store.configuration.debugMode {
+                    DebugFramingEditor(
+                        label: "Custom personalization heading",
+                        text: configuration.framing.customVoiceHeading,
+                        dynamicValue: "CUSTOM_VOICE",
+                        valueOnNewLine: true
+                    )
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var perspectiveSection: some View {
+        SettingsSection(title: "Perspective") {
+            PromptToggleRow(
+                title: "Writer perspective",
+                detail:
+                    "Keep a causal model in the user's voice instead of an "
+                    + "assistant voice.",
+                isOn: configuration.base.includePerspectiveFix,
+                debugMode: store.configuration.debugMode,
+                framing: configuration.baseFraming.perspectiveFix,
+                dynamicValue: ""
+            )
+        }
+    }
+
+    private var immediateContextSection: some View {
+        SettingsSection(title: "Immediate Context") {
             PromptToggleRow(
                 title: "Snapshots / OCR",
                 detail:
@@ -1351,80 +1479,45 @@ private struct PromptLabView: View {
         }
     }
 
-    private var voiceSection: some View {
-        SettingsSection(title: "User Voice") {
+    private var finalPromptSection: some View {
+        SettingsSection(title: "Final Prompt") {
             PromptToggleRow(
-                title: "Input history",
+                title: "Real-text boundary",
                 detail:
-                    "Retrieve relevant passages from encrypted local history "
-                    + "using embeddings and full-text storage.",
-                badge: "Source pending",
-                isOn: configuration.voice.includeInputHistory,
+                    "Mark the point after which the model should emit only "
+                    + "the user's actual writing.",
+                isOn: configuration.base.includeFinalBoundary,
                 debugMode: store.configuration.debugMode,
-                framing: configuration.framing.inputHistoryHeading,
-                dynamicValue: "RELEVANT_HISTORY",
-                valueOnNewLine: true
+                framing: configuration.baseFraming.finalBoundary,
+                dynamicValue: ""
             )
             Divider()
             PromptToggleRow(
-                title: "Periodic assessments",
+                title: "Writing marker",
                 detail:
-                    "Include a locally maintained summary of capitalization, "
-                    + "formality, jargon, vocabulary, punctuation, and tone.",
-                badge: "Source pending",
-                isOn: configuration.voice.includePeriodicAssessments,
+                    "Prefix the literal input with “My writing:” and the § "
+                    + "marker used by examples.",
+                isOn: configuration.base.includeWritingHeading,
                 debugMode: store.configuration.debugMode,
-                framing: configuration.framing.assessmentHeading,
-                dynamicValue: "VOICE_ASSESSMENT",
+                framing: configuration.baseFraming.writingHeading,
+                dynamicValue: "§USER_INPUT",
                 valueOnNewLine: true
             )
-            Divider()
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Custom voice")
-                    .font(.headline)
-                Text(
-                    "Add durable preferences that should apply to every completion."
+            if store.configuration.debugMode {
+                DebugFramingEditor(
+                    label: "Writing marker prefix",
+                    text: configuration.baseFraming.examplePrefix,
+                    dynamicValue: "USER_INPUT",
+                    valueOnNewLine: false
                 )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                TextEditor(text: configuration.voice.customVoice)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-                    .frame(minHeight: 92)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color(nsColor: .textBackgroundColor))
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.secondary.opacity(0.22))
-                    }
-                if store.configuration.debugMode {
-                    DebugFramingEditor(
-                        text: configuration.framing.customVoiceHeading,
-                        dynamicValue: "CUSTOM_VOICE",
-                        valueOnNewLine: true
-                    )
-                }
             }
-            .padding(.vertical, 4)
         }
     }
 
-    private var instructionSection: some View {
-        SettingsSection(title: "Completion Behavior") {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(
-                    "Local base models receive first-person context and continue "
-                        + "directly from the live text. No instruction is added."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-
-            if store.configuration.debugMode {
-                Divider()
+    @ViewBuilder
+    private var chatInstructionSection: some View {
+        if store.configuration.debugMode {
+            SettingsSection(title: "Chat API") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Completion instruction (Chat API)")
                         .font(.headline)
@@ -1538,7 +1631,7 @@ private struct PromptLabView: View {
         SettingsSection(title: "Advanced") {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Label("Debug mode", systemImage: "ladybug")
+                    Label("Advanced mode", systemImage: "slider.horizontal.3")
                         .font(.headline)
                     Text(
                         "Reveal the editable framing used around every "
@@ -1549,7 +1642,7 @@ private struct PromptLabView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Toggle("Debug mode", isOn: configuration.debugMode)
+                Toggle("Advanced mode", isOn: configuration.debugMode)
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.mini)
@@ -1668,12 +1761,14 @@ private struct DebugFramingEditor: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
-                Text(dynamicValue)
-                    .font(.system(.caption2, design: .monospaced).bold())
-                    .foregroundStyle(.purple)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(.purple.opacity(0.11), in: Capsule())
+                if !dynamicValue.isEmpty {
+                    Text(dynamicValue)
+                        .font(.system(.caption2, design: .monospaced).bold())
+                        .foregroundStyle(.purple)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(.purple.opacity(0.11), in: Capsule())
+                }
             }
         }
         .padding(10)

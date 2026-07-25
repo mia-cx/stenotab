@@ -97,6 +97,18 @@ final class CompletionSanitizerTests: XCTestCase {
         )
     }
 
+    func testRemovesThePromptOnlyWritingMarkerFromACompletion() {
+        XCTAssertEqual(
+            CompletionSanitizer.sanitize(
+                "§hing I can do",
+                after: "anyt",
+                maximumWords: 8,
+                inferLeadingSpace: false
+            ),
+            "hing I can do"
+        )
+    }
+
     func testRejectsInternalPromptScaffolding() {
         for leaked in [
             "[Completion instructions]",
@@ -110,8 +122,20 @@ final class CompletionSanitizerTests: XCTestCase {
             "Some examples of my writing:",
             "My writing:",
             "I am typing the text at the end on my Mac.",
+            "I am typing the text at the end of this document on my computer.",
             "I'm writing this on my Mac",
             "I'm writing a message in ChatGPT.",
+            "I am writing a message in ChatGPT.",
+            "Some text that is on screen around where I am typing:",
+            "I have this saved to my clipboard:",
+            "I have recently written text like:",
+            "Other relevant examples of my writing are:",
+            "I have noticed that my writing typically looks like this:",
+            "I describe myself like this:",
+            "Some additional context that may or may not be relevant to my writing:",
+            "Some text that is visible on the screen around where I am typing:",
+            "I am not an assistant and won't explain more than what the conversation requires.",
+            "From this point forward I will only write real text.",
         ] {
             XCTAssertEqual(
                 CompletionSanitizer.sanitize(

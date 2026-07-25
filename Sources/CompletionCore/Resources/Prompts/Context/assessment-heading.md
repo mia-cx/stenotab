@@ -1,1 +1,1 @@
-What I have noticed about my writing:
+I have noticed that my writing typically looks like this:

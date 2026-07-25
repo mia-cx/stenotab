@@ -1,1 +1,1 @@
-Clipboard contents:
+I have this saved to my clipboard:

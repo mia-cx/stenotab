@@ -1,1 +1,1 @@
-Recent examples of my writing:
+I have recently written text like:

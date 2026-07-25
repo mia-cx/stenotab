@@ -1,7 +1,11 @@
 import Foundation
 
 enum PromptResources {
-    static let basePreamble = load("Base/preamble")
+    static let baseOpeningInstruction = load("Base/opening-instruction")
+    static let baseFocusedContextHeading = load("Base/focused-context-heading")
+    static let basePerspectiveFix = load("Base/perspective-fix")
+    static let baseFinalBoundary = load("Base/final-boundary")
+    static let baseExamplePrefix = load("Base/example-prefix")
     static let baseWritingHeading = load("Base/writing-heading")
     static let baseBeforeCursorHeading = load("Base/before-cursor-heading")
     static let baseCurrentPartHeading = load("Base/current-part-heading")
@@ -20,6 +24,8 @@ enum PromptResources {
     static let ocrHeading = load("Context/ocr-heading")
     static let clipboardHeading = load("Context/clipboard-heading")
     static let inputHistoryHeading = load("Context/input-history-heading")
+    static let relevantInputHistoryHeading =
+        load("Context/relevant-input-history-heading")
     static let assessmentHeading = load("Context/assessment-heading")
     static let customVoiceHeading = load("Context/custom-voice-heading")
     static let suffixHeading = load("Context/suffix-heading")

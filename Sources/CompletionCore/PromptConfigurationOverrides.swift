@@ -126,8 +126,125 @@ extension PromptConfiguration {
             }
         }
 
+        public struct BaseFramingOverrides: Codable, Sendable, Equatable {
+            public var openingInstruction: String?
+            public var focusedContextHeading: String?
+            public var focusedActivityPrefix: String?
+            public var focusedWebsiteConnector: String?
+            public var focusedApplicationConnector: String?
+            public var relevantInputHistoryHeading: String?
+            public var perspectiveFix: String?
+            public var finalBoundary: String?
+            public var writingHeading: String?
+            public var examplePrefix: String?
+
+            init(
+                configuration: BaseFraming,
+                relativeTo defaults: BaseFraming
+            ) {
+                openingInstruction = Self.difference(
+                    configuration.openingInstruction,
+                    defaults.openingInstruction
+                )
+                focusedContextHeading = Self.difference(
+                    configuration.focusedContextHeading,
+                    defaults.focusedContextHeading
+                )
+                focusedActivityPrefix = Self.difference(
+                    configuration.focusedActivityPrefix,
+                    defaults.focusedActivityPrefix
+                )
+                focusedWebsiteConnector = Self.difference(
+                    configuration.focusedWebsiteConnector,
+                    defaults.focusedWebsiteConnector
+                )
+                focusedApplicationConnector = Self.difference(
+                    configuration.focusedApplicationConnector,
+                    defaults.focusedApplicationConnector
+                )
+                relevantInputHistoryHeading = Self.difference(
+                    configuration.relevantInputHistoryHeading,
+                    defaults.relevantInputHistoryHeading
+                )
+                perspectiveFix = Self.difference(
+                    configuration.perspectiveFix,
+                    defaults.perspectiveFix
+                )
+                finalBoundary = Self.difference(
+                    configuration.finalBoundary,
+                    defaults.finalBoundary
+                )
+                writingHeading = Self.difference(
+                    configuration.writingHeading,
+                    defaults.writingHeading
+                )
+                examplePrefix = Self.difference(
+                    configuration.examplePrefix,
+                    defaults.examplePrefix
+                )
+            }
+
+            public var isEmpty: Bool {
+                openingInstruction == nil
+                    && focusedContextHeading == nil
+                    && focusedActivityPrefix == nil
+                    && focusedWebsiteConnector == nil
+                    && focusedApplicationConnector == nil
+                    && relevantInputHistoryHeading == nil
+                    && perspectiveFix == nil
+                    && finalBoundary == nil
+                    && writingHeading == nil
+                    && examplePrefix == nil
+            }
+
+            func apply(to framing: inout BaseFraming) {
+                if let openingInstruction {
+                    framing.openingInstruction = openingInstruction
+                }
+                if let focusedContextHeading {
+                    framing.focusedContextHeading = focusedContextHeading
+                }
+                if let focusedActivityPrefix {
+                    framing.focusedActivityPrefix = focusedActivityPrefix
+                }
+                if let focusedWebsiteConnector {
+                    framing.focusedWebsiteConnector =
+                        focusedWebsiteConnector
+                }
+                if let focusedApplicationConnector {
+                    framing.focusedApplicationConnector =
+                        focusedApplicationConnector
+                }
+                if let relevantInputHistoryHeading {
+                    framing.relevantInputHistoryHeading =
+                        relevantInputHistoryHeading
+                }
+                if let perspectiveFix {
+                    framing.perspectiveFix = perspectiveFix
+                }
+                if let finalBoundary {
+                    framing.finalBoundary = finalBoundary
+                }
+                if let writingHeading {
+                    framing.writingHeading = writingHeading
+                }
+                if let examplePrefix {
+                    framing.examplePrefix = examplePrefix
+                }
+            }
+
+            private static func difference(
+                _ value: String,
+                _ defaultValue: String
+            ) -> String? {
+                value == defaultValue ? nil : value
+            }
+        }
+
         public var context: ContextOptions?
         public var voice: VoiceOptions?
+        public var base: BaseOptions?
+        public var baseFraming: BaseFramingOverrides?
         public var systemInstruction: String?
         public var completionInstruction: String?
         public var framing: FramingOverrides?
@@ -143,6 +260,16 @@ extension PromptConfiguration {
             voice = configuration.voice == defaults.voice
                 ? nil
                 : configuration.voice
+            base = configuration.base == defaults.base
+                ? nil
+                : configuration.base
+            let baseFramingOverrides = BaseFramingOverrides(
+                configuration: configuration.baseFraming,
+                relativeTo: defaults.baseFraming
+            )
+            baseFraming = baseFramingOverrides.isEmpty
+                ? nil
+                : baseFramingOverrides
             systemInstruction = configuration.systemInstruction
                 == defaults.systemInstruction
                 ? nil
@@ -164,6 +291,8 @@ extension PromptConfiguration {
         public var isEmpty: Bool {
             context == nil
                 && voice == nil
+                && base == nil
+                && baseFraming == nil
                 && systemInstruction == nil
                 && completionInstruction == nil
                 && framing == nil
@@ -180,6 +309,10 @@ extension PromptConfiguration {
             if let voice {
                 result.voice = voice
             }
+            if let base {
+                result.base = base
+            }
+            baseFraming?.apply(to: &result.baseFraming)
             if let systemInstruction {
                 result.systemInstruction = systemInstruction
             }
