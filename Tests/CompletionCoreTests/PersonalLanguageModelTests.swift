@@ -1322,6 +1322,110 @@ final class PersonalLanguageModelTests: XCTestCase {
         XCTAssertEqual(model.vocabularyEntries(), [])
     }
 
+    func testFinalDirectEditDoesNotTrustLongCoincidentalAnchor() {
+        let date = Date(timeIntervalSince1970: 134.3)
+        let initial = CapturedFieldState(
+            text: "old anchor",
+            selection: UTF16Selection(location: 10, length: 0)
+        )
+        let predictedFinal = CapturedFieldState(
+            text: "old anchortyped",
+            selection: UTF16Selection(location: 15, length: 0)
+        )
+        let authoritativeText = "unrelated anchor model words"
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: CapturedFieldState(
+                text: authoritativeText,
+                selection: UTF16Selection(
+                    location: authoritativeText.utf16.count,
+                    length: 0
+                )
+            ),
+            edits: [
+                WritingEditCapture(
+                    insertedText: "typed",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: predictedFinal.selection,
+                    fieldBefore: initial,
+                    fieldAfter: predictedFinal,
+                    startedAt: date,
+                    endedAt: date
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date,
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(model.vocabularyEntries(), [])
+    }
+
+    func testLiteralSuffixDoesNotAuthorizeImplausibleAnchorCorrection() {
+        let date = Date(timeIntervalSince1970: 134.4)
+        let initial = CapturedFieldState(
+            text: " tail",
+            selection: UTF16Selection(location: 0, length: 0)
+        )
+        let afterDirect = CapturedFieldState(
+            text: "direct  tail",
+            selection: UTF16Selection(location: 7, length: 0)
+        )
+        let predictedFinal = CapturedFieldState(
+            text: "direct model  tail",
+            selection: UTF16Selection(location: 13, length: 0)
+        )
+        let authoritativeText = "corrected model direct wrong tail"
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: CapturedFieldState(
+                text: authoritativeText,
+                selection: UTF16Selection(
+                    location: authoritativeText.utf16.count,
+                    length: 0
+                )
+            ),
+            edits: [
+                WritingEditCapture(
+                    insertedText: "direct ",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: afterDirect.selection,
+                    fieldBefore: initial,
+                    fieldAfter: afterDirect,
+                    startedAt: date,
+                    endedAt: date
+                ),
+                WritingEditCapture(
+                    insertedText: "model ",
+                    provenance: .acceptedSuggestion,
+                    selectionBefore: afterDirect.selection,
+                    selectionAfter: predictedFinal.selection,
+                    fieldBefore: afterDirect,
+                    fieldAfter: predictedFinal,
+                    startedAt: date.addingTimeInterval(1),
+                    endedAt: date.addingTimeInterval(1)
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date.addingTimeInterval(1),
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(model.vocabularyEntries(), [])
+    }
+
     func testPureDeletionDoesNotCreatePositiveTypingEvidence() {
         let date = Date(timeIntervalSince1970: 135)
         let initial = CapturedFieldState(
@@ -1425,6 +1529,48 @@ final class PersonalLanguageModelTests: XCTestCase {
                     selectionAfter: final.selection,
                     fieldBefore: initial,
                     fieldAfter: final,
+                    startedAt: date,
+                    endedAt: date
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date,
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(
+            model.vocabularyEntries().map(\.normalized),
+            ["good"]
+        )
+    }
+
+    func testLegacyReplacementWithoutFieldAfterLearnsInsertion() {
+        let date = Date(timeIntervalSince1970: 137.5)
+        let initial = CapturedFieldState(
+            text: "existing bad",
+            selection: UTF16Selection(location: 9, length: 3)
+        )
+        let final = CapturedFieldState(
+            text: "existing good",
+            selection: UTF16Selection(location: 13, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: final,
+            edits: [
+                WritingEditCapture(
+                    insertedText: "good",
+                    deletedText: "bad",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: final.selection,
+                    fieldBefore: initial,
+                    fieldAfter: nil,
                     startedAt: date,
                     endedAt: date
                 ),

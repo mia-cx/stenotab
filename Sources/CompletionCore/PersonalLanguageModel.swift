@@ -1087,15 +1087,16 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
                 location: anchoredStart,
                 length: anchoredEnd - anchoredStart
             )
-            let hasLiteralMappedBoundary =
-                mappedStart != nil || mappedEnd != nil
             if
                 candidate.isValid(for: authoritativeAfter),
-                hasLiteralMappedBoundary
-                    || utf16Substring(
-                        in: authoritativeAfter,
-                        selection: candidate
-                    ) == edit.insertedText
+                let candidateText = utf16Substring(
+                    in: authoritativeAfter,
+                    selection: candidate
+                ),
+                isPlausibleAuthoritativeCorrection(
+                    candidateText,
+                    for: edit.insertedText
+                )
             {
                 return candidate
             }
@@ -1210,6 +1211,47 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         return textUnits.suffix(suffixUnits.count).elementsEqual(suffixUnits)
     }
 
+    private static func isPlausibleAuthoritativeCorrection(
+        _ candidate: String,
+        for insertedText: String
+    ) -> Bool {
+        if candidate == insertedText {
+            return true
+        }
+        let original = Array(insertedText)
+        let corrected = Array(candidate)
+        guard !original.isEmpty else { return corrected.isEmpty }
+        let maximumDistance = 2
+        guard
+            abs(original.count - corrected.count) <= maximumDistance
+        else {
+            return false
+        }
+        var previous = Array(0...corrected.count)
+        for (originalIndex, originalCharacter) in original.enumerated() {
+            var current = Array(
+                repeating: 0,
+                count: corrected.count + 1
+            )
+            current[0] = originalIndex + 1
+            for (correctedIndex, correctedCharacter) in
+                corrected.enumerated()
+            {
+                current[correctedIndex + 1] = min(
+                    current[correctedIndex] + 1,
+                    previous[correctedIndex + 1] + 1,
+                    previous[correctedIndex]
+                        + (originalCharacter == correctedCharacter ? 0 : 1)
+                )
+            }
+            if current.min() ?? 0 > maximumDistance {
+                return false
+            }
+            previous = current
+        }
+        return previous[corrected.count] <= maximumDistance
+    }
+
     private static func resolvedFieldAfter(
         _ edit: WritingEditCapture
     ) -> CapturedFieldState? {
@@ -1220,7 +1262,10 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         let replacementSelection: UTF16Selection
         if let deletedText = edit.deletedText, !deletedText.isEmpty {
             replacementSelection = UTF16Selection(
-                location: edit.selectionAfter.location,
+                location:
+                    edit.insertedText.isEmpty
+                    ? edit.selectionAfter.location
+                    : edit.selectionBefore.location,
                 length: deletedText.utf16.count
             )
         } else {
