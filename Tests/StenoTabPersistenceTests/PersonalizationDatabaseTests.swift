@@ -2174,6 +2174,95 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(eventCount, 0)
     }
 
+    func testInvalidSourceConsentFindsDependentWithSubstitutedKind()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let sourceContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Source",
+            editorIdentifier: "source"
+        )
+        let source = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                id: UUID(),
+                fieldText: "private source",
+                selection: UTF16Selection(location: 14, length: 0),
+                insertion: " text",
+                acceptanceScope: .entireSuggestion,
+                context: sourceContext,
+                capturedAt: Date(timeIntervalSince1970: 880)
+            )
+        )
+        let dependent = makeCompletionEpisode(
+            id: UUID(),
+            input: "dependent prompt",
+            suggestion: " dependent suggestion",
+            outcome: "",
+            date: Date(timeIntervalSince1970: 881),
+            sourceEventIDs: [source.id],
+            sourceContexts: [sourceContext]
+        )
+        try await fixture.database.record(source)
+        try await fixture.database.record(dependent)
+        try await fixture.database.replaceEventKindForTesting(
+            eventID: dependent.id,
+            kind: "writing_episode"
+        )
+        try await fixture.database
+            .corruptAuthenticatedConsentStateForTesting(
+                eventID: source.id
+            )
+
+        _ = try await fixture.database.reconcilePendingConsentEvents(
+            collectionGeneration: 0,
+            directTypingGeneration: 0
+        )
+
+        let eventCount = try await fixture.database.eventCount()
+        XCTAssertEqual(eventCount, 0)
+    }
+
+    func testInvalidConsentCleanupFailsClosedForFutureEpisodeVersion()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let source = makeEpisode(
+            id: UUID(),
+            text: "private source",
+            app: "com.example.Source",
+            editor: "source"
+        )
+        try await fixture.database.record(source)
+        try await fixture.database.recordUnsupportedCompletionEpisodeForTesting(
+            id: UUID(),
+            storageVersion: 999,
+            capturedAt: Date(timeIntervalSince1970: 891)
+        )
+        try await fixture.database
+            .corruptAuthenticatedConsentStateForTesting(
+                eventID: source.id
+            )
+
+        do {
+            _ = try await fixture.database.reconcilePendingConsentEvents(
+                collectionGeneration: 0,
+                directTypingGeneration: 0
+            )
+            XCTFail("Expected consent cleanup to fail closed")
+        } catch {
+            XCTAssertTrue(
+                String(describing: error).contains(
+                    "Unsupported completion episode storage version"
+                )
+            )
+        }
+
+        let eventCount = try await fixture.database.eventCount()
+        XCTAssertEqual(eventCount, 2)
+    }
+
     func testStorageCapRecomputesAfterSourceCascadeDeletion() async throws {
         let fixture = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }

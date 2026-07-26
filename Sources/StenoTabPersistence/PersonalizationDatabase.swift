@@ -2888,47 +2888,70 @@ public actor PersonalizationDatabase {
             """
             SELECT id, kind, payload_sealed, payload_hmac
             FROM personalization_event
-            WHERE kind = ?
             ORDER BY sequence ASC
-            """,
-            bindings: [.text(Self.completionEpisodeKind)]
+            """
         )
         var sourceIDsByCompletionEventID: [String: Set<String>] = [:]
-        var corruptCompletionEventIDs = Set<String>()
+        var corruptEventIDs = Set<String>()
         for row in rows {
             guard let completionEventID = row.text(at: 0) else {
                 continue
             }
-            let storedEpisode: StoredCompletionEpisode
+            guard let rowKind = row.text(at: 1) else {
+                corruptEventIDs.insert(completionEventID)
+                continue
+            }
+            let payload: Data
             do {
-                let payload = try validatedEventPayload(
+                // Authenticate every event independently of its semantic kind.
+                // `kind` is plaintext indexing metadata and may have been
+                // substituted to hide a completion episode from cleanup.
+                payload = try validatedEventPayload(
                     row,
                     idIndex: 0,
                     kindIndex: 1,
                     payloadIndex: 2,
                     hmacIndex: 3,
-                    expectedKind: Self.completionEpisodeKind
+                    expectedKind: rowKind
                 )
-                guard
-                    let header = try? decoder.decode(
-                        StoredCompletionEpisodeHeader.self,
-                        from: payload
-                    ),
-                    header.storageVersion
-                        == StoredCompletionEpisode.currentStorageVersion
-                else {
-                    corruptCompletionEventIDs.insert(completionEventID)
-                    continue
+            } catch {
+                // A corrupt event cannot provide authenticated lineage. Delete
+                // it fail closed so restoring replayed row bytes cannot
+                // resurrect content after its source was removed.
+                corruptEventIDs.insert(completionEventID)
+                continue
+            }
+            guard
+                let header = try? decoder.decode(
+                    StoredCompletionEpisodeHeader.self,
+                    from: payload
+                )
+            else {
+                if rowKind == Self.completionEpisodeKind {
+                    corruptEventIDs.insert(completionEventID)
                 }
+                continue
+            }
+            guard
+                header.storageVersion
+                    == StoredCompletionEpisode.currentStorageVersion
+            else {
+                // An authenticated newer-version episode may be unrelated to
+                // this consent event, but this build cannot inspect its
+                // lineage. Abort the transaction without deleting either.
+                throw PersonalizationPersistenceError.database(
+                    "Unsupported completion episode storage version "
+                        + "\(header.storageVersion)"
+                )
+            }
+            let storedEpisode: StoredCompletionEpisode
+            do {
                 storedEpisode = try decoder.decode(
                     StoredCompletionEpisode.self,
                     from: payload
                 )
             } catch {
-                // A corrupt episode cannot provide authenticated lineage.
-                // Delete it fail closed so restoring replayed payload bytes
-                // cannot resurrect content after its source was removed.
-                corruptCompletionEventIDs.insert(completionEventID)
+                corruptEventIDs.insert(completionEventID)
                 continue
             }
             sourceIDsByCompletionEventID[completionEventID] = Set(
@@ -2941,7 +2964,7 @@ public actor PersonalizationDatabase {
         // any lineage edges. Removing a direct dependent's source edges first
         // would otherwise prevent the recursive trigger from reaching nested
         // completion episodes.
-        var descendantClosure = corruptCompletionEventIDs
+        var descendantClosure = corruptEventIDs
         descendantClosure.insert(sourceEventID)
         var addedDescendant = true
         while addedDescendant {
@@ -2961,7 +2984,7 @@ public actor PersonalizationDatabase {
                 $0 != sourceEventID
                     && (
                         sourceIDsByCompletionEventID[$0] != nil
-                            || corruptCompletionEventIDs.contains($0)
+                            || corruptEventIDs.contains($0)
                     )
             }
             .sorted()
