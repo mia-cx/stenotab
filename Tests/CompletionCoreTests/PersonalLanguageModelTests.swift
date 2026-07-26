@@ -1016,7 +1016,7 @@ final class PersonalLanguageModelTests: XCTestCase {
         )
     }
 
-    func testMultipleLengthCorrectionsPreserveMixedEditProvenance() {
+    func testMultipleAmbiguousCorrectionsFailClosed() {
         let date = Date(timeIntervalSince1970: 132)
         let initial = CapturedFieldState(
             text: "",
@@ -1083,10 +1083,7 @@ final class PersonalLanguageModelTests: XCTestCase {
         var model = PersonalLanguageModel(minimumEvidence: 0)
         model.ingest(episode)
 
-        XCTAssertEqual(
-            model.vocabularyEntries().map(\.normalized),
-            ["don't", "the"]
-        )
+        XCTAssertEqual(model.vocabularyEntries(), [])
     }
 
     func testNormalizationCorrectionDoesNotRelabelAcceptedText() {
@@ -1332,7 +1329,7 @@ final class PersonalLanguageModelTests: XCTestCase {
             text: "old anchortyped",
             selection: UTF16Selection(location: 15, length: 0)
         )
-        let authoritativeText = "unrelated anchor model words"
+        let authoritativeText = "unrelated anchor types"
         let episode = WritingEpisodeCapture(
             id: UUID(),
             initialField: initial,
