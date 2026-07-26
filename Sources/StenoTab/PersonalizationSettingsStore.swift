@@ -66,10 +66,11 @@ final class PersonalizationSettingsStore: ObservableObject {
                 forKey: Keys.collectDirectTyping
             )
             if oldValue, !collectDirectTyping {
-                collectionConsentGeneration &+= 1
-                collectionConsentEpoch.advance(
-                    to: collectionConsentGeneration
+                directTypingConsentGeneration &+= 1
+                directTypingConsentEpoch.advance(
+                    to: directTypingConsentGeneration
                 )
+                onWritingHistoryReset?()
             }
         }
     }
@@ -108,12 +109,15 @@ final class PersonalizationSettingsStore: ObservableObject {
     @Published private(set) var voiceAssessment: VoiceAssessment?
 
     var onHistoryReset: (() -> Void)?
+    var onWritingHistoryReset: (() -> Void)?
     var captureGeneration: UInt64 { collectionGeneration }
 
     private let defaults: UserDefaults
     private var collectionGeneration: UInt64 = 0
     private var collectionConsentGeneration: UInt64 = 0
     private let collectionConsentEpoch = PersonalizationConsentEpoch()
+    private var directTypingConsentGeneration: UInt64 = 0
+    private let directTypingConsentEpoch = PersonalizationConsentEpoch()
     private var derivedPersonalizationIsInvalidated = false
     private var completionEpisodeDeleteAllBoundary: Date?
     private var completionEpisodeApplicationDeletionBoundaries:
@@ -125,6 +129,18 @@ final class PersonalizationSettingsStore: ObservableObject {
     private var persistenceTail: Task<Void, Never>?
 #if DEBUG
     var promptContextDidLoadForTesting: (() -> Void)?
+    var recordDidLoadDerivedStateForTesting: (() -> Void)?
+
+    func setRecordDidPersistForTesting(
+        _ callback: @escaping @MainActor @Sendable () -> Void
+    ) async {
+        await modelWorker?.setRecordDidPersistForTesting(callback)
+    }
+
+    func invalidateCollectionGenerationForTesting() {
+        invalidateDerivedPersonalization()
+        collectionGeneration &+= 1
+    }
 #endif
 
     init(defaults: UserDefaults = .standard) {
@@ -150,7 +166,8 @@ final class PersonalizationSettingsStore: ObservableObject {
         self.database = database
         let worker = PersonalizationModelWorker(
             database: database,
-            collectionConsentEpoch: collectionConsentEpoch
+            collectionConsentEpoch: collectionConsentEpoch,
+            directTypingConsentEpoch: directTypingConsentEpoch
         )
         modelWorker = worker
         let generation = collectionGeneration
@@ -175,23 +192,28 @@ final class PersonalizationSettingsStore: ObservableObject {
     func refresh() {
         guard let database else { return }
         let generation = collectionGeneration
+        let inspectorWasVisible = isHistoryInspectorVisible
         enqueuePersistenceOperation { [self] in
             do {
                 let statistics = try await database.storageStatistics()
-                let episodes = try await database.writingEpisodes(
-                    limit: 20
-                )
-                let acceptedSuggestions =
-                    try await database.acceptedSuggestions(limit: 20)
-                let completionEpisodes =
-                    try await database.completionEpisodes(limit: 20)
+                let episodes = inspectorWasVisible
+                    ? try await database.writingEpisodes(limit: 20)
+                    : []
+                let acceptedSuggestions = inspectorWasVisible
+                    ? try await database.acceptedSuggestions(limit: 20)
+                    : []
+                let completionEpisodes = inspectorWasVisible
+                    ? try await database.completionEpisodes(limit: 20)
+                    : []
                 guard generation == collectionGeneration else { return }
                 storedEventCount = statistics.eventCount
                 encryptedPayloadBytes =
                     statistics.encryptedPayloadBytes
-                recentEpisodes = episodes
-                recentAcceptedSuggestions = acceptedSuggestions
-                recentCompletionEpisodes = completionEpisodes
+                if inspectorWasVisible, isHistoryInspectorVisible {
+                    recentEpisodes = episodes
+                    recentAcceptedSuggestions = acceptedSuggestions
+                    recentCompletionEpisodes = completionEpisodes
+                }
                 operationError = nil
             } catch {
                 operationError = String(describing: error)
@@ -203,13 +225,18 @@ final class PersonalizationSettingsStore: ObservableObject {
         isHistoryInspectorVisible = isVisible
         if isVisible {
             refresh()
+        } else {
+            recentEpisodes = []
+            recentAcceptedSuggestions = []
+            recentCompletionEpisodes = []
         }
     }
 
     private func refreshAfterRecording(
         _ historyKind: RecentHistoryKind,
         generation: UInt64,
-        consentGeneration: UInt64
+        consentGeneration: UInt64,
+        directTypingConsentGeneration: UInt64? = nil
     ) async throws {
         guard let database else { return }
         let statistics = try await database.storageStatistics()
@@ -225,6 +252,9 @@ final class PersonalizationSettingsStore: ObservableObject {
                 generation == collectionGeneration,
                 collectionEnabled,
                 consentGeneration == collectionConsentGeneration,
+                directTypingConsentIsCurrent(
+                    directTypingConsentGeneration
+                ),
                 !derivedPersonalizationIsInvalidated
             else {
                 return
@@ -251,6 +281,10 @@ final class PersonalizationSettingsStore: ObservableObject {
             generation == collectionGeneration,
             collectionEnabled,
             consentGeneration == collectionConsentGeneration,
+            isHistoryInspectorVisible,
+            directTypingConsentIsCurrent(
+                directTypingConsentGeneration
+            ),
             !derivedPersonalizationIsInvalidated
         else {
             return
@@ -267,6 +301,14 @@ final class PersonalizationSettingsStore: ObservableObject {
             recentEpisodes = writingEpisodes
         }
         operationError = nil
+    }
+
+    private func directTypingConsentIsCurrent(
+        _ generation: UInt64?
+    ) -> Bool {
+        guard let generation else { return true }
+        return collectDirectTyping
+            && generation == directTypingConsentGeneration
     }
 
     func deleteAll() {
@@ -332,6 +374,12 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 let updatedVoiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
+#if DEBUG
+                let didLoadDerivedState =
+                    recordDidLoadDerivedStateForTesting
+                recordDidLoadDerivedStateForTesting = nil
+                didLoadDerivedState?()
+#endif
                 guard
                     generation == collectionGeneration,
                     collectionEnabled,
@@ -364,12 +412,14 @@ final class PersonalizationSettingsStore: ObservableObject {
         let policy = retentionPolicy
         let generation = collectionGeneration
         let consentGeneration = collectionConsentGeneration
+        let directConsentGeneration = directTypingConsentGeneration
         enqueuePersistenceOperation { [self] in
             guard
                 collectionEnabled,
                 collectDirectTyping,
                 generation == collectionGeneration,
                 consentGeneration == collectionConsentGeneration,
+                directConsentGeneration == directTypingConsentGeneration,
                 !derivedPersonalizationIsInvalidated
             else {
                 return
@@ -379,14 +429,25 @@ final class PersonalizationSettingsStore: ObservableObject {
                     episode,
                     retentionPolicy: policy,
                     generation: generation,
-                    consentGeneration: consentGeneration
+                    consentGeneration: consentGeneration,
+                    directTypingConsentGeneration:
+                        directConsentGeneration
                 )
                 let updatedVoiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
+#if DEBUG
+                let didLoadDerivedState =
+                    recordDidLoadDerivedStateForTesting
+                recordDidLoadDerivedStateForTesting = nil
+                didLoadDerivedState?()
+#endif
                 guard
                     generation == collectionGeneration,
                     collectionEnabled,
+                    collectDirectTyping,
                     consentGeneration == collectionConsentGeneration,
+                    directConsentGeneration
+                        == directTypingConsentGeneration,
                     !derivedPersonalizationIsInvalidated
                 else {
                     return
@@ -396,7 +457,9 @@ final class PersonalizationSettingsStore: ObservableObject {
                 try await refreshAfterRecording(
                     .writingEpisodes,
                     generation: generation,
-                    consentGeneration: consentGeneration
+                    consentGeneration: consentGeneration,
+                    directTypingConsentGeneration:
+                        directConsentGeneration
                 )
             } catch {
                 operationError = String(describing: error)
@@ -820,20 +883,25 @@ actor PersonalizationModelWorker {
     private var voiceSources: [VoiceSource] = []
     private var collectionGeneration: UInt64 = 0
     private let collectionConsentEpoch: PersonalizationConsentEpoch
+    private let directTypingConsentEpoch: PersonalizationConsentEpoch
     private var collectionOperationIsRunning = false
     private var collectionOperationWaiters:
         [CheckedContinuation<Void, Never>] = []
 #if DEBUG
-    private var recordDidPersistForTesting: (@Sendable () -> Void)?
+    private var recordDidPersistForTesting:
+        (@MainActor @Sendable () -> Void)?
 #endif
 
     init(
         database: PersonalizationDatabase,
         collectionConsentEpoch: PersonalizationConsentEpoch =
+            PersonalizationConsentEpoch(),
+        directTypingConsentEpoch: PersonalizationConsentEpoch =
             PersonalizationConsentEpoch()
     ) {
         self.database = database
         self.collectionConsentEpoch = collectionConsentEpoch
+        self.directTypingConsentEpoch = directTypingConsentEpoch
     }
 
     func prepare() async throws -> PersonalLanguageModel {
@@ -851,7 +919,7 @@ actor PersonalizationModelWorker {
 
 #if DEBUG
     func setRecordDidPersistForTesting(
-        _ callback: @escaping @Sendable () -> Void
+        _ callback: @escaping @MainActor @Sendable () -> Void
     ) {
         recordDidPersistForTesting = callback
     }
@@ -875,7 +943,7 @@ actor PersonalizationModelWorker {
 #if DEBUG
         let didPersist = recordDidPersistForTesting
         recordDidPersistForTesting = nil
-        didPersist?()
+        await didPersist?()
 #endif
         if let revokedModel = try await removeRecordIfConsentRevoked(
             id: capture.id,
@@ -904,13 +972,16 @@ actor PersonalizationModelWorker {
         _ episode: WritingEpisodeCapture,
         retentionPolicy: PersonalizationRetentionPolicy,
         generation: UInt64,
-        consentGeneration: UInt64 = 0
+        consentGeneration: UInt64 = 0,
+        directTypingConsentGeneration: UInt64 = 0
     ) async throws -> PersonalLanguageModel {
         await acquireCollectionOperation()
         defer { releaseCollectionOperation() }
         guard
             generation == collectionGeneration,
-            consentGeneration == collectionConsentEpoch.current
+            consentGeneration == collectionConsentEpoch.current,
+            directTypingConsentGeneration
+                == directTypingConsentEpoch.current
         else {
             return model
         }
@@ -918,11 +989,13 @@ actor PersonalizationModelWorker {
 #if DEBUG
         let didPersist = recordDidPersistForTesting
         recordDidPersistForTesting = nil
-        didPersist?()
+        await didPersist?()
 #endif
         if let revokedModel = try await removeRecordIfConsentRevoked(
             id: episode.id,
-            consentGeneration: consentGeneration
+            consentGeneration: consentGeneration,
+            directTypingConsentGeneration:
+                directTypingConsentGeneration
         ) {
             return revokedModel
         }
@@ -1003,13 +1076,20 @@ actor PersonalizationModelWorker {
 
     private func removeRecordIfConsentRevoked(
         id: UUID,
-        consentGeneration: UInt64
+        consentGeneration: UInt64,
+        directTypingConsentGeneration: UInt64? = nil
     ) async throws -> PersonalLanguageModel? {
-        guard consentGeneration != collectionConsentEpoch.current else {
+        let collectionWasRevoked =
+            consentGeneration != collectionConsentEpoch.current
+        let directTypingWasRevoked =
+            directTypingConsentGeneration.map {
+                $0 != directTypingConsentEpoch.current
+            } ?? false
+        guard collectionWasRevoked || directTypingWasRevoked else {
             return nil
         }
-        try await database.deleteEvent(id: id)
-        return try await rebuild()
+        try await database.discardMostRecentlyRecordedEvent(id: id)
+        return model
     }
 
     func deleteEvent(

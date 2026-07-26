@@ -79,6 +79,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             onWritingEpisode: { [weak self] episode in
                 self?.recordWritingEpisode(episode)
             },
+            writingHistoryCollectionIsEnabled: {
+                [personalizationSettings] in
+                personalizationSettings.collectionEnabled
+                    && personalizationSettings.collectDirectTyping
+            },
             onCompletionFeedback: { [weak self] feedback in
                 self?.recordCompletionFeedback(feedback)
             },
@@ -110,6 +115,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         self.coordinator = coordinator
         personalizationSettings.onHistoryReset = { [weak coordinator] in
             coordinator?.personalizationHistoryWillReset()
+        }
+        personalizationSettings.onWritingHistoryReset = {
+            [weak coordinator] in
+            coordinator?.writingHistoryWillReset()
         }
         applicationPolicy.onChange = { [weak coordinator] in
             coordinator?.applicationPolicyDidChange()

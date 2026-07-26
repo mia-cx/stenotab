@@ -162,6 +162,10 @@ public actor PersonalizationDatabase {
         try connection.execute("PRAGMA journal_mode = DELETE")
         try connection.execute("PRAGMA secure_delete = ON")
         try connection.execute(Self.schema)
+        try Self.migrateScopeLookupHMACs(
+            connection: connection,
+            keyData: keyData
+        )
         try Self.removeLegacyCompletionEpisodesWithoutLineage(
             connection: connection,
             keyData: keyData,
@@ -400,6 +404,90 @@ public actor PersonalizationDatabase {
                 )
                 """
             )
+        }
+    }
+
+    private static func migrateScopeLookupHMACs(
+        connection: SQLiteConnection,
+        keyData: Data
+    ) throws {
+        try connection.transaction {
+            let rows = try connection.query(
+                """
+                SELECT id, kind, value_sealed
+                FROM personalization_scope
+                ORDER BY id ASC
+                """
+            )
+            for row in rows {
+                guard
+                    let id = row.integer(at: 0),
+                    let kind = row.text(at: 1),
+                    let sealedValue = row.blob(at: 2),
+                    let opened = try? PersonalizationCryptography.open(
+                        sealedValue,
+                        keyData: keyData
+                    ),
+                    let value = String(data: opened, encoding: .utf8),
+                    let migratedHMAC =
+                        try? PersonalizationCryptography.scopeLookupHMAC(
+                            kind: kind,
+                            value: value,
+                            keyData: keyData
+                        )
+                else {
+                    continue
+                }
+                let existingID = try connection.query(
+                    """
+                    SELECT id
+                    FROM personalization_scope
+                    WHERE kind = ? AND lookup_hmac = ?
+                    LIMIT 1
+                    """,
+                    bindings: [
+                        .text(kind),
+                        .blob(migratedHMAC),
+                    ]
+                ).first?.integer(at: 0)
+                if let existingID, existingID != id {
+                    try connection.execute(
+                        """
+                        INSERT OR IGNORE INTO event_scope (
+                            event_id,
+                            scope_id
+                        )
+                        SELECT event_id, ?
+                        FROM event_scope
+                        WHERE scope_id = ?
+                        """,
+                        bindings: [
+                            .integer(existingID),
+                            .integer(id),
+                        ]
+                    )
+                    try connection.execute(
+                        "DELETE FROM event_scope WHERE scope_id = ?",
+                        bindings: [.integer(id)]
+                    )
+                    try connection.execute(
+                        "DELETE FROM personalization_scope WHERE id = ?",
+                        bindings: [.integer(id)]
+                    )
+                } else {
+                    try connection.execute(
+                        """
+                        UPDATE personalization_scope
+                        SET lookup_hmac = ?
+                        WHERE id = ?
+                        """,
+                        bindings: [
+                            .blob(migratedHMAC),
+                            .integer(id),
+                        ]
+                    )
+                }
+            }
         }
     }
 
@@ -715,6 +803,58 @@ public actor PersonalizationDatabase {
                 .text(sourceEventID.uuidString),
             ]
         )
+    }
+
+    func replaceScopeLookupHMACWithLegacyForTesting(
+        kind: String,
+        value: String
+    ) throws {
+        let currentHMAC =
+            try PersonalizationCryptography.scopeLookupHMAC(
+                kind: kind,
+                value: value,
+                keyData: keyData
+            )
+        let legacyHMAC = try PersonalizationCryptography.lookupHMAC(
+            for: value,
+            keyData: keyData
+        )
+        try connection.execute(
+            """
+            UPDATE personalization_scope
+            SET lookup_hmac = ?
+            WHERE kind = ? AND lookup_hmac = ?
+            """,
+            bindings: [
+                .blob(legacyHMAC),
+                .text(kind),
+                .blob(currentHMAC),
+            ]
+        )
+    }
+
+    func scopeUsesDomainSeparatedHMACForTesting(
+        kind: String,
+        value: String
+    ) throws -> Bool {
+        let expected =
+            try PersonalizationCryptography.scopeLookupHMAC(
+                kind: kind,
+                value: value,
+                keyData: keyData
+            )
+        return try connection.query(
+            """
+            SELECT 1
+            FROM personalization_scope
+            WHERE kind = ? AND lookup_hmac = ?
+            LIMIT 1
+            """,
+            bindings: [
+                .text(kind),
+                .blob(expected),
+            ]
+        ).first != nil
     }
 
     func firstCompletionFieldPromptChunkOverlapForTesting() throws -> Int {
@@ -1760,15 +1900,54 @@ public actor PersonalizationDatabase {
         }
     }
 
+    public func discardMostRecentlyRecordedEvent(id: UUID) throws {
+        try connection.transaction {
+            let newestID = try connection.query(
+                """
+                SELECT id
+                FROM personalization_event
+                ORDER BY sequence DESC
+                LIMIT 1
+                """
+            ).first?.text(at: 0)
+            guard let newestID else { return }
+            guard newestID == id.uuidString else {
+                throw PersonalizationPersistenceError.database(
+                    "Consent-revoked event is no longer the newest record"
+                )
+            }
+
+            // No later event can legitimately depend on this just-recorded
+            // source. Remove untrusted incoming index edges first so the
+            // recursive deletion trigger cannot cascade through a forged
+            // derived edge, then discard only the known record.
+            try connection.execute(
+                """
+                DELETE FROM completion_episode_source
+                WHERE source_event_id = ?
+                """,
+                bindings: [.text(id.uuidString)]
+            )
+            try connection.execute(
+                "DELETE FROM personalization_event WHERE id = ?",
+                bindings: [.text(id.uuidString)]
+            )
+            try pruneUnusedScopes()
+            try pruneUnusedTextChunks()
+        }
+    }
+
     @discardableResult
     public func deleteEvents(
         scopeKind: String,
         value: String
     ) throws -> Int {
-        let lookupHMAC = try PersonalizationCryptography.lookupHMAC(
-            for: value,
-            keyData: keyData
-        )
+        let lookupHMAC =
+            try PersonalizationCryptography.scopeLookupHMAC(
+                kind: scopeKind,
+                value: value,
+                keyData: keyData
+            )
         return try connection.transaction {
             try rebuildCompletionEpisodeIndexes()
             try rebuildSupportedEventScopeIndex()
@@ -2274,10 +2453,12 @@ public actor PersonalizationDatabase {
     }
 
     private func upsertScope(_ scope: PersonalizationScope) throws -> Int64 {
-        let valueHMAC = try PersonalizationCryptography.lookupHMAC(
-            for: scope.value,
-            keyData: keyData
-        )
+        let valueHMAC =
+            try PersonalizationCryptography.scopeLookupHMAC(
+                kind: scope.kind,
+                value: scope.value,
+                keyData: keyData
+            )
         let sealedValue = try PersonalizationCryptography.seal(
             Data(scope.value.utf8),
             keyData: keyData

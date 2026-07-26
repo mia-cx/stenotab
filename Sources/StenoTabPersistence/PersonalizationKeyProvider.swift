@@ -163,6 +163,27 @@ enum PersonalizationCryptography {
         )
     }
 
+    static func scopeLookupHMAC(
+        kind: String,
+        value: String,
+        keyData: Data
+    ) throws -> Data {
+        let keys = try split(keyData)
+        var authenticatedValue = Data(
+            "cx.mia.stenotab.personalization:scope:v2".utf8
+        )
+        authenticatedValue.append(0)
+        authenticatedValue.append(contentsOf: kind.utf8)
+        authenticatedValue.append(0)
+        authenticatedValue.append(contentsOf: value.utf8)
+        return Data(
+            HMAC<SHA256>.authenticationCode(
+                for: authenticatedValue,
+                using: keys.lookup
+            )
+        )
+    }
+
     static func payloadHMAC(for payload: Data, keyData: Data) throws -> Data {
         let keys = try split(keyData)
         return Data(

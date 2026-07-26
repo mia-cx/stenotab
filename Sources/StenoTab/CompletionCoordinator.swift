@@ -39,6 +39,8 @@ final class CompletionCoordinator: NSObject {
         @MainActor (AcceptedSuggestionCapture) -> Void
     private let onWritingEpisode:
         @MainActor (WritingEpisodeCapture) -> Void
+    private let writingHistoryCollectionIsEnabled:
+        @MainActor () -> Bool
     private let onCompletionFeedback:
         @MainActor (CompletionFeedbackCapture) -> Void
     private let onCompletionEpisode:
@@ -141,6 +143,8 @@ final class CompletionCoordinator: NSObject {
         onWritingEpisode: @escaping @MainActor (
             WritingEpisodeCapture
         ) -> Void = { _ in },
+        writingHistoryCollectionIsEnabled:
+            @escaping @MainActor () -> Bool = { true },
         onCompletionFeedback: @escaping @MainActor (
             CompletionFeedbackCapture
         ) -> Void = { _ in },
@@ -168,6 +172,8 @@ final class CompletionCoordinator: NSObject {
         self.onSuggestionAccepted = onSuggestionAccepted
         self.onPersonalizationCapture = onPersonalizationCapture
         self.onWritingEpisode = onWritingEpisode
+        self.writingHistoryCollectionIsEnabled =
+            writingHistoryCollectionIsEnabled
         self.onCompletionFeedback = onCompletionFeedback
         self.onCompletionEpisode = onCompletionEpisode
         self.completionEpisodeCollectionIsEnabled =
@@ -397,8 +403,12 @@ final class CompletionCoordinator: NSObject {
         invalidatePendingCompletion()
         clearOCRContext()
         discardCompletionEpisodeAndSuggestion()
-        writingHistoryTracker = WritingHistoryTracker()
+        writingHistoryWillReset()
         completionReversionTracker = CompletionReversionTracker()
+    }
+
+    func writingHistoryWillReset() {
+        writingHistoryTracker = WritingHistoryTracker()
     }
 
     static func shouldDiscardPendingOutcomeBeforeClearing(
@@ -471,7 +481,8 @@ final class CompletionCoordinator: NSObject {
             replacingSelection:
                 fieldBeforeMutation?.selection.length ?? 0 > 0
         )
-        if case let .insert(text) = mutation,
+        if writingHistoryCollectionIsEnabled(),
+           case let .insert(text) = mutation,
            let fieldBeforeMutation {
             writingHistoryTracker.recordInsertion(
                 text,
@@ -480,7 +491,8 @@ final class CompletionCoordinator: NSObject {
                 fieldAfter: currentCapturedFieldFromBuffer(),
                 at: Date()
             )
-        } else if let deletion {
+        } else if writingHistoryCollectionIsEnabled(),
+                  let deletion {
             writingHistoryTracker.recordDeletion(
                 deletion.deletedText,
                 fieldBefore: deletion.fieldBefore,
@@ -724,7 +736,8 @@ final class CompletionCoordinator: NSObject {
             )
         }
         updateTypographyScale(from: previousSnapshot, to: snapshot)
-        if let completed = writingHistoryTracker.observe(
+        if writingHistoryCollectionIsEnabled(),
+           let completed = writingHistoryTracker.observe(
             field: CapturedFieldState(
                 text: snapshot.fieldText,
                 selection: snapshot.selection
@@ -1560,7 +1573,8 @@ final class CompletionCoordinator: NSObject {
                 context: personalizationContext(for: $0)
             )
         }
-        if let fieldBefore = fieldBeforeAcceptance {
+        if writingHistoryCollectionIsEnabled(),
+           let fieldBefore = fieldBeforeAcceptance {
             let insertedUTF16Count = acceptance.accepted.utf16.count
             let afterText = replacingSelection(
                 in: fieldBefore.text,
@@ -1829,6 +1843,10 @@ final class CompletionCoordinator: NSObject {
     }
 
     private func finalizeIdleWritingEpisode() {
+        guard writingHistoryCollectionIsEnabled() else {
+            writingHistoryTracker = WritingHistoryTracker()
+            return
+        }
         if let completed = writingHistoryTracker.finalizeIfIdle(
             at: Date(),
             timeout: 2
@@ -1852,7 +1870,8 @@ final class CompletionCoordinator: NSObject {
         else {
             return false
         }
-        if let completed = writingHistoryTracker.finalize(
+        if writingHistoryCollectionIsEnabled(),
+           let completed = writingHistoryTracker.finalize(
             boundary: .submitted,
             at: Date()
         ) {

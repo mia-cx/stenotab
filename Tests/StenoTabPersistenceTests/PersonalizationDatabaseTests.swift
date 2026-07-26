@@ -27,6 +27,94 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertNotEqual(first, Data(repeating: 0, count: 64))
     }
 
+    func testScopeLookupHMACIsDomainSeparatedFromStoredText() throws {
+        let keyData = Data(repeating: 0x42, count: 64)
+        let value = "message"
+        let chunkHMAC = try PersonalizationCryptography.payloadHMAC(
+            for: Data(value.utf8),
+            keyData: keyData
+        )
+        let inputKindHMAC =
+            try PersonalizationCryptography.scopeLookupHMAC(
+                kind: "input_kind",
+                value: value,
+                keyData: keyData
+            )
+        let applicationHMAC =
+            try PersonalizationCryptography.scopeLookupHMAC(
+                kind: "application",
+                value: value,
+                keyData: keyData
+            )
+
+        XCTAssertNotEqual(inputKindHMAC, chunkHMAC)
+        XCTAssertNotEqual(applicationHMAC, chunkHMAC)
+        XCTAssertNotEqual(inputKindHMAC, applicationHMAC)
+    }
+
+    func testLegacyScopeLookupHMACMigratesOnReopen() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appending(
+            path: "personalization.sqlite"
+        )
+        let keyProvider = StaticPersonalizationKeyProvider(
+            keyData: Data(repeating: 0x42, count: 64)
+        )
+        let database = try PersonalizationDatabase(
+            databaseURL: databaseURL,
+            keyProvider: keyProvider
+        )
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "scope migration",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(
+                inputKind: "message",
+                editorIdentifier: "editor"
+            ),
+            capturedAt: Date()
+        )
+        try await database.record(capture)
+        try await database.replaceScopeLookupHMACWithLegacyForTesting(
+            kind: "input_kind",
+            value: "message"
+        )
+        let legacyUsesCurrentHMAC =
+            try await database.scopeUsesDomainSeparatedHMACForTesting(
+                kind: "input_kind",
+                value: "message"
+            )
+        XCTAssertFalse(legacyUsesCurrentHMAC)
+
+        let reopened = try PersonalizationDatabase(
+            databaseURL: databaseURL,
+            keyProvider: keyProvider
+        )
+
+        let reopenedUsesCurrentHMAC =
+            try await reopened.scopeUsesDomainSeparatedHMACForTesting(
+                kind: "input_kind",
+                value: "message"
+            )
+        XCTAssertTrue(reopenedUsesCurrentHMAC)
+        let deletedCount =
+            try await reopened.deleteEvents(
+                scopeKind: "input_kind",
+                value: "message"
+            )
+        XCTAssertEqual(deletedCount, 1)
+    }
+
     func testAcceptedCaptureRoundTripsEncryptedAndCanBeDeleted() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -458,6 +546,38 @@ final class PersonalizationDatabaseTests: XCTestCase {
 
         let countAfterDelete = try await fixture.database.eventCount()
         XCTAssertEqual(countAfterDelete, 0)
+    }
+
+    func testDeleteAllRemovesEncryptedCompletionTextChunks() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: String(repeating: "private prompt input ", count: 80),
+            suggestion: " private suggestion",
+            outcome: " private outcome",
+            date: Date(timeIntervalSince1970: 405)
+        )
+        try await fixture.database.record(episode)
+        let before =
+            try await fixture.database.completionEpisodeStorageStatistics()
+        XCTAssertGreaterThan(before.uniqueTextChunkCount, 0)
+        XCTAssertGreaterThan(before.textChunkReferenceCount, 0)
+        XCTAssertGreaterThan(before.encryptedTextChunkBytes, 0)
+
+        try await fixture.database.deleteAll()
+
+        let after =
+            try await fixture.database
+                .completionEpisodeStorageStatistics()
+        XCTAssertEqual(
+            after,
+            CompletionEpisodeStorageStatistics(
+                uniqueTextChunkCount: 0,
+                textChunkReferenceCount: 0,
+                encryptedTextChunkBytes: 0
+            )
+        )
     }
 
     func testTargetedDeleteFailsClosedForUnsupportedEpisodeVersion()

@@ -59,6 +59,63 @@ final class PersonalizationIntegrationTests: XCTestCase {
         XCTAssertEqual(model.vocabularyEntries(), [])
     }
 
+    func testDirectTypingRevocationDoesNotCancelAcceptedSuggestion()
+        async throws
+    {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let collectionConsentEpoch = PersonalizationConsentEpoch()
+        let directTypingConsentEpoch = PersonalizationConsentEpoch()
+        let worker = PersonalizationModelWorker(
+            database: database,
+            collectionConsentEpoch: collectionConsentEpoch,
+            directTypingConsentEpoch: directTypingConsentEpoch
+        )
+        _ = try await worker.prepare()
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "AcceptedWhileDirectTypingTurnsOff",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date()
+        )
+        await worker.setRecordDidPersistForTesting {
+            directTypingConsentEpoch.advance(to: 1)
+        }
+
+        let model = try await worker.record(
+            capture,
+            retentionPolicy: PersonalizationRetentionPolicy(
+                maximumAge: nil,
+                maximumEncryptedBytes: nil
+            ),
+            generation: 0,
+            consentGeneration: 0
+        )
+
+        let storedSuggestionIDs =
+            try await database.acceptedSuggestions().map(\.id)
+        XCTAssertEqual(storedSuggestionIDs, [capture.id])
+        XCTAssertFalse(model.vocabularyEntries().isEmpty)
+    }
+
     func testInFlightWritingRecordIsRemovedWhenConsentIsRevoked()
         async throws
     {
@@ -78,9 +135,11 @@ final class PersonalizationIntegrationTests: XCTestCase {
             )
         )
         let consentEpoch = PersonalizationConsentEpoch()
+        let directTypingConsentEpoch = PersonalizationConsentEpoch()
         let worker = PersonalizationModelWorker(
             database: database,
-            collectionConsentEpoch: consentEpoch
+            collectionConsentEpoch: consentEpoch,
+            directTypingConsentEpoch: directTypingConsentEpoch
         )
         _ = try await worker.prepare()
         let date = Date()
@@ -114,7 +173,7 @@ final class PersonalizationIntegrationTests: XCTestCase {
             boundary: .submitted
         )
         await worker.setRecordDidPersistForTesting {
-            consentEpoch.advance(to: 1)
+            directTypingConsentEpoch.advance(to: 1)
         }
 
         let model = try await worker.record(
@@ -124,7 +183,8 @@ final class PersonalizationIntegrationTests: XCTestCase {
                 maximumEncryptedBytes: nil
             ),
             generation: 0,
-            consentGeneration: 0
+            consentGeneration: 0,
+            directTypingConsentGeneration: 0
         )
 
         let storedEpisodes = try await database.writingEpisodes()
@@ -148,6 +208,132 @@ final class PersonalizationIntegrationTests: XCTestCase {
         store.collectionEnabled = false
 
         XCTAssertTrue(didResetConsumers)
+    }
+
+    @MainActor
+    func testDisablingDirectTypingCancelsWritingCapture() throws {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        var didResetConsumers = false
+        store.onWritingHistoryReset = {
+            didResetConsumers = true
+        }
+
+        store.collectDirectTyping = false
+
+        XCTAssertTrue(didResetConsumers)
+    }
+
+    @MainActor
+    func testHidingHistoryInspectorClearsDecryptedRecords() async throws {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        store.attach(database: database)
+        await store.flushPendingPersistence()
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "private inspector text",
+                selection: UTF16Selection(location: 22, length: 0)
+            ),
+            insertion: " secret",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date()
+        )
+        store.record(capture)
+        await store.flushPendingPersistence()
+        XCTAssertEqual(store.recentAcceptedSuggestions, [])
+
+        store.setHistoryInspectorVisible(true)
+        await store.flushPendingPersistence()
+        XCTAssertEqual(store.recentAcceptedSuggestions.map(\.id), [capture.id])
+
+        store.setHistoryInspectorVisible(false)
+
+        XCTAssertEqual(store.recentAcceptedSuggestions, [])
+        XCTAssertEqual(store.recentEpisodes, [])
+        XCTAssertEqual(store.recentCompletionEpisodes, [])
+    }
+
+    @MainActor
+    func testStaleRecordResultCannotRepublishInvalidatedModel() async throws {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        store.attach(database: database)
+        await store.flushPendingPersistence()
+        store.recordDidLoadDerivedStateForTesting = {
+            store.invalidateCollectionGenerationForTesting()
+        }
+        store.record(
+            AcceptedSuggestionCapture(
+                id: UUID(),
+                field: CapturedFieldState(
+                    text: "",
+                    selection: UTF16Selection(location: 0, length: 0)
+                ),
+                insertion: "MustNotRepublish",
+                acceptanceScope: .entireSuggestion,
+                context: PersonalizationContext(
+                    editorIdentifier: "editor"
+                ),
+                capturedAt: Date()
+            )
+        )
+
+        await store.flushPendingPersistence()
+
+        XCTAssertEqual(store.vocabularyEntries, [])
+        XCTAssertNil(
+            store.personalCompletion(
+                for: "Must",
+                context: PersonalizationContext(
+                    editorIdentifier: "editor"
+                )
+            )
+        )
     }
 
     @MainActor
@@ -1055,6 +1241,72 @@ final class PersonalizationIntegrationTests: XCTestCase {
 
         let storedSuggestions = try await database.acceptedSuggestions()
         XCTAssertEqual(storedSuggestions.map(\.id), [laterCapture.id])
+    }
+
+    func testConsentCleanupIgnoresUnrelatedCorruptCompletion()
+        async throws
+    {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let consentEpoch = PersonalizationConsentEpoch()
+        let worker = PersonalizationModelWorker(
+            database: database,
+            collectionConsentEpoch: consentEpoch
+        )
+        _ = try await worker.prepare()
+        let corruptEpisode = makeCompletionEpisode(
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            index: 100,
+            initialText:
+                (0..<400).map { "private chunk \($0) " }.joined()
+        )
+        try await database.record(corruptEpisode)
+        let deletedChunk =
+            try await database.deleteFirstTextChunkForTesting()
+        XCTAssertTrue(deletedChunk)
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "MustNotRemain",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date()
+        )
+        await worker.setRecordDidPersistForTesting {
+            consentEpoch.advance(to: 1)
+        }
+
+        let model = try await worker.record(
+            capture,
+            retentionPolicy: PersonalizationRetentionPolicy(
+                maximumAge: nil,
+                maximumEncryptedBytes: nil
+            ),
+            generation: 0,
+            consentGeneration: 0
+        )
+
+        let eventCount = try await database.eventCount()
+        let storedSuggestions = try await database.acceptedSuggestions()
+        XCTAssertEqual(eventCount, 1)
+        XCTAssertEqual(storedSuggestions, [])
+        XCTAssertEqual(model.vocabularyEntries(), [])
     }
 
     private func makeCompletionEpisode(
