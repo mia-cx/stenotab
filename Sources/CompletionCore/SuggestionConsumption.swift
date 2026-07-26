@@ -14,6 +14,7 @@ public struct SuggestionConsumption: Sendable, Equatable {
 
     private var streamed: [Character]
     private var consumed: [Character]
+    private var confirmedConsumedCount: Int
     private var isFinal: Bool
     private var isWaitingForWhitespace: Bool
 
@@ -22,12 +23,21 @@ public struct SuggestionConsumption: Sendable, Equatable {
     }
 
     public var consumedSuggestionText: String {
-        String(streamed.prefix(min(consumed.count, streamed.count)))
+        let maximumCount = min(
+            confirmedConsumedCount,
+            consumed.count,
+            streamed.count
+        )
+        let matchedCount = (0..<maximumCount).first {
+            consumed[$0] != streamed[$0]
+        } ?? maximumCount
+        return String(consumed.prefix(matchedCount))
     }
 
     public init(suggestion: String, isFinal: Bool = true) {
         streamed = Array(suggestion)
         consumed = []
+        confirmedConsumedCount = 0
         self.isFinal = isFinal
         isWaitingForWhitespace = isFinal && suggestion.isEmpty
     }
@@ -35,6 +45,7 @@ public struct SuggestionConsumption: Sendable, Equatable {
     private init(waitingForWhitespace: Bool) {
         streamed = []
         consumed = []
+        confirmedConsumedCount = 0
         isFinal = true
         isWaitingForWhitespace = waitingForWhitespace
     }
@@ -71,6 +82,12 @@ public struct SuggestionConsumption: Sendable, Equatable {
                 return .diverged
             }
             consumed.append(character)
+            if
+                index < streamed.count,
+                confirmedConsumedCount == index
+            {
+                confirmedConsumedCount += 1
+            }
         }
 
         return evaluate()
@@ -84,19 +101,9 @@ public struct SuggestionConsumption: Sendable, Equatable {
         let matchedPrefix = String(
             consumedSuggestionText.dropFirst(consumedCountBefore)
         )
-        let attributedPrefix: String
-        switch outcome {
-        case .awaitingStream:
-            // Text typed ahead of a partial stream cannot safely be treated
-            // as independent writing until the stream resolves.
-            attributedPrefix = insertedText
-        case .matched, .waitingForWhitespace, .triggerInference,
-             .diverged:
-            attributedPrefix = matchedPrefix
-        }
         return AttributedOutcome(
             outcome: outcome,
-            suggestionAttributedPrefix: attributedPrefix
+            suggestionAttributedPrefix: matchedPrefix
         )
     }
 

@@ -66,7 +66,7 @@ final class SuggestionConsumptionTests: XCTestCase {
         XCTAssertEqual(result.suggestionAttributedPrefix, "he")
     }
 
-    func testAttributionFailsClosedWhileTypingAheadOfStream() {
+    func testAttributionOnlyIncludesTextAlreadyConfirmedByStream() {
         var state = SuggestionConsumption(
             suggestion: "he",
             isFinal: false
@@ -75,7 +75,22 @@ final class SuggestionConsumptionTests: XCTestCase {
         let result = state.applyWithAttribution(insertedText: "hello")
 
         XCTAssertEqual(result.outcome, .awaitingStream)
-        XCTAssertEqual(result.suggestionAttributedPrefix, "hello")
+        XCTAssertEqual(result.suggestionAttributedPrefix, "he")
+        XCTAssertEqual(state.consumedSuggestionText, "he")
+    }
+
+    func testLaterDivergentStreamCannotClaimRunAheadText() {
+        var state = SuggestionConsumption(
+            suggestion: "he",
+            isFinal: false
+        )
+        _ = state.applyWithAttribution(insertedText: "hello")
+
+        XCTAssertEqual(
+            state.update(suggestion: "hero", isFinal: true),
+            .diverged
+        )
+        XCTAssertEqual(state.consumedSuggestionText, "he")
     }
 
     func testDivergingFromSuggestionTriggersFreshInference() {

@@ -1095,10 +1095,17 @@ actor PersonalizationModelWorker {
         try await updateVoiceAssessmentIfNeeded()
         if let retentionPolicy {
             // Rebuilding embeddings and voice projections can cross the
-            // configured byte cap even when canonical history fits. Derived
-            // rows are reproducible, so enforce once more after regeneration
-            // and retain the already-loaded in-memory state for this run.
-            _ = try await database.enforceRetention(retentionPolicy)
+            // configured byte cap even when canonical history fits. Apply
+            // only the byte cap here: re-evaluating maximumAge after the
+            // asynchronous rebuild could expire canonical rows that are
+            // already loaded in memory.
+            _ = try await database.enforceRetention(
+                PersonalizationRetentionPolicy(
+                    maximumAge: nil,
+                    maximumEncryptedBytes:
+                        retentionPolicy.maximumEncryptedBytes
+                )
+            )
         }
         return model
     }

@@ -308,7 +308,7 @@ final class PersonalizationIntegrationTests: XCTestCase {
         XCTAssertEqual(restartedStore.vocabularyEntries, [])
     }
 
-    func testRestartRebuildsModelForPromotedPendingCapture()
+    func testRestartDiscardsCrashInterruptedPendingCapture()
         async throws
     {
         let directory = FileManager.default.temporaryDirectory
@@ -348,8 +348,10 @@ final class PersonalizationIntegrationTests: XCTestCase {
 
         XCTAssertEqual(
             recoveredModel.vocabularyEntries().map(\.normalized),
-            ["recoveredprojectionuniquetoken"]
+            []
         )
+        let eventCount = try await database.eventCount()
+        XCTAssertEqual(eventCount, 0)
     }
 
     func testDirectTypingRevocationDoesNotCancelAcceptedSuggestion()
@@ -1410,6 +1412,34 @@ final class PersonalizationIntegrationTests: XCTestCase {
                 pendingResolution: .accepted,
                 expectedField: nil
             )
+        )
+    }
+
+    @MainActor
+    func testVerifiedPendingOutcomeFinalizesBeforeNextMutation() {
+        let expected = CapturedFieldState(
+            text: "accepted text",
+            selection: UTF16Selection(location: 13, length: 0)
+        )
+
+        XCTAssertTrue(
+            CompletionCoordinator
+                .shouldFinalizePendingOutcomeBeforeMutation(
+                    pendingResolution: .accepted,
+                    expectedField: expected,
+                    authoritativeField: expected
+                )
+        )
+        XCTAssertFalse(
+            CompletionCoordinator
+                .shouldFinalizePendingOutcomeBeforeMutation(
+                    pendingResolution: .accepted,
+                    expectedField: expected,
+                    authoritativeField: CapturedFieldState(
+                        text: "different",
+                        selection: UTF16Selection(location: 9, length: 0)
+                    )
+                )
         )
     }
 

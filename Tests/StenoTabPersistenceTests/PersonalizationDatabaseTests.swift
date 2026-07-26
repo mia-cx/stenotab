@@ -240,7 +240,7 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(after.encryptedPayloadBytes, 0)
     }
 
-    func testMatchingPendingConsentMarkerKeepsCaptureOnRecovery()
+    func testCrashInterruptedPendingCaptureIsDiscardedOnRecovery()
         async throws
     {
         let directory = FileManager.default.temporaryDirectory
@@ -285,9 +285,9 @@ final class PersonalizationDatabaseTests: XCTestCase {
         let storedCaptureIDs =
             try await database.acceptedSuggestions().map(\.id)
 
-        XCTAssertEqual(removed, 0)
+        XCTAssertEqual(removed, 1)
         XCTAssertEqual(laterRemoved, 0)
-        XCTAssertEqual(storedCaptureIDs, [capture.id])
+        XCTAssertEqual(storedCaptureIDs, [])
     }
 
     func testExportExcludesPendingConsentCapture() async throws {
@@ -312,12 +312,42 @@ final class PersonalizationDatabaseTests: XCTestCase {
         let pendingExport = try await fixture.database.exportCorpus()
         XCTAssertEqual(pendingExport.acceptedSuggestions, [])
 
-        _ = try await fixture.database.reconcilePendingConsentEvents(
+        _ = try await fixture.database.finalizePendingConsentEvent(
+            id: capture.id,
+            collectionEpoch: PersonalizationConsentEpoch(),
             collectionGeneration: 0,
-            directTypingGeneration: 0
+            directTypingGeneration: nil
         )
         let finalizedExport = try await fixture.database.exportCorpus()
         XCTAssertEqual(finalizedExport.acceptedSuggestions, [capture])
+    }
+
+    func testExportExcludesPendingCompletionEpisode() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: "private pending prompt",
+            suggestion: " pending suggestion",
+            outcome: "",
+            date: Date(timeIntervalSince1970: 123)
+        )
+        try await fixture.database.recordPendingConsent(
+            episode,
+            collectionGeneration: 0
+        )
+
+        let pendingExport = try await fixture.database.exportCorpus()
+        XCTAssertEqual(pendingExport.completionEpisodes, [])
+
+        _ = try await fixture.database.finalizePendingConsentEvent(
+            id: episode.id,
+            collectionEpoch: PersonalizationConsentEpoch(),
+            collectionGeneration: 0,
+            directTypingGeneration: nil
+        )
+        let finalizedExport = try await fixture.database.exportCorpus()
+        XCTAssertEqual(finalizedExport.completionEpisodes, [episode])
     }
 
     func testRemovingPendingMarkerCannotFinalizeRevokedCapture()
@@ -487,6 +517,71 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(export.acceptedSuggestions, [])
     }
 
+    func testRestartRejectsMissingAuthenticatedConsentSchema()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        try await fixture.database
+            .dropAuthenticatedConsentSchemaForTesting()
+
+        XCTAssertThrowsError(
+            try PersonalizationDatabase(
+                databaseURL: fixture.directory.appending(
+                    path: "personalization.sqlite"
+                ),
+                keyProvider: StaticPersonalizationKeyProvider(
+                    keyData: Data(repeating: 0x42, count: 64)
+                )
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? PersonalizationPersistenceError,
+                .database("Missing authenticated consent schema")
+            )
+        }
+    }
+
+    func testMalformedLegacyPendingStateFailsClosedDuringMigration()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "malformed legacy pending state",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date(timeIntervalSince1970: 128)
+        )
+        try await fixture.database.recordPendingConsent(
+            capture,
+            collectionGeneration: 0
+        )
+        try await fixture.database
+            .prepareMalformedLegacyPendingConsentForTesting(
+                eventID: capture.id
+            )
+
+        let reopened = try PersonalizationDatabase(
+            databaseURL: fixture.directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+
+        let eventCount = try await reopened.eventCount()
+        XCTAssertEqual(eventCount, 0)
+        let export = try await reopened.exportCorpus()
+        XCTAssertEqual(export.acceptedSuggestions, [])
+    }
+
     func testRestartRevocationPrunesPendingCompletionChunks()
         async throws
     {
@@ -651,6 +746,44 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertNil(raw.range(of: Data("SECRET OCR CONTEXT".utf8)))
         XCTAssertNil(raw.range(of: Data("private input outcome".utf8)))
         XCTAssertNil(raw.range(of: Data("private input".utf8)))
+    }
+
+    func testChatCompletionPromptRoundTripsThroughStorageAndExport()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: "chat field input",
+            suggestion: " chat result",
+            outcome: "",
+            date: Date(timeIntervalSince1970: 322),
+            prompt: CapturedCompletionPrompt(
+                transport: .chatCompletion,
+                systemMessage: "distinct private system message",
+                userMessage: "distinct private user message"
+            )
+        )
+
+        try await fixture.database.record(episode)
+
+        let storedEpisodes =
+            try await fixture.database.completionEpisodes()
+        XCTAssertEqual(storedEpisodes, [episode])
+        let export = try await fixture.database.exportCorpus()
+        XCTAssertEqual(export.completionEpisodes, [episode])
+        let raw = try Data(
+            contentsOf: fixture.directory.appending(
+                path: "personalization.sqlite"
+            )
+        )
+        XCTAssertNil(
+            raw.range(of: Data("distinct private system message".utf8))
+        )
+        XCTAssertNil(
+            raw.range(of: Data("distinct private user message".utf8))
+        )
     }
 
     func testUnsupportedCompletionEpisodeDoesNotHideSupportedRows()
@@ -2405,6 +2538,7 @@ final class PersonalizationDatabaseTests: XCTestCase {
         suggestion: String,
         outcome: String,
         date: Date,
+        prompt: CapturedCompletionPrompt? = nil,
         promptInputOverride: String? = nil,
         invocationSelection: UTF16Selection? = nil,
         applicationBundleIdentifier: String = "com.example.Editor",
@@ -2421,13 +2555,13 @@ final class PersonalizationDatabaseTests: XCTestCase {
                     length: 0
                 )
             ),
-            prompt: CapturedCompletionPrompt(
-                transport: .textCompletion,
-                textPrompt:
-                    "Stable OCR and clipboard context.\n\n"
-                    + "My writing:\n§"
-                    + (promptInputOverride ?? input)
-            ),
+            prompt: prompt ?? CapturedCompletionPrompt(
+                    transport: .textCompletion,
+                    textPrompt:
+                        "Stable OCR and clipboard context.\n\n"
+                        + "My writing:\n§"
+                        + (promptInputOverride ?? input)
+                ),
             generation: CompletionGenerationMetadata(
                 providerKind: "local-openai-compatible",
                 modelIdentifier: "gemma-4-e2b",

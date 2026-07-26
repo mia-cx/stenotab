@@ -266,6 +266,7 @@ final class CompletionCoordinator: NSObject {
     }
 
     func stop() {
+        let wasEnabled = enabled
         enabled = false
         reconciliationTimer?.invalidate()
         reconciliationTimer = nil
@@ -275,7 +276,7 @@ final class CompletionCoordinator: NSObject {
             pendingCompletionEpisodeResolution != nil
             || completionEpisodeTracker.activeInvocationID != nil
         let shouldObserveWriting =
-            writingHistoryCollectionIsEnabled()
+            wasEnabled && writingHistoryCollectionIsEnabled()
         let shutdownSnapshot =
             (hasActiveCompletionEpisode || shouldObserveWriting)
             ? accessibility.snapshot()
@@ -290,7 +291,11 @@ final class CompletionCoordinator: NSObject {
                 at: Date()
             )
         }
-        if writingHistoryCollectionIsEnabled(),
+        if
+            shouldObserveWriting,
+            let shutdownSnapshot,
+            shutdownSnapshot.editorIdentifier
+                == lastSnapshot?.editorIdentifier,
            let completed = writingHistoryTracker.finalize(
                boundary: .applicationTerminated,
                at: Date()
@@ -399,6 +404,7 @@ final class CompletionCoordinator: NSObject {
             // Take the last available authoritative observation before the
             // disabled-state guard begins discarding unsettled episodes.
             reconcile()
+            finalizeWritingHistoryBeforeDisabling()
         }
         enabled.toggle()
         sender.state = enabled ? .on : .off
@@ -443,6 +449,16 @@ final class CompletionCoordinator: NSObject {
         pendingResolution != nil && expectedField != nil
     }
 
+    static func shouldFinalizePendingOutcomeBeforeMutation(
+        pendingResolution: CompletionEpisodeResolution?,
+        expectedField: CapturedFieldState?,
+        authoritativeField: CapturedFieldState?
+    ) -> Bool {
+        pendingResolution != nil
+            && expectedField != nil
+            && expectedField == authoritativeField
+    }
+
     private func handle(_ mutation: ShadowTextBuffer.Mutation) {
         guard enabled, policyAllowsCurrentApplication() else {
             invalidatePendingCompletion()
@@ -458,6 +474,7 @@ final class CompletionCoordinator: NSObject {
                 activeInvocationID:
                     completionEpisodeTracker.activeInvocationID
             )
+        var authoritativePreMutationField: CapturedFieldState?
         if shouldVerifyLiveEditor {
             let expectedField = currentCapturedField()
             let liveSnapshot = accessibility.snapshot()
@@ -488,6 +505,20 @@ final class CompletionCoordinator: NSObject {
                 )
                 return
             }
+            authoritativePreMutationField =
+                capturedField(from: liveSnapshot)
+        }
+        if
+            Self.shouldFinalizePendingOutcomeBeforeMutation(
+                pendingResolution: pendingCompletionEpisodeResolution,
+                expectedField: completionEpisodeExpectedField,
+                authoritativeField: authoritativePreMutationField
+            ),
+            let expectedField = completionEpisodeExpectedField
+        {
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: expectedField
+            )
         }
         if
             case .focusChange = mutation,
@@ -678,7 +709,7 @@ final class CompletionCoordinator: NSObject {
         invalidationReconciliationNotBefore = nil
         guard enabled else {
             clearOCRContext()
-            discardPendingCompletionEpisode()
+            reconcilePendingCompletionEpisodeWhileDisabled()
             clearSuggestion(
                 resolution:
                     completionEpisodeTracker.abandonedSuggestionResolution
@@ -868,6 +899,83 @@ final class CompletionCoordinator: NSObject {
         }
         if hadPendingAuthoritativeObservation, !focusChanged {
             finalizePendingCompletionEpisodeIfNeeded()
+        }
+    }
+
+    private func finalizeWritingHistoryBeforeDisabling() {
+        guard writingHistoryCollectionIsEnabled() else {
+            writingHistoryTracker = WritingHistoryTracker()
+            return
+        }
+        guard
+            let snapshot = accessibility.snapshot(),
+            snapshot.editorIdentifier == lastSnapshot?.editorIdentifier
+        else {
+            writingHistoryTracker = WritingHistoryTracker()
+            return
+        }
+        let now = Date()
+        writingHistoryTracker.reconcile(
+            field: capturedField(from: snapshot),
+            at: now
+        )
+        if let completed = writingHistoryTracker.finalize(
+            boundary: .collectionDisabled,
+            at: now
+        ) {
+            onWritingEpisode(completed)
+        } else {
+            writingHistoryTracker = WritingHistoryTracker()
+        }
+    }
+
+    private func reconcilePendingCompletionEpisodeWhileDisabled() {
+        guard
+            pendingCompletionEpisodeResolution != nil,
+            let expectedField = completionEpisodeExpectedField
+        else {
+            discardPendingCompletionEpisode()
+            return
+        }
+        guard
+            let snapshot = accessibility.snapshot(),
+            snapshot.editorIdentifier == lastSnapshot?.editorIdentifier
+        else {
+            if completionEpisodeObservationDeadlineExceeded {
+                discardPendingCompletionEpisode()
+            } else {
+                scheduleInvalidationReconciliation()
+            }
+            return
+        }
+        let observedField = capturedField(from: snapshot)
+        let decision = CompletionEpisodeReconciliationPolicy.decision(
+            previousEditorIdentifier: lastSnapshot?.editorIdentifier,
+            observedEditorIdentifier: snapshot.editorIdentifier,
+            authoritativeBaselineField:
+                completionEpisodeAuthoritativeBaselineField,
+            expectedField: expectedField,
+            observedField: observedField,
+            requiresPostEventObservation:
+                completionEpisodeRequiresPostEventObservation,
+            observationDeadlineExceeded:
+                completionEpisodeObservationDeadlineExceeded
+        )
+        switch CompletionEpisodeReconciliationPolicy.settlement(
+            for: decision
+        ) {
+        case .wait:
+            scheduleInvalidationReconciliation()
+        case .discard:
+            discardPendingCompletionEpisode()
+        case .finalizeFromAuthoritativeBaseline:
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: completionEpisodeAuthoritativeBaselineField
+            )
+        case .finalizeFromObservedField:
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: observedField
+            )
         }
     }
 

@@ -131,6 +131,9 @@ public actor PersonalizationDatabase {
     private static let voiceAssessmentProjection = "voice_assessment"
     private static let keyVersion = 1
     private static let textChunkByteCount = 256
+    private static let authenticatedConsentSchemaVersion = 1
+    private static let authenticatedConsentSchemaMarker =
+        "authenticated_consent_schema"
 
     private let connection: SQLiteConnection
     private let keyData: Data
@@ -166,19 +169,19 @@ public actor PersonalizationDatabase {
         try connection.execute("PRAGMA recursive_triggers = ON")
         try connection.execute("PRAGMA journal_mode = DELETE")
         try connection.execute("PRAGMA secure_delete = ON")
-        let hadAuthenticatedConsentTable =
-            try connection.query(
-                """
-                SELECT 1
-                FROM sqlite_master
-                WHERE type = 'table'
-                    AND name = 'personalization_event_consent'
-                LIMIT 1
-                """
-            ).first != nil
+        let schemaVersion = Int(
+            try connection.query("PRAGMA user_version")
+                .first?.integer(at: 0) ?? 0
+        )
         try connection.execute(Self.schema)
-        if !hadAuthenticatedConsentTable {
+        try connection.execute(Self.remainingSchema)
+        if schemaVersion < Self.authenticatedConsentSchemaVersion {
             try Self.migrateAuthenticatedConsentState(
+                connection: connection,
+                keyData: keyData
+            )
+        } else {
+            try Self.validateAuthenticatedConsentSchema(
                 connection: connection,
                 keyData: keyData
             )
@@ -202,28 +205,60 @@ public actor PersonalizationDatabase {
         connection: SQLiteConnection,
         keyData: Data
     ) throws {
-        let rows = try connection.query(
-            """
-            SELECT
-                event.id,
-                pending.collection_generation,
-                pending.direct_typing_generation
-            FROM personalization_event AS event
-            LEFT JOIN personalization_event_consent AS consent
-                ON consent.event_id = event.id
-            LEFT JOIN pending_consent_event AS pending
-                ON pending.event_id = event.id
-            WHERE consent.event_id IS NULL
-            """
-        )
-        guard !rows.isEmpty else { return }
         try connection.transaction {
+            try connection.execute(Self.authenticatedConsentSchema)
+            let rows = try connection.query(
+                """
+                SELECT
+                    event.id,
+                    pending.rowid,
+                    pending.collection_generation,
+                    pending.direct_typing_generation
+                FROM personalization_event AS event
+                LEFT JOIN personalization_event_consent AS consent
+                    ON consent.event_id = event.id
+                LEFT JOIN pending_consent_event AS pending
+                    ON pending.event_id = event.id
+                WHERE consent.event_id IS NULL
+                """
+            )
             for row in rows {
                 guard let eventID = row.text(at: 0) else { continue }
-                let collectionGeneration = row.text(at: 1) ?? ""
-                let directTypingGeneration = row.text(at: 2) ?? ""
-                let status =
-                    row.text(at: 1) == nil ? "finalized" : "pending"
+                let hasPendingMarker = row.integer(at: 1) != nil
+                let collectionGeneration: String
+                let directTypingGeneration: String
+                let status: String
+                if hasPendingMarker {
+                    guard
+                        let storedCollection = row.text(at: 2),
+                        UInt64(storedCollection) != nil,
+                        let storedDirect = row.text(at: 3),
+                        storedDirect.isEmpty || UInt64(storedDirect) != nil
+                    else {
+                        try connection.execute(
+                            """
+                            DELETE FROM completion_episode_source
+                            WHERE source_event_id = ?
+                            """,
+                            bindings: [.text(eventID)]
+                        )
+                        try connection.execute(
+                            """
+                            DELETE FROM personalization_event
+                            WHERE id = ?
+                            """,
+                            bindings: [.text(eventID)]
+                        )
+                        continue
+                    }
+                    status = "pending"
+                    collectionGeneration = storedCollection
+                    directTypingGeneration = storedDirect
+                } else {
+                    status = "finalized"
+                    collectionGeneration = ""
+                    directTypingGeneration = ""
+                }
                 let stateHMAC = try consentStateHMAC(
                     eventID: eventID,
                     status: status,
@@ -250,7 +285,93 @@ public actor PersonalizationDatabase {
                     ]
                 )
             }
+            let markerValue = String(authenticatedConsentSchemaVersion)
+            let markerHMAC = try schemaStateHMAC(
+                name: authenticatedConsentSchemaMarker,
+                value: markerValue,
+                keyData: keyData
+            )
+            try connection.execute(
+                """
+                INSERT INTO personalization_schema_state (
+                    name,
+                    value,
+                    state_hmac
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    value = excluded.value,
+                    state_hmac = excluded.state_hmac
+                """,
+                bindings: [
+                    .text(authenticatedConsentSchemaMarker),
+                    .text(markerValue),
+                    .blob(markerHMAC),
+                ]
+            )
+            try connection.execute(
+                "PRAGMA user_version = \(authenticatedConsentSchemaVersion)"
+            )
         }
+    }
+
+    private static func validateAuthenticatedConsentSchema(
+        connection: SQLiteConnection,
+        keyData: Data
+    ) throws {
+        let requiredTables = [
+            "personalization_event_consent",
+            "personalization_schema_state",
+        ]
+        for table in requiredTables {
+            let exists = try connection.query(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = ?
+                LIMIT 1
+                """,
+                bindings: [.text(table)]
+            ).first != nil
+            guard exists else {
+                throw PersonalizationPersistenceError.database(
+                    "Missing authenticated consent schema"
+                )
+            }
+        }
+        let row = try connection.query(
+            """
+            SELECT value, state_hmac
+            FROM personalization_schema_state
+            WHERE name = ?
+            """,
+            bindings: [.text(authenticatedConsentSchemaMarker)]
+        ).first
+        let expectedValue = String(authenticatedConsentSchemaVersion)
+        let expectedHMAC = try schemaStateHMAC(
+            name: authenticatedConsentSchemaMarker,
+            value: expectedValue,
+            keyData: keyData
+        )
+        guard
+            row?.text(at: 0) == expectedValue,
+            row?.blob(at: 1) == expectedHMAC
+        else {
+            throw PersonalizationPersistenceError.database(
+                "Invalid authenticated consent schema marker"
+            )
+        }
+    }
+
+    private static func schemaStateHMAC(
+        name: String,
+        value: String,
+        keyData: Data
+    ) throws -> Data {
+        try PersonalizationCryptography.scopeLookupHMAC(
+            kind: "personalization_schema_state_v1",
+            value: name + "\u{0}" + value,
+            keyData: keyData
+        )
     }
 
     private static func consentStateHMAC(
@@ -1300,6 +1421,39 @@ public actor PersonalizationDatabase {
             """,
             bindings: [.text(eventID.uuidString)]
         )
+    }
+
+    func dropAuthenticatedConsentSchemaForTesting() throws {
+        try connection.execute(
+            "DROP TABLE personalization_event_consent"
+        )
+        try connection.execute(
+            "DROP TABLE personalization_schema_state"
+        )
+    }
+
+    func prepareMalformedLegacyPendingConsentForTesting(
+        eventID: UUID
+    ) throws {
+        try connection.transaction {
+            try connection.execute(
+                "DROP TABLE personalization_event_consent"
+            )
+            try connection.execute(
+                "DROP TABLE personalization_schema_state"
+            )
+            try connection.execute(
+                "PRAGMA user_version = 0"
+            )
+            try connection.execute(
+                """
+                UPDATE pending_consent_event
+                SET collection_generation = X'00FF'
+                WHERE event_id = ?
+                """,
+                bindings: [.text(eventID.uuidString)]
+            )
+        }
     }
 
     func insertOrphanedEmbeddingForTesting() throws {
@@ -2618,8 +2772,8 @@ public actor PersonalizationDatabase {
     }
 
     private func reconcilePendingConsentEventsLocked(
-        collectionGeneration: UInt64,
-        directTypingGeneration: UInt64
+        collectionGeneration _: UInt64,
+        directTypingGeneration _: UInt64
     ) throws -> PendingConsentReconciliationResult {
         try connection.transaction {
             let rows = try connection.query(
@@ -2637,7 +2791,6 @@ public actor PersonalizationDatabase {
                 """
             )
             var removedCount = 0
-            var promotedCount = 0
             var encounteredUnfinalizedState = false
             for row in rows {
                 guard let eventID = row.text(at: 0) else { continue }
@@ -2652,47 +2805,10 @@ public actor PersonalizationDatabase {
                     continue
                 }
                 encounteredUnfinalizedState = true
-                let storedCollection =
-                    state.flatMap {
-                        UInt64($0.collectionGeneration)
-                    }
-                let storedDirect = state.flatMap {
-                    $0.directTypingGeneration.isEmpty
-                        ? nil
-                        : UInt64($0.directTypingGeneration)
-                }
-                let directGenerationIsValid =
-                    state?.directTypingGeneration.isEmpty == true
-                    || storedDirect != nil
-                let collectionIsCurrent =
-                    storedCollection == collectionGeneration
-                let directIsCurrent =
-                    storedDirect.map {
-                        $0 == directTypingGeneration
-                    } ?? true
-                if
-                    state?.status == "pending",
-                    storedCollection != nil,
-                    directGenerationIsValid,
-                    collectionIsCurrent,
-                    directIsCurrent
-                {
-                    try writeConsentState(
-                        eventID: eventID,
-                        status: "finalized",
-                        collectionGeneration: "",
-                        directTypingGeneration: ""
-                    )
-                    try connection.execute(
-                        """
-                        DELETE FROM pending_consent_event
-                        WHERE event_id = ?
-                        """,
-                        bindings: [.text(eventID)]
-                    )
-                    promotedCount += 1
-                    continue
-                }
+                // A pending row means the process ended before consent
+                // finalization completed. Startup cannot prove whether a
+                // persisted preference generation was rolled back, so never
+                // promote crash-interrupted data; discard it fail closed.
                 try connection.execute(
                     """
                     DELETE FROM completion_episode_source
@@ -2714,7 +2830,7 @@ public actor PersonalizationDatabase {
                 try pruneUnusedTextChunks()
             }
             return PendingConsentReconciliationResult(
-                promotedCount: promotedCount,
+                promotedCount: 0,
                 removedCount: removedCount
             )
         }
@@ -3338,6 +3454,9 @@ public actor PersonalizationDatabase {
             direct_typing_generation TEXT NOT NULL
         );
 
+        """
+
+    private static let authenticatedConsentSchema = """
         CREATE TABLE IF NOT EXISTS personalization_event_consent (
             event_id TEXT PRIMARY KEY
                 REFERENCES personalization_event(id) ON DELETE CASCADE,
@@ -3347,6 +3466,14 @@ public actor PersonalizationDatabase {
             state_hmac BLOB NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS personalization_schema_state (
+            name TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            state_hmac BLOB NOT NULL
+        );
+        """
+
+    private static let remainingSchema = """
         CREATE TABLE IF NOT EXISTS personalization_text_chunk (
             chunk_hmac BLOB PRIMARY KEY,
             payload_sealed BLOB NOT NULL,

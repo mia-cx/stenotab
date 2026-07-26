@@ -46,6 +46,7 @@ public enum WritingEpisodeBoundary: String, Codable, Sendable, Equatable {
     case focusChanged = "focus_changed"
     case idle
     case submitted
+    case collectionDisabled = "collection_disabled"
     case applicationTerminated = "application_terminated"
 }
 
