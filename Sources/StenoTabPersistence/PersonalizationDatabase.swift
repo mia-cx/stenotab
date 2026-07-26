@@ -1231,6 +1231,39 @@ public actor PersonalizationDatabase {
         )
     }
 
+    func replaceEventIDStorageWithBlobForTesting(
+        eventID: UUID
+    ) throws {
+        try connection.execute("PRAGMA foreign_keys = OFF")
+        do {
+            try connection.execute(
+                """
+                UPDATE personalization_event
+                SET id = CAST(id AS BLOB)
+                WHERE id = ?
+                """,
+                bindings: [.text(eventID.uuidString)]
+            )
+            try connection.execute("PRAGMA foreign_keys = ON")
+        } catch {
+            try? connection.execute("PRAGMA foreign_keys = ON")
+            throw error
+        }
+    }
+
+    func restoreEventIDTextStorageForTesting(
+        eventID: UUID
+    ) throws {
+        try connection.execute(
+            """
+            UPDATE personalization_event
+            SET id = CAST(id AS TEXT)
+            WHERE id = CAST(? AS BLOB)
+            """,
+            bindings: [.text(eventID.uuidString)]
+        )
+    }
+
     func swapFirstTwoCompletionEventPayloadsForTesting() throws -> Bool {
         let rows = try connection.query(
             """
@@ -2837,7 +2870,11 @@ public actor PersonalizationDatabase {
             var removedCount = 0
             var encounteredUnfinalizedState = false
             for row in rows {
-                guard let eventID = row.text(at: 0) else { continue }
+                guard let eventID = row.text(at: 0) else {
+                    throw PersonalizationPersistenceError.database(
+                        "Invalid personalization event identifier"
+                    )
+                }
                 let state = try validatedConsentState(
                     eventID: eventID,
                     status: row.text(at: 1),
@@ -2895,7 +2932,9 @@ public actor PersonalizationDatabase {
         var corruptEventIDs = Set<String>()
         for row in rows {
             guard let completionEventID = row.text(at: 0) else {
-                continue
+                throw PersonalizationPersistenceError.database(
+                    "Invalid personalization event identifier"
+                )
             }
             guard let rowKind = row.text(at: 1) else {
                 corruptEventIDs.insert(completionEventID)
@@ -2914,6 +2953,8 @@ public actor PersonalizationDatabase {
                     hmacIndex: 3,
                     expectedKind: rowKind
                 )
+            } catch let cancellation as CancellationError {
+                throw cancellation
             } catch {
                 // A corrupt event cannot provide authenticated lineage. Delete
                 // it fail closed so restoring replayed row bytes cannot

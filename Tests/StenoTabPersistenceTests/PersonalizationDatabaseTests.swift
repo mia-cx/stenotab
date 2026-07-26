@@ -2263,6 +2263,112 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(eventCount, 2)
     }
 
+    func testInvalidConsentCleanupRejectsNonTextEventIdentifier()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let sourceContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Source",
+            editorIdentifier: "source"
+        )
+        let source = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                id: UUID(),
+                fieldText: "private source",
+                selection: UTF16Selection(location: 14, length: 0),
+                insertion: " text",
+                acceptanceScope: .entireSuggestion,
+                context: sourceContext,
+                capturedAt: Date(timeIntervalSince1970: 900)
+            )
+        )
+        let dependent = makeCompletionEpisode(
+            id: UUID(),
+            input: "dependent prompt",
+            suggestion: " dependent suggestion",
+            outcome: "",
+            date: Date(timeIntervalSince1970: 901),
+            sourceEventIDs: [source.id],
+            sourceContexts: [sourceContext]
+        )
+        try await fixture.database.record(source)
+        try await fixture.database.record(dependent)
+        try await fixture.database.replaceEventIDStorageWithBlobForTesting(
+            eventID: dependent.id
+        )
+        try await fixture.database
+            .corruptAuthenticatedConsentStateForTesting(
+                eventID: source.id
+            )
+
+        do {
+            _ = try await fixture.database.reconcilePendingConsentEvents(
+                collectionGeneration: 0,
+                directTypingGeneration: 0
+            )
+            XCTFail("Expected consent cleanup to reject a non-TEXT event ID")
+        } catch {
+            XCTAssertTrue(
+                String(describing: error).contains(
+                    "Invalid personalization event identifier"
+                )
+            )
+        }
+
+        try await fixture.database.restoreEventIDTextStorageForTesting(
+            eventID: dependent.id
+        )
+        let eventCount = try await fixture.database.eventCount()
+        XCTAssertEqual(eventCount, 2)
+        let completionEpisodes =
+            try await fixture.database.completionEpisodes()
+        XCTAssertEqual(completionEpisodes, [dependent])
+    }
+
+    func testCancellationRollsBackInvalidConsentCleanup() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let source = makeEpisode(
+            id: UUID(),
+            text: "private source",
+            app: "com.example.Source",
+            editor: "source"
+        )
+        let unrelated = makeCompletionEpisode(
+            id: UUID(),
+            input: "unrelated prompt",
+            suggestion: " unrelated suggestion",
+            outcome: "",
+            date: Date(timeIntervalSince1970: 911)
+        )
+        try await fixture.database.record(source)
+        try await fixture.database.record(unrelated)
+        try await fixture.database
+            .corruptAuthenticatedConsentStateForTesting(
+                eventID: source.id
+            )
+
+        let reconciliation = Task {
+            withUnsafeCurrentTask { task in
+                task?.cancel()
+            }
+            return try await fixture.database.reconcilePendingConsentEvents(
+                collectionGeneration: 0,
+                directTypingGeneration: 0
+            )
+        }
+        do {
+            _ = try await reconciliation.value
+            XCTFail("Expected cancellation to propagate")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        let eventCount = try await fixture.database.eventCount()
+        XCTAssertEqual(eventCount, 2)
+    }
+
     func testStorageCapRecomputesAfterSourceCascadeDeletion() async throws {
         let fixture = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
