@@ -423,15 +423,11 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
                 let key = Self.contextKey(
                     words[contextStart..<index].map(\.display)
                 )
-                let leadingSeparator =
-                    contextLength == 0
-                    ? ""
-                    : words[index].leadingSeparator
                 updateTransition(
                     contextKey: key,
                     candidate: Self.transitionCandidateKey(
                         normalized: normalized,
-                        leadingSeparator: leadingSeparator,
+                        leadingSeparator: words[index].leadingSeparator,
                         trailingSeparator: words[index].trailingSeparator
                     ),
                     signal: signal,
@@ -1028,11 +1024,34 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             let mappedEnd,
             mappedStart <= mappedEnd
         {
-            return UTF16Selection(
+            let candidate = UTF16Selection(
                 location: mappedStart,
                 length: mappedEnd - mappedStart
             )
+            guard
+                let candidateText = utf16Substring(
+                    in: authoritativeAfter,
+                    selection: candidate
+                )
+            else {
+                return nil
+            }
+            let hasTwoLiteralAnchors =
+                !predictedPrefix.isEmpty && !predictedSuffix.isEmpty
+            let replacesWholeField =
+                predictedPrefix.isEmpty
+                && predictedSuffix.isEmpty
+                && !edit.insertedText.isEmpty
+            guard
+                candidateText == edit.insertedText
+                || hasTwoLiteralAnchors
+                || replacesWholeField
+            else {
+                return nil
+            }
+            return candidate
         }
+        guard insertedLength > 0 else { return nil }
         if let mappedStart {
             let candidate = UTF16Selection(
                 location: mappedStart,

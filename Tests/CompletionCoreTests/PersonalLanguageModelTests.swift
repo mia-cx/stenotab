@@ -350,6 +350,31 @@ final class PersonalLanguageModelTests: XCTestCase {
         XCTAssertEqual(completion.insertion, "hello")
     }
 
+    func testUnigramCompletionPreservesExistingWhitespace() throws {
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        let date = Date(timeIntervalSince1970: 76)
+        var model = PersonalLanguageModel()
+        for _ in 0..<2 {
+            model.learn(
+                insertedText: "world",
+                precedingText: "hello ",
+                signal: .directlyTyped,
+                context: context,
+                at: date
+            )
+        }
+
+        let completion = try XCTUnwrap(
+            model.completion(
+                for: "unknown ",
+                context: context,
+                at: date
+            )
+        )
+
+        XCTAssertEqual(completion.insertion, "world")
+    }
+
     func testRepeatedEditorPhrasesCanCompleteLocally() throws {
         let context = PersonalizationContext(
             applicationBundleIdentifier: "com.example.Chat",
@@ -1355,6 +1380,111 @@ final class PersonalLanguageModelTests: XCTestCase {
             context: PersonalizationContext(editorIdentifier: "editor"),
             startedAt: date,
             endedAt: date,
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(model.vocabularyEntries(), [])
+    }
+
+    func testEmptySuffixDoesNotAbsorbUnobservedTrailingText() {
+        let date = Date(timeIntervalSince1970: 134.35)
+        let initial = CapturedFieldState(
+            text: "user ",
+            selection: UTF16Selection(location: 5, length: 0)
+        )
+        let predicted = CapturedFieldState(
+            text: "user ok",
+            selection: UTF16Selection(location: 7, length: 0)
+        )
+        let authoritativeText = "user ok thanks"
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: CapturedFieldState(
+                text: authoritativeText,
+                selection: UTF16Selection(
+                    location: authoritativeText.utf16.count,
+                    length: 0
+                )
+            ),
+            edits: [
+                WritingEditCapture(
+                    insertedText: "ok",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: predicted.selection,
+                    fieldBefore: initial,
+                    fieldAfter: predicted,
+                    startedAt: date,
+                    endedAt: date
+                )
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date,
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(model.vocabularyEntries(), [])
+    }
+
+    func testAmbiguousPureDeletionAbortsEarlierEditReconstruction() {
+        let date = Date(timeIntervalSince1970: 134.36)
+        let initial = CapturedFieldState(
+            text: "tail",
+            selection: UTF16Selection(location: 0, length: 0)
+        )
+        let afterInsertion = CapturedFieldState(
+            text: "user tail",
+            selection: UTF16Selection(location: 5, length: 0)
+        )
+        let predictedFinal = CapturedFieldState(
+            text: "tail",
+            selection: UTF16Selection(location: 0, length: 0)
+        )
+        let authoritativeText = "unrelated"
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: CapturedFieldState(
+                text: authoritativeText,
+                selection: UTF16Selection(
+                    location: authoritativeText.utf16.count,
+                    length: 0
+                )
+            ),
+            edits: [
+                WritingEditCapture(
+                    insertedText: "user ",
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: afterInsertion.selection,
+                    fieldBefore: initial,
+                    fieldAfter: afterInsertion,
+                    startedAt: date,
+                    endedAt: date
+                ),
+                WritingEditCapture(
+                    insertedText: "",
+                    deletedText: "user ",
+                    provenance: .directlyTyped,
+                    selectionBefore: UTF16Selection(location: 0, length: 5),
+                    selectionAfter: predictedFinal.selection,
+                    fieldBefore: afterInsertion,
+                    fieldAfter: predictedFinal,
+                    startedAt: date.addingTimeInterval(1),
+                    endedAt: date.addingTimeInterval(1)
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date.addingTimeInterval(1),
             boundary: .submitted
         )
 
