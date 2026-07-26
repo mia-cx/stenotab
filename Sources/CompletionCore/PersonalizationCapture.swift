@@ -90,6 +90,22 @@ public struct CapturedFieldState: Codable, Sendable, Equatable {
         self.text = text
         self.selection = selection
     }
+
+    public func replacingSelection(with insertion: String) -> String? {
+        guard selection.isValid(for: text) else { return nil }
+        let utf16 = text.utf16
+        let lowerBound = utf16.index(
+            utf16.startIndex,
+            offsetBy: selection.location
+        )
+        let upperBound = utf16.index(
+            lowerBound,
+            offsetBy: selection.length
+        )
+        return String(decoding: utf16[..<lowerBound], as: UTF16.self)
+            + insertion
+            + String(decoding: utf16[upperBound...], as: UTF16.self)
+    }
 }
 
 public struct PersonalizationContext: Codable, Sendable, Equatable {

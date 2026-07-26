@@ -20,6 +20,16 @@ public final class PersonalizationConsentEpoch: @unchecked Sendable {
         self.generation = max(self.generation, generation)
     }
 
+    public func advance(
+        to generation: UInt64,
+        performing action: () -> Void
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        action()
+        self.generation = max(self.generation, generation)
+    }
+
     public func performIfCurrent(
         _ expectedGeneration: UInt64,
         _ action: () throws -> Void

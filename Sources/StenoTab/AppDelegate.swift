@@ -383,6 +383,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                 try Self.deleteUnopenablePersonalizationStorage(
                     databaseURL: databaseURL
                 )
+                return try PersonalizationDatabase(
+                    databaseURL: databaseURL,
+                    keyProvider: KeychainPersonalizationKeyProvider()
+                )
             }
             let description = String(describing: error)
             personalizationLogger.error(

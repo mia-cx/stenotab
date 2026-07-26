@@ -271,6 +271,15 @@ final class CompletionCoordinator: NSObject {
         reconciliationTimer = nil
         invalidatePendingCompletion()
         clearOCRContext()
+        if writingHistoryCollectionIsEnabled(),
+           let completed = writingHistoryTracker.finalize(
+               boundary: .applicationTerminated,
+               at: Date()
+           ) {
+            onWritingEpisode(completed)
+        } else {
+            writingHistoryTracker = WritingHistoryTracker()
+        }
         let hasActiveCompletionEpisode =
             pendingCompletionEpisodeResolution != nil
             || completionEpisodeTracker.activeInvocationID != nil
@@ -309,7 +318,13 @@ final class CompletionCoordinator: NSObject {
                 switch CompletionEpisodeReconciliationPolicy.settlement(
                     for: reconciliationDecision
                 ) {
-                case .wait, .discard:
+                case .wait:
+                    finalizePendingCompletionEpisodeIfNeeded(
+                        finalField:
+                            completionEpisodeExpectedField
+                            ?? authoritativeBaselineField
+                    )
+                case .discard:
                     discardPendingCompletionEpisode()
                 case .finalizeFromAuthoritativeBaseline:
                     finalizePendingCompletionEpisodeIfNeeded(
@@ -321,7 +336,13 @@ final class CompletionCoordinator: NSObject {
                     )
                 }
             } else {
-                discardPendingCompletionEpisode()
+                if let expectedField = completionEpisodeExpectedField {
+                    finalizePendingCompletionEpisodeIfNeeded(
+                        finalField: expectedField
+                    )
+                } else {
+                    discardPendingCompletionEpisode()
+                }
             }
         } else if completionEpisodeTracker.activeInvocationID != nil {
             if
@@ -465,6 +486,14 @@ final class CompletionCoordinator: NSObject {
         let deletion = fieldBeforeMutation.flatMap {
             deletionResult(for: mutation, fieldBefore: $0)
         }
+        var suggestionConsumptionUpdate:
+            (consumption: SuggestionConsumption,
+             outcome: SuggestionConsumption.Outcome)?
+        if case let .insert(text) = mutation,
+           var consumption = suggestionConsumption {
+            let outcome = consumption.apply(insertedText: text)
+            suggestionConsumptionUpdate = (consumption, outcome)
+        }
         if case .deleteBackward = mutation,
            let fieldBeforeMutation,
            let feedback = completionReversionTracker
@@ -486,7 +515,10 @@ final class CompletionCoordinator: NSObject {
            let fieldBeforeMutation {
             writingHistoryTracker.recordInsertion(
                 text,
-                provenance: .directlyTyped,
+                provenance:
+                    suggestionConsumptionUpdate.map {
+                        Self.writingProvenance(for: $0.outcome)
+                    } ?? .directlyTyped,
                 fieldBefore: fieldBeforeMutation,
                 fieldAfter: currentCapturedFieldFromBuffer(),
                 at: Date()
@@ -502,8 +534,9 @@ final class CompletionCoordinator: NSObject {
         }
 
         if case let .insert(text) = mutation,
-           var consumption = suggestionConsumption {
-            let outcome = consumption.apply(insertedText: text)
+           let suggestionConsumptionUpdate {
+            let consumption = suggestionConsumptionUpdate.consumption
+            let outcome = suggestionConsumptionUpdate.outcome
             suggestionConsumption = consumption
             synchronizeCompletionEpisodeTypedThrough(from: consumption)
 
@@ -1526,11 +1559,17 @@ final class CompletionCoordinator: NSObject {
                 completionEpisodeTracker.activeInvocationID
         ) {
             guard
+                let liveSnapshot,
                 CompletionEpisodeLiveEditorPolicy.allowsCapture(
                     activeEditorIdentifier:
                         lastSnapshot?.editorIdentifier,
-                    liveEditorIdentifier:
-                        liveSnapshot?.editorIdentifier
+                    liveEditorIdentifier: liveSnapshot.editorIdentifier
+                ),
+                CompletionPresentationPolicy.isCurrent(
+                    expectedPrefix: buffer.prefix,
+                    expectedSuffix: buffer.suffix,
+                    observedPrefix: liveSnapshot.prefix,
+                    observedSuffix: liveSnapshot.suffix
                 )
             else {
                 invalidatePendingCompletion()
@@ -2283,6 +2322,17 @@ final class CompletionCoordinator: NSObject {
             resolution: resolution,
             finalField: finalField
         )
+    }
+
+    private static func writingProvenance(
+        for outcome: SuggestionConsumption.Outcome
+    ) -> WritingEditProvenance {
+        switch outcome {
+        case .matched, .awaitingStream, .waitingForWhitespace:
+            .typedThroughSuggestion
+        case .triggerInference, .diverged:
+            .directlyTyped
+        }
     }
 
     private func discardPendingCompletionEpisode() {

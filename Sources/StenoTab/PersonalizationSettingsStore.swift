@@ -5,13 +5,6 @@ import StenoTabPersistence
 
 @MainActor
 final class PersonalizationSettingsStore: ObservableObject {
-    private enum RecentHistoryKind {
-        case acceptedSuggestions
-        case completionEpisodes
-        case none
-        case writingEpisodes
-    }
-
     private enum Keys {
         static let collectionEnabled =
             "personalization.collectionEnabled"
@@ -36,14 +29,17 @@ final class PersonalizationSettingsStore: ObservableObject {
         didSet {
             if oldValue, !collectionEnabled {
                 collectionConsentGeneration &+= 1
-                Self.persistConsentState(
-                    enabled: collectionEnabled,
-                    generation: collectionConsentGeneration,
-                    defaults: defaults,
-                    key: Keys.collectionConsentState
-                )
                 let consentGeneration = collectionConsentGeneration
-                collectionConsentEpoch.advance(to: consentGeneration)
+                collectionConsentEpoch.advance(
+                    to: consentGeneration
+                ) {
+                    Self.persistConsentState(
+                        enabled: collectionEnabled,
+                        generation: consentGeneration,
+                        defaults: defaults,
+                        key: Keys.collectionConsentState
+                    )
+                }
                 onHistoryReset?()
             } else {
                 Self.persistConsentState(
@@ -59,15 +55,18 @@ final class PersonalizationSettingsStore: ObservableObject {
         didSet {
             if oldValue, !collectDirectTyping {
                 directTypingConsentGeneration &+= 1
-                Self.persistConsentState(
-                    enabled: collectDirectTyping,
-                    generation: directTypingConsentGeneration,
-                    defaults: defaults,
-                    key: Keys.directTypingConsentState
-                )
+                let consentGeneration =
+                    directTypingConsentGeneration
                 directTypingConsentEpoch.advance(
-                    to: directTypingConsentGeneration
-                )
+                    to: consentGeneration
+                ) {
+                    Self.persistConsentState(
+                        enabled: collectDirectTyping,
+                        generation: consentGeneration,
+                        defaults: defaults,
+                        key: Keys.directTypingConsentState
+                    )
+                }
                 onWritingHistoryReset?()
             } else {
                 Self.persistConsentState(
@@ -134,7 +133,7 @@ final class PersonalizationSettingsStore: ObservableObject {
     private var historyInspectorRefreshTask: Task<Void, Never>?
     private var modelWorker: PersonalizationModelWorker?
     private var recoveryDeleteAll:
-        (@MainActor () async throws -> Void)?
+        (@MainActor () async throws -> PersonalizationDatabase)?
     private var pendingPersistenceTasks: [UUID: Task<Void, Never>] = [:]
     private var persistenceTail: Task<Void, Never>?
 #if DEBUG
@@ -239,6 +238,19 @@ final class PersonalizationSettingsStore: ObservableObject {
             ],
             forKey: key
         )
+        if key == Keys.collectionConsentState {
+            defaults.set(enabled, forKey: Keys.collectionEnabled)
+            defaults.set(
+                String(generation),
+                forKey: Keys.collectionConsentGeneration
+            )
+        } else if key == Keys.directTypingConsentState {
+            defaults.set(enabled, forKey: Keys.collectDirectTyping)
+            defaults.set(
+                String(generation),
+                forKey: Keys.directTypingConsentGeneration
+            )
+        }
         // Consent is a privacy boundary, so do not leave this transition only
         // in UserDefaults' deferred write buffer.
         _ = defaults.synchronize()
@@ -263,6 +275,7 @@ final class PersonalizationSettingsStore: ObservableObject {
         recoveryDeletionIsAvailable = false
         let worker = PersonalizationModelWorker(
             database: database,
+            collectionGeneration: collectionGeneration,
             collectionConsentEpoch: collectionConsentEpoch,
             directTypingConsentEpoch: directTypingConsentEpoch
         )
@@ -283,7 +296,10 @@ final class PersonalizationSettingsStore: ObservableObject {
                 encryptedPayloadBytes = statistics.encryptedPayloadBytes
                 operationError = nil
             } catch {
-                operationError = String(describing: error)
+                recoveryDeletionIsAvailable = true
+                operationError =
+                    "\(String(describing: error)). "
+                    + "Delete All remains available."
             }
         }
     }
@@ -373,7 +389,6 @@ final class PersonalizationSettingsStore: ObservableObject {
     }
 
     private func refreshAfterRecording(
-        _ historyKind: RecentHistoryKind,
         generation: UInt64,
         consentGeneration: UInt64,
         directTypingConsentGeneration: UInt64? = nil
@@ -381,55 +396,10 @@ final class PersonalizationSettingsStore: ObservableObject {
         guard let database else { return }
         let statistics = try await database.storageStatistics()
         let inspectorWasVisible = isHistoryInspectorVisible
-        let inspectorGeneration = historyInspectorGeneration
-        var acceptedSuggestions:
-            [AcceptedSuggestionCapture]?
-        var completionEpisodes:
-            [CompletionEpisodeCapture]?
-        var writingEpisodes:
-            [WritingEpisodeCapture]?
-        guard inspectorWasVisible else {
-            guard
-                generation == collectionGeneration,
-                collectionEnabled,
-                consentGeneration == collectionConsentGeneration,
-                directTypingConsentIsCurrent(
-                    directTypingConsentGeneration
-                ),
-                !derivedPersonalizationIsInvalidated
-            else {
-                return
-            }
-            storedEventCount = statistics.eventCount
-            encryptedPayloadBytes = statistics.encryptedPayloadBytes
-            operationError = nil
-            return
-        }
-        guard
-            inspectorGeneration == historyInspectorGeneration,
-            isHistoryInspectorVisible
-        else {
-            return
-        }
-        switch historyKind {
-        case .acceptedSuggestions:
-            acceptedSuggestions =
-                try await database.acceptedSuggestions(limit: 20)
-        case .completionEpisodes:
-            completionEpisodes =
-                try await database.completionEpisodes(limit: 20)
-        case .none:
-            break
-        case .writingEpisodes:
-            writingEpisodes =
-                try await database.writingEpisodes(limit: 20)
-        }
         guard
             generation == collectionGeneration,
             collectionEnabled,
             consentGeneration == collectionConsentGeneration,
-            inspectorGeneration == historyInspectorGeneration,
-            isHistoryInspectorVisible,
             directTypingConsentIsCurrent(
                 directTypingConsentGeneration
             ),
@@ -439,16 +409,10 @@ final class PersonalizationSettingsStore: ObservableObject {
         }
         storedEventCount = statistics.eventCount
         encryptedPayloadBytes = statistics.encryptedPayloadBytes
-        if let acceptedSuggestions {
-            recentAcceptedSuggestions = acceptedSuggestions
-        }
-        if let completionEpisodes {
-            recentCompletionEpisodes = completionEpisodes
-        }
-        if let writingEpisodes {
-            recentEpisodes = writingEpisodes
-        }
         operationError = nil
+        if inspectorWasVisible, isHistoryInspectorVisible {
+            refresh()
+        }
     }
 
     private func directTypingConsentIsCurrent(
@@ -471,7 +435,7 @@ final class PersonalizationSettingsStore: ObservableObject {
             guard let recoveryDeleteAll else { return }
             enqueuePersistenceOperation { [self] in
                 do {
-                    try await recoveryDeleteAll()
+                    let database = try await recoveryDeleteAll()
                     guard generation == collectionGeneration else { return }
                     storedEventCount = 0
                     encryptedPayloadBytes = 0
@@ -484,6 +448,7 @@ final class PersonalizationSettingsStore: ObservableObject {
                         generation: generation
                     )
                     operationError = nil
+                    attach(database: database)
                 } catch {
                     if
                         completionEpisodeDeleteAllBoundary
@@ -510,6 +475,7 @@ final class PersonalizationSettingsStore: ObservableObject {
                 recentEpisodes = []
                 recentAcceptedSuggestions = []
                 recentCompletionEpisodes = []
+                recoveryDeletionIsAvailable = false
                 finishDerivedPersonalizationInvalidation(
                     generation: generation
                 )
@@ -530,7 +496,8 @@ final class PersonalizationSettingsStore: ObservableObject {
     }
 
     func attachRecoveryDeleteAll(
-        _ deleteAll: @escaping @MainActor () async throws -> Void
+        _ deleteAll: @escaping @MainActor () async throws
+            -> PersonalizationDatabase
     ) {
         recoveryDeleteAll = deleteAll
         recoveryDeletionIsAvailable = true
@@ -579,7 +546,6 @@ final class PersonalizationSettingsStore: ObservableObject {
                 languageModel = updatedModel
                 voiceAssessment = updatedVoiceAssessment
                 try await refreshAfterRecording(
-                    .acceptedSuggestions,
                     generation: generation,
                     consentGeneration: consentGeneration
                 )
@@ -643,7 +609,6 @@ final class PersonalizationSettingsStore: ObservableObject {
                 languageModel = updatedModel
                 voiceAssessment = updatedVoiceAssessment
                 try await refreshAfterRecording(
-                    .writingEpisodes,
                     generation: generation,
                     consentGeneration: consentGeneration,
                     directTypingConsentGeneration:
@@ -686,7 +651,6 @@ final class PersonalizationSettingsStore: ObservableObject {
                 }
                 languageModel = updatedModel
                 try await refreshAfterRecording(
-                    .none,
                     generation: generation,
                     consentGeneration: consentGeneration
                 )
@@ -745,7 +709,6 @@ final class PersonalizationSettingsStore: ObservableObject {
                 }
                 languageModel = updatedModel
                 try await refreshAfterRecording(
-                    .completionEpisodes,
                     generation: generation,
                     consentGeneration: consentGeneration
                 )
@@ -938,9 +901,7 @@ final class PersonalizationSettingsStore: ObservableObject {
             return
         }
         do {
-            let recoveredModel = try await modelWorker.prepare(
-                retentionPolicy: retentionPolicy
-            )
+            let recoveredModel = try await modelWorker.prepare()
             let recoveredVoiceAssessment =
                 await modelWorker.voiceAssessmentSnapshot()
             let recoveredStatistics: PersonalizationStorageStatistics? =
@@ -1067,6 +1028,13 @@ actor PersonalizationModelWorker {
         let context: PersonalizationContext
     }
 
+    private struct VoiceInput {
+        let text: String
+        let id: UUID
+        let context: PersonalizationContext
+        let capturedAt: Date
+    }
+
     private let database: PersonalizationDatabase
     private var model = PersonalLanguageModel()
     private var examples: [PersonalizationExample] = []
@@ -1091,12 +1059,14 @@ actor PersonalizationModelWorker {
 
     init(
         database: PersonalizationDatabase,
+        collectionGeneration: UInt64 = 0,
         collectionConsentEpoch: PersonalizationConsentEpoch =
             PersonalizationConsentEpoch(),
         directTypingConsentEpoch: PersonalizationConsentEpoch =
             PersonalizationConsentEpoch()
     ) {
         self.database = database
+        self.collectionGeneration = collectionGeneration
         self.collectionConsentEpoch = collectionConsentEpoch
         self.directTypingConsentEpoch = directTypingConsentEpoch
     }
@@ -1104,8 +1074,7 @@ actor PersonalizationModelWorker {
     func prepare(
         retentionPolicy: PersonalizationRetentionPolicy? = nil
     ) async throws -> PersonalLanguageModel {
-        let reconciliation =
-            try await database.reconcilePendingConsentEvents(
+        _ = try await database.reconcilePendingConsentEvents(
                 collectionEpoch: collectionConsentEpoch,
                 directTypingEpoch: directTypingConsentEpoch
             )
@@ -1116,7 +1085,6 @@ actor PersonalizationModelWorker {
             _ = try await rebuildLanguageModel()
         }
         if
-            reconciliation.promotedCount > 0,
             let retentionPolicy,
             try await database.enforceRetention(retentionPolicy) > 0
         {
@@ -1139,6 +1107,14 @@ actor PersonalizationModelWorker {
         _ callback: @escaping @MainActor @Sendable () -> Void
     ) {
         recordWillFinalizeConsentForTesting = callback
+    }
+
+    func voiceTextsForTesting() -> [String] {
+        voiceTexts
+    }
+
+    func voiceSourceIDsForTesting() -> [UUID] {
+        voiceSources.map(\.id)
     }
 
     private func invokeRecordWillFinalizeConsentForTesting() async {
@@ -1184,9 +1160,13 @@ actor PersonalizationModelWorker {
             examples.append(example)
             semanticExamples.append(example)
             try await embedIfNeeded(example)
-            voiceTexts.append(capture.field.text + capture.insertion)
             voiceSourceEventCount += 1
-            appendVoiceSource(id: capture.id, context: capture.context)
+            if let text = capture.field.replacingSelection(
+                with: capture.insertion
+            ) {
+                voiceTexts.append(text)
+                appendVoiceSource(id: capture.id, context: capture.context)
+            }
             try await updateVoiceAssessmentIfNeeded()
             let removed = try await database.enforceRetention(retentionPolicy)
             if removed > 0 {
@@ -1674,22 +1654,36 @@ actor PersonalizationModelWorker {
         for example in semanticExamples {
             try await embedIfNeeded(example)
         }
-        let voiceInputs =
+        let voiceInputs: [VoiceInput] =
             episodes.map {
-                (
+                VoiceInput(
                     text: $0.finalField.text,
                     id: $0.id,
-                    context: $0.context
+                    context: $0.context,
+                    capturedAt: $0.endedAt
                 )
             }
-            + accepted.map {
-                (
-                    text: $0.field.text + $0.insertion,
+            + accepted.compactMap {
+                guard let text = $0.field.replacingSelection(
+                    with: $0.insertion
+                ) else {
+                    return nil
+                }
+                return VoiceInput(
+                    text: text,
                     id: $0.id,
-                    context: $0.context
+                    context: $0.context,
+                    capturedAt: $0.capturedAt
                 )
             }
-        let recentVoiceInputs = Array(voiceInputs.suffix(200))
+        let recentVoiceInputs = Array(
+            voiceInputs.sorted {
+                if $0.capturedAt != $1.capturedAt {
+                    return $0.capturedAt < $1.capturedAt
+                }
+                return $0.id.uuidString < $1.id.uuidString
+            }.suffix(200)
+        )
         voiceTexts = recentVoiceInputs.map(\.text)
         voiceSources = recentVoiceInputs.map {
             VoiceSource(id: $0.id, context: $0.context)

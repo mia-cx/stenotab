@@ -2,6 +2,7 @@ import Foundation
 
 public enum WritingEditProvenance: String, Codable, Sendable, Equatable {
     case directlyTyped = "directly_typed"
+    case typedThroughSuggestion = "typed_through_suggestion"
     case acceptedSuggestion = "accepted_suggestion"
     case reconciled = "reconciled"
 }

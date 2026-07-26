@@ -131,6 +131,47 @@ final class WritingHistoryTrackerTests: XCTestCase {
         XCTAssertEqual(completed.edits.map(\.insertedText), ["u", "est"])
     }
 
+    func testTypedThroughSuggestionIsNotClassifiedAsDirectTyping()
+        throws
+    {
+        let date = Date(timeIntervalSince1970: 250)
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        var tracker = WritingHistoryTracker()
+        _ = tracker.observe(
+            field: CapturedFieldState(
+                text: "hel",
+                selection: UTF16Selection(location: 3, length: 0)
+            ),
+            context: context,
+            at: date
+        )
+        tracker.recordInsertion(
+            "lo",
+            provenance: .typedThroughSuggestion,
+            fieldBefore: CapturedFieldState(
+                text: "hel",
+                selection: UTF16Selection(location: 3, length: 0)
+            ),
+            fieldAfter: CapturedFieldState(
+                text: "hello",
+                selection: UTF16Selection(location: 5, length: 0)
+            ),
+            at: date.addingTimeInterval(0.1)
+        )
+
+        let completed = try XCTUnwrap(
+            tracker.finalize(
+                boundary: .applicationTerminated,
+                at: date.addingTimeInterval(0.2)
+            )
+        )
+        XCTAssertEqual(completed.boundary, .applicationTerminated)
+        XCTAssertEqual(
+            completed.edits.map(\.provenance),
+            [.typedThroughSuggestion]
+        )
+    }
+
     func testIdleBoundaryPreservesCompleteLongMultilineField() throws {
         let date = Date(timeIntervalSince1970: 300)
         let longPrefix = String(repeating: "complete line\n", count: 120)

@@ -2,6 +2,18 @@ import CompletionCore
 import XCTest
 
 final class PersonalizationCaptureTests: XCTestCase {
+    func testCapturedFieldReplacesUTF16Selection() {
+        let field = CapturedFieldState(
+            text: "hello 🌍 world",
+            selection: UTF16Selection(location: 6, length: 2)
+        )
+
+        XCTAssertEqual(
+            field.replacingSelection(with: "beautiful"),
+            "hello beautiful world"
+        )
+    }
+
     private struct LegacyAcceptedSuggestionCapture: Codable {
         let id: UUID
         let field: CapturedFieldState

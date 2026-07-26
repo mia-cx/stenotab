@@ -1071,6 +1071,36 @@ public actor PersonalizationDatabase {
         return true
     }
 
+    func corruptFirstAcceptedSuggestionPayloadForTesting() throws -> Bool {
+        let row = try connection.query(
+            """
+            SELECT id, payload_sealed
+            FROM personalization_event
+            WHERE kind = ?
+            ORDER BY sequence ASC
+            LIMIT 1
+            """,
+            bindings: [.text(Self.acceptedSuggestionKind)]
+        ).first
+        guard
+            let id = row?.text(at: 0),
+            var payload = row?.blob(at: 1),
+            !payload.isEmpty
+        else {
+            return false
+        }
+        payload[payload.startIndex] ^= 0x01
+        try connection.execute(
+            """
+            UPDATE personalization_event
+            SET payload_sealed = ?
+            WHERE id = ?
+            """,
+            bindings: [.blob(payload), .text(id)]
+        )
+        return true
+    }
+
     func swapFirstTwoTextChunkPayloadsForTesting() throws -> Bool {
         let rows = try connection.query(
             """

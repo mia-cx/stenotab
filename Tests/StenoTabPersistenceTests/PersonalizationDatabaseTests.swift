@@ -115,7 +115,7 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(deletedCount, 1)
     }
 
-    func testUnreadableLegacyScopeFailsMigrationClosed() async throws {
+    func testUnreadableScopeCiphertextFailsMigrationClosed() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(
@@ -158,7 +158,14 @@ final class PersonalizationDatabaseTests: XCTestCase {
                 databaseURL: databaseURL,
                 keyProvider: keyProvider
             )
-        )
+        ) { error in
+            XCTAssertEqual(
+                error as? PersonalizationPersistenceError,
+                .database(
+                    "Unable to migrate encrypted personalization scope"
+                )
+            )
+        }
     }
 
     func testAcceptedCaptureRoundTripsEncryptedAndCanBeDeleted() async throws {
