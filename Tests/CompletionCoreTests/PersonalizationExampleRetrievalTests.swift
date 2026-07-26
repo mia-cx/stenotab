@@ -2,6 +2,145 @@ import XCTest
 @testable import CompletionCore
 
 final class PersonalizationExampleRetrievalTests: XCTestCase {
+    func testPromptLineageIncludesOnlyEnabledHistoryComponents() {
+        let frecentID = UUID()
+        let relevantID = UUID()
+        let voiceID = UUID()
+        let frecentContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Frecent",
+            editorIdentifier: "frecent"
+        )
+        let relevantContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Relevant",
+            editorIdentifier: "relevant"
+        )
+        let voiceContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Voice",
+            editorIdentifier: "voice"
+        )
+        let context = PersonalizationPromptContext(
+            frecentExamples: "frecent",
+            relevantExamples: "relevant",
+            frecentSourceEventIDs: [frecentID],
+            frecentSourceContexts: [frecentContext],
+            relevantSourceEventIDs: [relevantID],
+            relevantSourceContexts: [relevantContext],
+            voiceSourceEventIDs: [voiceID],
+            voiceSourceContexts: [voiceContext]
+        )
+
+        XCTAssertEqual(
+            context.sourceEventIDs(
+                includeFrecent: true,
+                includeRelevant: false
+            ),
+            [frecentID]
+        )
+        XCTAssertEqual(
+            context.sourceContexts(
+                includeFrecent: false,
+                includeRelevant: true
+            ),
+            [relevantContext]
+        )
+        XCTAssertEqual(
+            context.sourceEventIDs(
+                includeFrecent: false,
+                includeRelevant: false,
+                includeVoiceAssessment: true
+            ),
+            [voiceID]
+        )
+        XCTAssertEqual(
+            context.sourceContexts(
+                includeFrecent: false,
+                includeRelevant: false
+            ),
+            []
+        )
+    }
+
+    func testPromptLineageExcludesRecordsBeyondPromptCharacterLimit() {
+        let ids = [UUID(), UUID(), UUID()]
+        let contexts = ids.indices.map {
+            PersonalizationContext(
+                applicationBundleIdentifier: "com.example.\($0)",
+                editorIdentifier: "editor-\($0)"
+            )
+        }
+        let records = [
+            String(repeating: "a", count: 2_900),
+            String(repeating: "b", count: 200),
+            "not included",
+        ]
+        let context = PersonalizationPromptContext(
+            frecentExamples: records.joined(
+                separator:
+                    PersonalizationExample.promptRecordSeparator
+            ),
+            frecentSourceEventIDs: ids,
+            frecentSourceContexts: contexts,
+            frecentRecordCharacterCounts: records.map(\.count)
+        )
+
+        XCTAssertEqual(
+            context.sourceEventIDs(
+                includeFrecent: true,
+                includeRelevant: false
+            ),
+            Array(ids.prefix(2))
+        )
+        XCTAssertEqual(
+            context.sourceContexts(
+                includeFrecent: true,
+                includeRelevant: false
+            ),
+            Array(contexts.prefix(2))
+        )
+
+        let separatorAtBoundary = PersonalizationPromptContext(
+            frecentExamples:
+                String(repeating: "a", count: 2_999)
+                + PersonalizationExample.promptRecordSeparator
+                + "not included",
+            frecentSourceEventIDs: ids
+        )
+        XCTAssertEqual(
+            separatorAtBoundary.sourceEventIDs(
+                includeFrecent: true,
+                includeRelevant: false
+            ),
+            Array(ids.prefix(1))
+        )
+    }
+
+    func testPromptLineageDoesNotTreatLiteralSeparatorAsAnotherSource() {
+        let ids = [UUID(), UUID(), UUID()]
+        let records = [
+            String(repeating: "a", count: 2_900)
+                + PersonalizationExample.promptRecordSeparator
+                + String(repeating: "b", count: 150),
+            "not included",
+            "also not included",
+        ]
+        let context = PersonalizationPromptContext(
+            frecentExamples: records.joined(
+                separator:
+                    PersonalizationExample.promptRecordSeparator
+            ),
+            frecentSourceEventIDs: ids,
+            frecentRecordCharacterCounts: records.map(\.count)
+        )
+
+        XCTAssertEqual(
+            context.sourceEventIDs(
+                includeFrecent: true,
+                includeRelevant: false
+            ),
+            Array(ids.prefix(1))
+        )
+    }
+
     func testExampleUsesLiteralTextAndInsertionFormat() {
         let example = PersonalizationExample(
             id: UUID(),
@@ -49,6 +188,68 @@ final class PersonalizationExampleRetrievalTests: XCTestCase {
             examples[0].promptText
                 + PersonalizationExample.promptRecordSeparator
                 + examples[1].promptText
+        )
+    }
+
+    func testDirectlyTypedEditsHaveStableDistinctRetrievalIdentities() {
+        let episodeID = UUID()
+        let firstField = CapturedFieldState(
+            text: "hello",
+            selection: UTF16Selection(location: 5, length: 0)
+        )
+        let secondField = CapturedFieldState(
+            text: "hello there",
+            selection: UTF16Selection(location: 11, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: episodeID,
+            initialField: firstField,
+            finalField: CapturedFieldState(
+                text: "hello there friend",
+                selection: UTF16Selection(location: 18, length: 0)
+            ),
+            edits: [
+                WritingEditCapture(
+                    insertedText: " there",
+                    provenance: .directlyTyped,
+                    selectionBefore: firstField.selection,
+                    selectionAfter: secondField.selection,
+                    fieldBefore: firstField,
+                    fieldAfter: secondField,
+                    startedAt: Date(timeIntervalSince1970: 1),
+                    endedAt: Date(timeIntervalSince1970: 2)
+                ),
+                WritingEditCapture(
+                    insertedText: " friend",
+                    provenance: .directlyTyped,
+                    selectionBefore: secondField.selection,
+                    selectionAfter:
+                        UTF16Selection(location: 18, length: 0),
+                    fieldBefore: secondField,
+                    fieldAfter: CapturedFieldState(
+                        text: "hello there friend",
+                        selection:
+                            UTF16Selection(location: 18, length: 0)
+                    ),
+                    startedAt: Date(timeIntervalSince1970: 3),
+                    endedAt: Date(timeIntervalSince1970: 4)
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: Date(timeIntervalSince1970: 1),
+            endedAt: Date(timeIntervalSince1970: 4),
+            boundary: .idle
+        )
+
+        let firstPass = PersonalizationExample.directlyTyped(from: episode)
+        let secondPass = PersonalizationExample.directlyTyped(from: episode)
+
+        XCTAssertEqual(firstPass.count, 2)
+        XCTAssertNotEqual(firstPass[0].id, firstPass[1].id)
+        XCTAssertEqual(firstPass.map(\.id), secondPass.map(\.id))
+        XCTAssertEqual(
+            firstPass.compactMap(\.sourceEventID),
+            [episodeID, episodeID]
         )
     }
 

@@ -26,4 +26,16 @@ final class CompletionStreamDecoderTests: XCTestCase {
             CompletionStreamEvent(delta: "", isFinished: true)
         )
     }
+
+    func testRawCompletionAccumulatorStopsAtConfiguredLimit() {
+        var accumulator = BoundedCompletionTextAccumulator(
+            maximumCharacters: 8
+        )
+
+        XCTAssertFalse(accumulator.append("hello"))
+        XCTAssertTrue(accumulator.append(" world"))
+        XCTAssertEqual(accumulator.text, "hello wo")
+        XCTAssertTrue(accumulator.append(String(repeating: "x", count: 100)))
+        XCTAssertEqual(accumulator.text, "hello wo")
+    }
 }

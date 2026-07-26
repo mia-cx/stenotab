@@ -11,6 +11,7 @@ struct EditorSnapshot {
     let caretRect: CGRect
     let typography: EditorTypography
     let foregroundColor: CGColor?
+    let backgroundColor: CGColor?
     let processID: pid_t
     let isWebBacked: Bool
     let editorIdentifier: String
@@ -130,6 +131,7 @@ final class AccessibilityReader {
             caretRect: caretRect,
             typography: appearance.typography,
             foregroundColor: appearance.foregroundColor,
+            backgroundColor: appearance.backgroundColor,
             processID: pid,
             isWebBacked: appIsWebBacked,
             editorIdentifier: elementIdentity(focused),
@@ -270,7 +272,11 @@ final class AccessibilityReader {
         textLength: Int,
         caretHeight: CGFloat,
         reconcileReportedSizeWithCaret: Bool
-    ) -> (typography: EditorTypography, foregroundColor: CGColor?) {
+    ) -> (
+        typography: EditorTypography,
+        foregroundColor: CGColor?,
+        backgroundColor: CGColor?
+    ) {
         guard textLength > 0 else {
             return fallbackAppearance(
                 caretHeight: caretHeight,
@@ -319,6 +325,17 @@ final class AccessibilityReader {
         } else {
             foregroundColor = nil
         }
+        let backgroundValue =
+            attributes[.accessibilityBackgroundColor]
+        let backgroundColor: CGColor?
+        if
+            let backgroundValue,
+            CFGetTypeID(backgroundValue as CFTypeRef) == CGColor.typeID
+        {
+            backgroundColor = (backgroundValue as! CGColor)
+        } else {
+            backgroundColor = nil
+        }
 
         return (
             EditorTypography(
@@ -328,14 +345,19 @@ final class AccessibilityReader {
                 reconcileReportedSizeWithCaret:
                     reconcileReportedSizeWithCaret
             ),
-            foregroundColor
+            foregroundColor,
+            backgroundColor
         )
     }
 
     private func fallbackAppearance(
         caretHeight: CGFloat,
         reconcileReportedSizeWithCaret: Bool
-    ) -> (typography: EditorTypography, foregroundColor: CGColor?) {
+    ) -> (
+        typography: EditorTypography,
+        foregroundColor: CGColor?,
+        backgroundColor: CGColor?
+    ) {
         (
             EditorTypography(
                 reportedFontName: nil,
@@ -344,6 +366,7 @@ final class AccessibilityReader {
                 reconcileReportedSizeWithCaret:
                     reconcileReportedSizeWithCaret
             ),
+            nil,
             nil
         )
     }

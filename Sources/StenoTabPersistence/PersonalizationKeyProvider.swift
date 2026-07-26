@@ -4,6 +4,16 @@ import Security
 
 public protocol PersonalizationKeyProviding: Sendable {
     func keyData() throws -> Data
+    func authenticatedConsentSchemaVersion() throws -> Int?
+    func persistAuthenticatedConsentSchemaVersion(_ version: Int) throws
+}
+
+public extension PersonalizationKeyProviding {
+    func authenticatedConsentSchemaVersion() throws -> Int? {
+        nil
+    }
+
+    func persistAuthenticatedConsentSchemaVersion(_ version: Int) throws {}
 }
 
 public struct StaticPersonalizationKeyProvider: PersonalizationKeyProviding {
@@ -77,15 +87,77 @@ public struct KeychainPersonalizationKeyProvider:
         }
     }
 
-    func deleteKeyForTesting() throws {
-        let status = SecItemDelete(baseQuery as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw PersonalizationPersistenceError.keychain(status)
+    public func authenticatedConsentSchemaVersion() throws -> Int? {
+        guard let data = try existingData(account: consentSchemaAccount) else {
+            return nil
+        }
+        guard
+            let text = String(data: data, encoding: .utf8),
+            let version = Int(text),
+            version >= 0
+        else {
+            throw PersonalizationPersistenceError.database(
+                "Keychain returned an invalid consent schema version"
+            )
+        }
+        return version
+    }
+
+    public func persistAuthenticatedConsentSchemaVersion(
+        _ version: Int
+    ) throws {
+        let data = Data(String(version).utf8)
+        let query = baseQuery(account: consentSchemaAccount)
+        let addQuery = query.merging([
+            kSecAttrAccessible as String:
+                kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecValueData as String: data,
+        ]) { _, new in new }
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        switch addStatus {
+        case errSecSuccess:
+            return
+        case errSecDuplicateItem:
+            let updateStatus = SecItemUpdate(
+                query as CFDictionary,
+                [kSecValueData as String: data] as CFDictionary
+            )
+            guard updateStatus == errSecSuccess else {
+                throw PersonalizationPersistenceError.keychain(updateStatus)
+            }
+        default:
+            throw PersonalizationPersistenceError.keychain(addStatus)
+        }
+    }
+
+    public func deleteKey() throws {
+        for targetAccount in [account, consentSchemaAccount] {
+            let status = SecItemDelete(
+                baseQuery(account: targetAccount) as CFDictionary
+            )
+            guard
+                status == errSecSuccess || status == errSecItemNotFound
+            else {
+                throw PersonalizationPersistenceError.keychain(status)
+            }
         }
     }
 
     private func existingKey() throws -> Data? {
-        var query = baseQuery
+        guard let data = try existingData(account: account) else {
+            return nil
+        }
+        guard data.count == PersonalizationCryptography.keyByteCount else {
+            throw PersonalizationPersistenceError.invalidKeyLength(
+                expected: PersonalizationCryptography.keyByteCount,
+                actual: data.count
+            )
+        }
+        return data
+    }
+
+    private func existingData(account: String) throws -> Data? {
+        var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -101,14 +173,6 @@ public struct KeychainPersonalizationKeyProvider:
                     "Keychain returned an invalid personalization key"
                 )
             }
-            guard
-                data.count == PersonalizationCryptography.keyByteCount
-            else {
-                throw PersonalizationPersistenceError.invalidKeyLength(
-                    expected: PersonalizationCryptography.keyByteCount,
-                    actual: data.count
-                )
-            }
             return data
         case errSecItemNotFound:
             return nil
@@ -117,7 +181,11 @@ public struct KeychainPersonalizationKeyProvider:
         }
     }
 
-    private var baseQuery: [String: Any] {
+    private var consentSchemaAccount: String {
+        account + ".authenticated-consent-schema"
+    }
+
+    private func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -158,6 +226,27 @@ enum PersonalizationCryptography {
         return Data(
             HMAC<SHA256>.authenticationCode(
                 for: Data(value.utf8),
+                using: keys.lookup
+            )
+        )
+    }
+
+    static func scopeLookupHMAC(
+        kind: String,
+        value: String,
+        keyData: Data
+    ) throws -> Data {
+        let keys = try split(keyData)
+        var authenticatedValue = Data(
+            "cx.mia.stenotab.personalization:scope:v2".utf8
+        )
+        authenticatedValue.append(0)
+        authenticatedValue.append(contentsOf: kind.utf8)
+        authenticatedValue.append(0)
+        authenticatedValue.append(contentsOf: value.utf8)
+        return Data(
+            HMAC<SHA256>.authenticationCode(
+                for: authenticatedValue,
                 using: keys.lookup
             )
         )

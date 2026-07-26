@@ -5,6 +5,14 @@ import OSLog
 import StenoTabPersistence
 
 @MainActor
+protocol PersonalizationHistoryResetting: AnyObject {
+    func personalizationHistoryWillReset()
+    func writingHistoryWillReset()
+}
+
+extension CompletionCoordinator: PersonalizationHistoryResetting {}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     NSWindowDelegate
 {
@@ -40,10 +48,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         referenceDate: Date()
     )
     private var calendarDayObserver: NSObjectProtocol?
+    private var isPreparingToTerminate = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        installMainMenu()
+        ApplicationMenu.install(on: NSApp, delegate: self)
         configurePersonalizationDatabase()
 
         let environment = ProcessInfo.processInfo.environment
@@ -78,8 +87,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             onWritingEpisode: { [weak self] episode in
                 self?.recordWritingEpisode(episode)
             },
+            writingHistoryCollectionIsEnabled: {
+                [personalizationSettings] in
+                personalizationSettings.collectionEnabled
+                    && personalizationSettings.collectDirectTyping
+            },
             onCompletionFeedback: { [weak self] feedback in
                 self?.recordCompletionFeedback(feedback)
+            },
+            onCompletionEpisode: { [weak self] episode in
+                self?.recordCompletionEpisode(episode)
+            },
+            completionEpisodeCollectionIsEnabled: {
+                [personalizationSettings] in
+                personalizationSettings.collectionEnabled
+            },
+            completionEpisodeCollectionGeneration: {
+                [personalizationSettings] in
+                personalizationSettings.captureGeneration
             },
             personalCompletion: { [personalizationSettings] prefix, context in
                 personalizationSettings.personalCompletion(
@@ -96,6 +121,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             }
         )
         self.coordinator = coordinator
+        Self.connectPersonalizationResetHandlers(
+            settings: personalizationSettings,
+            resetter: coordinator
+        )
         applicationPolicy.onChange = { [weak coordinator] in
             coordinator?.applicationPolicyDidChange()
         }
@@ -114,12 +143,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         }
     }
 
+    static func connectPersonalizationResetHandlers(
+        settings: PersonalizationSettingsStore,
+        resetter: any PersonalizationHistoryResetting
+    ) {
+        settings.onHistoryReset = { [weak resetter] in
+            resetter?.personalizationHistoryWillReset()
+        }
+        settings.onWritingHistoryReset = { [weak resetter] in
+            resetter?.writingHistoryWillReset()
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        coordinator?.stop()
         if let calendarDayObserver {
             NotificationCenter.default.removeObserver(calendarDayObserver)
         }
         localModelTask?.cancel()
         localServer?.stop()
+    }
+
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard !isPreparingToTerminate else {
+            return .terminateLater
+        }
+        isPreparingToTerminate = true
+        coordinator?.stop()
+        Task { [personalizationSettings] in
+            await personalizationSettings.flushPendingPersistence()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     private func installStatusItem(for coordinator: CompletionCoordinator) {
@@ -289,6 +346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     }
 
     private func configurePersonalizationDatabase() {
+        let databaseURL: URL
         do {
             let applicationSupport = try FileManager.default.url(
                 for: .applicationSupportDirectory,
@@ -296,10 +354,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                 appropriateFor: nil,
                 create: true
             )
-            let databaseURL = applicationSupport
+            databaseURL = applicationSupport
                 .appending(path: "StenoTab", directoryHint: .isDirectory)
-                .appending(path: "Personalization", directoryHint: .isDirectory)
+                .appending(
+                    path: "Personalization",
+                    directoryHint: .isDirectory
+                )
                 .appending(path: "personalization.sqlite")
+        } catch {
+            let description = String(describing: error)
+            personalizationLogger.error(
+                "Could not locate personalization storage: \(description, privacy: .public)"
+            )
+            return
+        }
+        do {
             personalizationDatabase = try PersonalizationDatabase(
                 databaseURL: databaseURL,
                 keyProvider: KeychainPersonalizationKeyProvider()
@@ -310,10 +379,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                 )
             }
         } catch {
+            personalizationSettings.attachRecoveryDeleteAll {
+                try Self.deleteUnopenablePersonalizationStorage(
+                    databaseURL: databaseURL
+                )
+                return try PersonalizationDatabase(
+                    databaseURL: databaseURL,
+                    keyProvider: KeychainPersonalizationKeyProvider()
+                )
+            }
+            let description = String(describing: error)
             personalizationLogger.error(
-                "Could not initialize personalization storage: \(String(describing: error), privacy: .public)"
+                "Could not initialize personalization storage: \(description, privacy: .public)"
             )
         }
+    }
+
+    static func deleteUnopenablePersonalizationStorage(
+        databaseURL: URL,
+        keyProvider: KeychainPersonalizationKeyProvider =
+            KeychainPersonalizationKeyProvider(),
+        fileManager: FileManager = .default
+    ) throws {
+        for suffix in ["", "-journal", "-wal", "-shm"] {
+            let artifact = URL(fileURLWithPath: databaseURL.path + suffix)
+            if fileManager.fileExists(atPath: artifact.path) {
+                try fileManager.removeItem(at: artifact)
+            }
+        }
+        try keyProvider.deleteKey()
     }
 
     private func recordPersonalizationCapture(
@@ -330,6 +424,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         _ feedback: CompletionFeedbackCapture
     ) {
         personalizationSettings.record(feedback)
+    }
+
+    private func recordCompletionEpisode(
+        _ episode: CompletionEpisodeCapture
+    ) {
+        personalizationSettings.record(episode)
     }
 
     private func observeCalendarDayChanges() {
@@ -389,7 +489,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
         )
     }
 
-    @objc private func openSettingsWindow() {
+    @objc func openSettingsWindow() {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
                 promptStore: promptSettings,
@@ -460,59 +560,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
 
         NSApp.setActivationPolicy(.accessory)
         NSApp.deactivate()
-    }
-
-    private func installMainMenu() {
-        let mainMenu = NSMenu()
-        let applicationItem = NSMenuItem(title: "StenoTab", action: nil, keyEquivalent: "")
-        let applicationMenu = NSMenu(title: "StenoTab")
-
-        let aboutItem = NSMenuItem(
-            title: "About StenoTab",
-            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
-            keyEquivalent: ""
-        )
-        aboutItem.target = NSApp
-        applicationMenu.addItem(aboutItem)
-        applicationMenu.addItem(.separator())
-
-        let hideItem = NSMenuItem(
-            title: "Hide StenoTab",
-            action: #selector(NSApplication.hide(_:)),
-            keyEquivalent: "h"
-        )
-        hideItem.target = NSApp
-        applicationMenu.addItem(hideItem)
-
-        let hideOthersItem = NSMenuItem(
-            title: "Hide Others",
-            action: #selector(NSApplication.hideOtherApplications(_:)),
-            keyEquivalent: "h"
-        )
-        hideOthersItem.keyEquivalentModifierMask = [.command, .option]
-        hideOthersItem.target = NSApp
-        applicationMenu.addItem(hideOthersItem)
-
-        let showAllItem = NSMenuItem(
-            title: "Show All",
-            action: #selector(NSApplication.unhideAllApplications(_:)),
-            keyEquivalent: ""
-        )
-        showAllItem.target = NSApp
-        applicationMenu.addItem(showAllItem)
-        applicationMenu.addItem(.separator())
-
-        let quitItem = NSMenuItem(
-            title: "Quit StenoTab",
-            action: #selector(NSApplication.terminate(_:)),
-            keyEquivalent: "q"
-        )
-        quitItem.target = NSApp
-        applicationMenu.addItem(quitItem)
-
-        applicationItem.submenu = applicationMenu
-        mainMenu.addItem(applicationItem)
-        NSApp.mainMenu = mainMenu
     }
 
     private func menuBarIcon() -> NSImage? {

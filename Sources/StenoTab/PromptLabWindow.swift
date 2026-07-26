@@ -187,9 +187,10 @@ private struct PersonalizationSettingsView: View {
                             Text("Learn from my writing")
                                 .font(.headline)
                             Text(
-                                "Store accepted completions and their full "
-                                + "input context locally in encrypted form. "
-                                + "Turning this off stops new collection."
+                                "Store model inputs, suggestion outcomes, "
+                                + "accepted completions, and writing history "
+                                + "locally in encrypted form. Turning this "
+                                + "off stops new collection."
                             )
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -386,7 +387,10 @@ private struct PersonalizationSettingsView: View {
                         Button("Delete All…") {
                             confirmsDeletion = true
                         }
-                        .disabled(store.storedEventCount == 0)
+                        .disabled(
+                            store.storedEventCount == 0
+                                && !store.recoveryDeletionIsAvailable
+                        )
                     }
 
                     Text(
@@ -439,6 +443,40 @@ private struct PersonalizationSettingsView: View {
                     }
                 }
 
+                if !store.recentCompletionEpisodes.isEmpty {
+                    SettingsSection(title: "Recent Completion Outcomes") {
+                        ForEach(
+                            Array(
+                                store.recentCompletionEpisodes.reversed()
+                            ),
+                            id: \.id
+                        ) { episode in
+                            CompletionEpisodeHistoryRow(
+                                episode: episode,
+                                delete: {
+                                    store.deleteEvent(id: episode.id)
+                                },
+                                deleteApplication: {
+                                    guard let bundleIdentifier =
+                                        episode.invocation.context
+                                            .applicationBundleIdentifier
+                                    else {
+                                        return
+                                    }
+                                    store.deleteApplicationHistory(
+                                        bundleIdentifier:
+                                            bundleIdentifier
+                                    )
+                                }
+                            )
+                            if episode.id
+                                != store.recentCompletionEpisodes.first?.id {
+                                Divider()
+                            }
+                        }
+                    }
+                }
+
                 if !store.recentAcceptedSuggestions.isEmpty {
                     SettingsSection(title: "Recent Accepted Suggestions") {
                         ForEach(
@@ -479,7 +517,12 @@ private struct PersonalizationSettingsView: View {
             .frame(maxWidth: 900, alignment: .leading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { store.refresh() }
+        .onAppear {
+            store.setHistoryInspectorVisible(true)
+        }
+        .onDisappear {
+            store.setHistoryInspectorVisible(false)
+        }
         .confirmationDialog(
             "Delete all personalization data?",
             isPresented: $confirmsDeletion
@@ -515,6 +558,105 @@ private struct PersonalizationSettingsView: View {
                 store.report(error: error)
             }
         }
+    }
+}
+
+private struct CompletionEpisodeHistoryRow: View {
+    let episode: CompletionEpisodeCapture
+    let delete: () -> Void
+    let deleteApplication: () -> Void
+    @State private var showsModelInput = false
+
+    private var finalSuggestion: String {
+        episode.suggestionRevisions.last?.text ?? ""
+    }
+
+    private var modelInput: String {
+        let prompt = episode.invocation.prompt
+        return [
+            prompt.systemMessage.map { "System:\n\($0)" },
+            prompt.userMessage.map { "User:\n\($0)" },
+            prompt.textPrompt.map { "Prompt:\n\($0)" },
+        ]
+        .compactMap { $0 }
+        .joined(separator: "\n\n")
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(episode.invocation.field.text)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if !finalSuggestion.isEmpty {
+                    Text("Suggested: “\(finalSuggestion)”")
+                        .lineLimit(2)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                if let actualInsertedText = episode.actualInsertedText {
+                    Text("Outcome: “\(actualInsertedText)”")
+                        .lineLimit(2)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+
+                HStack(spacing: 6) {
+                    Text(episode.invocation.generation.modelIdentifier)
+                    Text("•")
+                    Text(
+                        episode.resolution.rawValue.replacingOccurrences(
+                            of: "_",
+                            with: " "
+                        )
+                    )
+                    Text("•")
+                    Text(episode.endedAt, style: .relative)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+                if !modelInput.isEmpty {
+                    DisclosureGroup(
+                        "Model input",
+                        isExpanded: $showsModelInput
+                    ) {
+                        Text(modelInput)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                            .frame(
+                                maxWidth: .infinity,
+                                alignment: .leading
+                            )
+                            .padding(.top, 4)
+                    }
+                    .font(.caption)
+                }
+            }
+
+            Menu {
+                Button("Delete This Record", role: .destructive) {
+                    delete()
+                }
+                if episode.invocation.context
+                    .applicationBundleIdentifier != nil
+                {
+                    Button(
+                        "Delete All from This App",
+                        role: .destructive
+                    ) {
+                        deleteApplication()
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+        .padding(.vertical, 4)
     }
 }
 
@@ -704,7 +846,8 @@ private struct ContextPrivacyView: View {
                             "Read up to 2,000 characters of text from the "
                             + "clipboard as read-only model context. StenoTab "
                             + "never inserts clipboard contents. Off by "
-                            + "default and never retained.",
+                            + "default. Completion history can retain the "
+                            + "model input when collection is enabled.",
                         isOn: clipboardEnabled
                     )
                     Divider()
@@ -712,8 +855,10 @@ private struct ContextPrivacyView: View {
                         title: "Snapshots / OCR",
                         detail:
                             "Capture the focused app window when an editor "
-                            + "gains focus. Text "
-                            + "is recognized locally and kept only in memory.",
+                            + "gains focus. The screenshot is discarded after "
+                            + "local recognition. Completion history can "
+                            + "retain recognized text included in model input "
+                            + "when collection is enabled.",
                         isOn: configuration.context.includeOCR
                     )
                     Divider()
@@ -1906,7 +2051,8 @@ private struct PromptLabView: View {
                 isOn: configuration.base.includePerspectiveFix,
                 debugMode: store.configuration.debugMode,
                 framing: configuration.baseFraming.perspectiveFix,
-                dynamicValue: ""
+                dynamicValue: "",
+                showsToggle: store.configuration.debugMode
             )
         }
     }
@@ -1917,7 +2063,9 @@ private struct PromptLabView: View {
                 title: "Snapshots / OCR",
                 detail:
                     "Include text recognized locally from the focused app "
-                    + "window.",
+                    + "window. The screenshot is discarded after local "
+                    + "recognition. Completion history can retain recognized "
+                    + "text in model input when collection is enabled.",
                 isOn: configuration.context.includeOCR,
                 debugMode: store.configuration.debugMode,
                 framing: configuration.baseFraming.ocrHeading,
@@ -1929,7 +2077,9 @@ private struct PromptLabView: View {
                 title: "Clipboard contents",
                 detail:
                     "Include clipboard text as read-only model context. "
-                    + "Clipboard contents are never inserted.",
+                    + "Clipboard contents are never inserted. Completion "
+                    + "history can retain the model input when collection is "
+                    + "enabled.",
                 isOn: clipboardEnabled,
                 debugMode: store.configuration.debugMode,
                 framing: configuration.baseFraming.clipboardHeading,
@@ -1969,24 +2119,6 @@ private struct PromptLabView: View {
                     text: configuration.baseFraming.examplePrefix,
                     dynamicValue: "USER_INPUT",
                     valueOnNewLine: false
-                )
-                DebugFramingEditor(
-                    label: "Mid-line text before cursor heading",
-                    text: configuration.baseFraming.beforeCursorHeading,
-                    dynamicValue: "TEXT_BEFORE_CURSOR",
-                    valueOnNewLine: true
-                )
-                DebugFramingEditor(
-                    label: "Mid-line text after cursor heading",
-                    text: configuration.baseFraming.suffixHeading,
-                    dynamicValue: "TEXT_AFTER_CURSOR",
-                    valueOnNewLine: true
-                )
-                DebugFramingEditor(
-                    label: "Mid-line current part heading",
-                    text: configuration.baseFraming.currentPartHeading,
-                    dynamicValue: "CURRENT_PART",
-                    valueOnNewLine: true
                 )
             }
         }
@@ -2147,6 +2279,7 @@ private struct PromptToggleRow: View {
     @Binding var framing: String
     let dynamicValue: String
     var valueOnNewLine = false
+    var showsToggle = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -2171,11 +2304,13 @@ private struct PromptToggleRow: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Toggle(title, isOn: $isOn)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .frame(width: 54, alignment: .trailing)
+                if showsToggle {
+                    Toggle(title, isOn: $isOn)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .frame(width: 54, alignment: .trailing)
+                }
             }
 
             if debugMode {

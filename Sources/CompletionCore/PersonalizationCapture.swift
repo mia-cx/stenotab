@@ -16,10 +16,25 @@ public struct UTF16Selection: Codable, Sendable, Equatable {
 
     public func isValid(for text: String) -> Bool {
         let count = text.utf16.count
-        return location >= 0
+        guard
+            location >= 0
             && length >= 0
             && location <= count
             && length <= count - location
+        else {
+            return false
+        }
+        let utf16 = text.utf16
+        let lowerBound = utf16.index(
+            utf16.startIndex,
+            offsetBy: location
+        )
+        let upperBound = utf16.index(
+            lowerBound,
+            offsetBy: length
+        )
+        return String.Index(lowerBound, within: text) != nil
+            && String.Index(upperBound, within: text) != nil
     }
 
     public func selectionForDeletion(
@@ -75,6 +90,22 @@ public struct CapturedFieldState: Codable, Sendable, Equatable {
         self.text = text
         self.selection = selection
     }
+
+    public func replacingSelection(with insertion: String) -> String? {
+        guard selection.isValid(for: text) else { return nil }
+        let utf16 = text.utf16
+        let lowerBound = utf16.index(
+            utf16.startIndex,
+            offsetBy: selection.location
+        )
+        let upperBound = utf16.index(
+            lowerBound,
+            offsetBy: selection.length
+        )
+        return String(decoding: utf16[..<lowerBound], as: UTF16.self)
+            + insertion
+            + String(decoding: utf16[upperBound...], as: UTF16.self)
+    }
 }
 
 public struct PersonalizationContext: Codable, Sendable, Equatable {
@@ -104,6 +135,7 @@ public struct AcceptedSuggestionCapture: Codable, Sendable, Equatable {
     public let field: CapturedFieldState
     public let insertion: String
     public let acceptanceScope: SuggestionAcceptance.Scope
+    public let completionEpisodeID: UUID?
     public let context: PersonalizationContext
     public let capturedAt: Date
 
@@ -112,6 +144,7 @@ public struct AcceptedSuggestionCapture: Codable, Sendable, Equatable {
         field: CapturedFieldState,
         insertion: String,
         acceptanceScope: SuggestionAcceptance.Scope,
+        completionEpisodeID: UUID? = nil,
         context: PersonalizationContext,
         capturedAt: Date
     ) {
@@ -119,6 +152,7 @@ public struct AcceptedSuggestionCapture: Codable, Sendable, Equatable {
         self.field = field
         self.insertion = insertion
         self.acceptanceScope = acceptanceScope
+        self.completionEpisodeID = completionEpisodeID
         self.context = context
         self.capturedAt = capturedAt
     }
@@ -131,6 +165,7 @@ public enum PersonalizationCapture {
         selection: UTF16Selection,
         insertion: String,
         acceptanceScope: SuggestionAcceptance.Scope,
+        completionEpisodeID: UUID? = nil,
         context: PersonalizationContext,
         capturedAt: Date = Date()
     ) -> AcceptedSuggestionCapture? {
@@ -150,6 +185,7 @@ public enum PersonalizationCapture {
             ),
             insertion: insertion,
             acceptanceScope: acceptanceScope,
+            completionEpisodeID: completionEpisodeID,
             context: context,
             capturedAt: capturedAt
         )

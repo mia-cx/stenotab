@@ -10,6 +10,14 @@ final class PersonalizationSettingsStore: ObservableObject {
             "personalization.collectionEnabled"
         static let collectDirectTyping =
             "personalization.collectDirectTyping"
+        static let collectionConsentGeneration =
+            "personalization.collectionConsentGeneration"
+        static let directTypingConsentGeneration =
+            "personalization.directTypingConsentGeneration"
+        static let collectionConsentState =
+            "personalization.collectionConsentState"
+        static let directTypingConsentState =
+            "personalization.directTypingConsentState"
         static let useLocalCompletions =
             "personalization.useLocalCompletions"
         static let retentionDays = "personalization.retentionDays"
@@ -19,18 +27,55 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     @Published var collectionEnabled: Bool {
         didSet {
-            defaults.set(
-                collectionEnabled,
-                forKey: Keys.collectionEnabled
-            )
+            if oldValue, !collectionEnabled {
+                collectionConsentGeneration &+= 1
+                let consentGeneration = collectionConsentGeneration
+                collectionConsentEpoch.advance(
+                    to: consentGeneration
+                ) {
+                    Self.persistConsentState(
+                        enabled: collectionEnabled,
+                        generation: consentGeneration,
+                        defaults: defaults,
+                        key: Keys.collectionConsentState
+                    )
+                }
+                onHistoryReset?()
+            } else {
+                Self.persistConsentState(
+                    enabled: collectionEnabled,
+                    generation: collectionConsentGeneration,
+                    defaults: defaults,
+                    key: Keys.collectionConsentState
+                )
+            }
         }
     }
     @Published var collectDirectTyping: Bool {
         didSet {
-            defaults.set(
-                collectDirectTyping,
-                forKey: Keys.collectDirectTyping
-            )
+            if oldValue, !collectDirectTyping {
+                directTypingConsentGeneration &+= 1
+                let consentGeneration =
+                    directTypingConsentGeneration
+                directTypingConsentEpoch.advance(
+                    to: consentGeneration
+                ) {
+                    Self.persistConsentState(
+                        enabled: collectDirectTyping,
+                        generation: consentGeneration,
+                        defaults: defaults,
+                        key: Keys.directTypingConsentState
+                    )
+                }
+                onWritingHistoryReset?()
+            } else {
+                Self.persistConsentState(
+                    enabled: collectDirectTyping,
+                    generation: directTypingConsentGeneration,
+                    defaults: defaults,
+                    key: Keys.directTypingConsentState
+                )
+            }
         }
     }
     @Published var useLocalCompletions: Bool {
@@ -58,25 +103,95 @@ final class PersonalizationSettingsStore: ObservableObject {
     }
     @Published private(set) var storedEventCount = 0
     @Published private(set) var encryptedPayloadBytes = 0
+    @Published private(set) var recoveryDeletionIsAvailable = false
     @Published private(set) var recentEpisodes: [WritingEpisodeCapture] = []
     @Published private(set) var recentAcceptedSuggestions:
         [AcceptedSuggestionCapture] = []
+    @Published private(set) var recentCompletionEpisodes:
+        [CompletionEpisodeCapture] = []
     @Published private(set) var operationError: String?
     @Published private(set) var languageModel = PersonalLanguageModel()
     @Published private(set) var voiceAssessment: VoiceAssessment?
 
+    var onHistoryReset: (() -> Void)?
+    var onWritingHistoryReset: (() -> Void)?
+    var captureGeneration: UInt64 { collectionGeneration }
+
     private let defaults: UserDefaults
+    private var collectionGeneration: UInt64 = 0
+    private var collectionConsentGeneration: UInt64
+    private let collectionConsentEpoch: PersonalizationConsentEpoch
+    private var directTypingConsentGeneration: UInt64
+    private let directTypingConsentEpoch: PersonalizationConsentEpoch
+    private var derivedPersonalizationIsInvalidated = false
+    private var completionEpisodeDeleteAllBoundary: Date?
+    private var completionEpisodeApplicationDeletionBoundaries:
+        [String: Date] = [:]
     private var database: PersonalizationDatabase?
+    private var isHistoryInspectorVisible = false
+    private var historyInspectorGeneration: UInt64 = 0
+    private var historyInspectorRefreshTask: Task<Void, Never>?
     private var modelWorker: PersonalizationModelWorker?
+    private var recoveryDeleteAll:
+        (@MainActor () async throws -> PersonalizationDatabase)?
+    private var pendingPersistenceTasks: [UUID: Task<Void, Never>] = [:]
+    private var persistenceTail: Task<Void, Never>?
+#if DEBUG
+    var promptContextDidLoadForTesting: (() -> Void)?
+    var recordDidLoadDerivedStateForTesting: (() -> Void)?
+    var historyInspectorWillLoadRecordsForTesting: (() -> Void)?
+    var flushDidCaptureTasksForTesting: (() -> Void)?
+
+    func setRecordDidPersistForTesting(
+        _ callback: @escaping @MainActor @Sendable () -> Void
+    ) async {
+        await modelWorker?.setRecordDidPersistForTesting(callback)
+    }
+
+    func invalidateCollectionGenerationForTesting() {
+        invalidateDerivedPersonalization()
+        collectionGeneration &+= 1
+    }
+#endif
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        collectionEnabled = defaults.object(
-            forKey: Keys.collectionEnabled
-        ) as? Bool ?? true
-        collectDirectTyping = defaults.object(
-            forKey: Keys.collectDirectTyping
-        ) as? Bool ?? true
+        let storedCollectionConsent = Self.storedConsentState(
+            defaults: defaults,
+            stateKey: Keys.collectionConsentState,
+            legacyEnabledKey: Keys.collectionEnabled,
+            legacyGenerationKey: Keys.collectionConsentGeneration
+        )
+        let storedDirectTypingConsent = Self.storedConsentState(
+            defaults: defaults,
+            stateKey: Keys.directTypingConsentState,
+            legacyEnabledKey: Keys.collectDirectTyping,
+            legacyGenerationKey: Keys.directTypingConsentGeneration
+        )
+        Self.persistConsentState(
+            enabled: storedCollectionConsent.enabled,
+            generation: storedCollectionConsent.generation,
+            defaults: defaults,
+            key: Keys.collectionConsentState
+        )
+        Self.persistConsentState(
+            enabled: storedDirectTypingConsent.enabled,
+            generation: storedDirectTypingConsent.generation,
+            defaults: defaults,
+            key: Keys.directTypingConsentState
+        )
+        collectionConsentGeneration =
+            storedCollectionConsent.generation
+        collectionConsentEpoch = PersonalizationConsentEpoch(
+            generation: storedCollectionConsent.generation
+        )
+        directTypingConsentGeneration =
+            storedDirectTypingConsent.generation
+        directTypingConsentEpoch = PersonalizationConsentEpoch(
+            generation: storedDirectTypingConsent.generation
+        )
+        collectionEnabled = storedCollectionConsent.enabled
+        collectDirectTyping = storedDirectTypingConsent.enabled
         useLocalCompletions = defaults.object(
             forKey: Keys.useLocalCompletions
         ) as? Bool ?? true
@@ -88,70 +203,353 @@ final class PersonalizationSettingsStore: ObservableObject {
         ) as? Int ?? 100
     }
 
+    private static func storedConsentState(
+        defaults: UserDefaults,
+        stateKey: String,
+        legacyEnabledKey: String,
+        legacyGenerationKey: String
+    ) -> (enabled: Bool, generation: UInt64) {
+        if
+            let state = defaults.dictionary(forKey: stateKey),
+            let enabled = state["enabled"] as? Bool,
+            let generationText = state["generation"] as? String,
+            let generation = UInt64(generationText)
+        {
+            return (enabled, generation)
+        }
+        return (
+            defaults.object(forKey: legacyEnabledKey) as? Bool ?? true,
+            storedConsentGeneration(
+                defaults: defaults,
+                key: legacyGenerationKey
+            )
+        )
+    }
+
+    private static func persistConsentState(
+        enabled: Bool,
+        generation: UInt64,
+        defaults: UserDefaults,
+        key: String
+    ) {
+        defaults.set(
+            [
+                "enabled": enabled,
+                "generation": String(generation),
+            ],
+            forKey: key
+        )
+        if key == Keys.collectionConsentState {
+            defaults.set(enabled, forKey: Keys.collectionEnabled)
+            defaults.set(
+                String(generation),
+                forKey: Keys.collectionConsentGeneration
+            )
+        } else if key == Keys.directTypingConsentState {
+            defaults.set(enabled, forKey: Keys.collectDirectTyping)
+            defaults.set(
+                String(generation),
+                forKey: Keys.directTypingConsentGeneration
+            )
+        }
+        // Consent is a privacy boundary, so do not leave this transition only
+        // in UserDefaults' deferred write buffer.
+        _ = defaults.synchronize()
+    }
+
+    private static func storedConsentGeneration(
+        defaults: UserDefaults,
+        key: String
+    ) -> UInt64 {
+        guard
+            let value = defaults.string(forKey: key),
+            let generation = UInt64(value)
+        else {
+            return 0
+        }
+        return generation
+    }
+
     func attach(database: PersonalizationDatabase) {
         self.database = database
-        let worker = PersonalizationModelWorker(database: database)
+        recoveryDeleteAll = nil
+        recoveryDeletionIsAvailable = false
+        let worker = PersonalizationModelWorker(
+            database: database,
+            collectionGeneration: collectionGeneration,
+            collectionConsentEpoch: collectionConsentEpoch,
+            directTypingConsentEpoch: directTypingConsentEpoch
+        )
         modelWorker = worker
-        Task {
+        let generation = collectionGeneration
+        enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await worker.prepare()
-                voiceAssessment = await worker.voiceAssessmentSnapshot()
-                refresh()
+                let preparedModel = try await worker.prepare(
+                    retentionPolicy: retentionPolicy
+                )
+                let preparedVoiceAssessment =
+                    await worker.voiceAssessmentSnapshot()
+                let statistics = try await database.storageStatistics()
+                guard generation == collectionGeneration else { return }
+                languageModel = preparedModel
+                voiceAssessment = preparedVoiceAssessment
+                storedEventCount = statistics.eventCount
+                encryptedPayloadBytes = statistics.encryptedPayloadBytes
+                operationError = nil
             } catch {
-                operationError = String(describing: error)
+                recoveryDeletionIsAvailable = true
+                operationError =
+                    "\(String(describing: error)). "
+                    + "Delete All remains available."
             }
         }
     }
 
     func refresh() {
         guard let database else { return }
-        Task {
+        let generation = collectionGeneration
+        let inspectorWasVisible = isHistoryInspectorVisible
+        let inspectorGeneration = historyInspectorGeneration
+        if inspectorWasVisible {
+            historyInspectorRefreshTask?.cancel()
+        }
+        let refreshTask = enqueuePersistenceOperation { [self] in
             do {
                 let statistics = try await database.storageStatistics()
+                var episodes: [WritingEpisodeCapture] = []
+                var acceptedSuggestions: [AcceptedSuggestionCapture] = []
+                var completionEpisodes: [CompletionEpisodeCapture] = []
+                if inspectorWasVisible {
+#if DEBUG
+                    let willLoadRecords =
+                        historyInspectorWillLoadRecordsForTesting
+                    historyInspectorWillLoadRecordsForTesting = nil
+                    willLoadRecords?()
+#endif
+                    guard
+                        inspectorGeneration == historyInspectorGeneration,
+                        isHistoryInspectorVisible
+                    else {
+                        return
+                    }
+                    episodes = try await database.writingEpisodes(limit: 20)
+                    guard
+                        inspectorGeneration == historyInspectorGeneration,
+                        isHistoryInspectorVisible
+                    else {
+                        return
+                    }
+                    acceptedSuggestions =
+                        try await database.acceptedSuggestions(limit: 20)
+                    guard
+                        inspectorGeneration == historyInspectorGeneration,
+                        isHistoryInspectorVisible
+                    else {
+                        return
+                    }
+                    completionEpisodes =
+                        try await database.completionEpisodes(limit: 20)
+                }
+                guard generation == collectionGeneration else { return }
                 storedEventCount = statistics.eventCount
                 encryptedPayloadBytes =
                     statistics.encryptedPayloadBytes
-                recentEpisodes = try await database.writingEpisodes(
-                    limit: 20
-                )
-                recentAcceptedSuggestions =
-                    try await database.acceptedSuggestions(limit: 20)
+                if
+                    inspectorWasVisible,
+                    inspectorGeneration == historyInspectorGeneration,
+                    isHistoryInspectorVisible
+                {
+                    recentEpisodes = episodes
+                    recentAcceptedSuggestions = acceptedSuggestions
+                    recentCompletionEpisodes = completionEpisodes
+                }
                 operationError = nil
             } catch {
+                guard !Task.isCancelled else { return }
                 operationError = String(describing: error)
             }
         }
+        if inspectorWasVisible {
+            historyInspectorRefreshTask = refreshTask
+        }
+    }
+
+    func setHistoryInspectorVisible(_ isVisible: Bool) {
+        guard isVisible != isHistoryInspectorVisible else { return }
+        isHistoryInspectorVisible = isVisible
+        historyInspectorGeneration &+= 1
+        if isVisible {
+            refresh()
+        } else {
+            historyInspectorRefreshTask?.cancel()
+            historyInspectorRefreshTask = nil
+            recentEpisodes = []
+            recentAcceptedSuggestions = []
+            recentCompletionEpisodes = []
+        }
+    }
+
+    private func refreshAfterRecording(
+        generation: UInt64,
+        consentGeneration: UInt64,
+        directTypingConsentGeneration: UInt64? = nil
+    ) async throws {
+        guard let database else { return }
+        let statistics = try await database.storageStatistics()
+        let inspectorWasVisible = isHistoryInspectorVisible
+        guard
+            generation == collectionGeneration,
+            collectionEnabled,
+            consentGeneration == collectionConsentGeneration,
+            directTypingConsentIsCurrent(
+                directTypingConsentGeneration
+            ),
+            !derivedPersonalizationIsInvalidated
+        else {
+            return
+        }
+        storedEventCount = statistics.eventCount
+        encryptedPayloadBytes = statistics.encryptedPayloadBytes
+        operationError = nil
+        if inspectorWasVisible, isHistoryInspectorVisible {
+            refresh()
+        }
+    }
+
+    private func directTypingConsentIsCurrent(
+        _ generation: UInt64?
+    ) -> Bool {
+        guard let generation else { return true }
+        return collectDirectTyping
+            && generation == directTypingConsentGeneration
     }
 
     func deleteAll() {
-        guard let modelWorker else { return }
-        Task {
+        guard modelWorker != nil || recoveryDeleteAll != nil else { return }
+        invalidateDerivedPersonalization()
+        let previousBoundary = completionEpisodeDeleteAllBoundary
+        let attemptedBoundary = Date()
+        completionEpisodeDeleteAllBoundary = attemptedBoundary
+        collectionGeneration &+= 1
+        let generation = collectionGeneration
+        guard let modelWorker else {
+            guard let recoveryDeleteAll else { return }
+            enqueuePersistenceOperation { [self] in
+                do {
+                    let database = try await recoveryDeleteAll()
+                    guard generation == collectionGeneration else { return }
+                    storedEventCount = 0
+                    encryptedPayloadBytes = 0
+                    recentEpisodes = []
+                    recentAcceptedSuggestions = []
+                    recentCompletionEpisodes = []
+                    recoveryDeletionIsAvailable = false
+                    self.recoveryDeleteAll = nil
+                    finishDerivedPersonalizationInvalidation(
+                        generation: generation
+                    )
+                    operationError = nil
+                    attach(database: database)
+                } catch {
+                    if
+                        completionEpisodeDeleteAllBoundary
+                            == attemptedBoundary
+                    {
+                        completionEpisodeDeleteAllBoundary =
+                            previousBoundary
+                    }
+                    operationError = String(describing: error)
+                }
+            }
+            return
+        }
+        enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await modelWorker.deleteAll()
+                let rebuiltModel = try await modelWorker.deleteAll(
+                    generation: generation
+                )
+                guard generation == collectionGeneration else { return }
+                languageModel = rebuiltModel
                 voiceAssessment = nil
                 storedEventCount = 0
                 encryptedPayloadBytes = 0
                 recentEpisodes = []
                 recentAcceptedSuggestions = []
+                recentCompletionEpisodes = []
+                recoveryDeletionIsAvailable = false
+                finishDerivedPersonalizationInvalidation(
+                    generation: generation
+                )
                 operationError = nil
             } catch {
-                operationError = String(describing: error)
+                if
+                    completionEpisodeDeleteAllBoundary == attemptedBoundary
+                {
+                    completionEpisodeDeleteAllBoundary = previousBoundary
+                }
+                await recoverAfterFailedDestructiveOperation(
+                    error,
+                    generation: generation,
+                    modelWorker: modelWorker
+                )
             }
         }
+    }
+
+    func attachRecoveryDeleteAll(
+        _ deleteAll: @escaping @MainActor () async throws
+            -> PersonalizationDatabase
+    ) {
+        recoveryDeleteAll = deleteAll
+        recoveryDeletionIsAvailable = true
+        operationError =
+            "Personalization storage could not be opened. "
+            + "Delete All remains available."
     }
 
     func record(_ capture: AcceptedSuggestionCapture) {
         guard collectionEnabled, let modelWorker else { return }
         let policy = retentionPolicy
-        Task {
+        let generation = collectionGeneration
+        let consentGeneration = collectionConsentGeneration
+        enqueuePersistenceOperation { [self] in
+            guard
+                collectionEnabled,
+                generation == collectionGeneration,
+                consentGeneration == collectionConsentGeneration,
+                !derivedPersonalizationIsInvalidated
+            else {
+                return
+            }
             do {
-                languageModel = try await modelWorker.record(
+                let updatedModel = try await modelWorker.record(
                     capture,
-                    retentionPolicy: policy
+                    retentionPolicy: policy,
+                    generation: generation,
+                    consentGeneration: consentGeneration
                 )
-                voiceAssessment =
+                let updatedVoiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
-                refresh()
+#if DEBUG
+                let didLoadDerivedState =
+                    recordDidLoadDerivedStateForTesting
+                recordDidLoadDerivedStateForTesting = nil
+                didLoadDerivedState?()
+#endif
+                guard
+                    generation == collectionGeneration,
+                    collectionEnabled,
+                    consentGeneration == collectionConsentGeneration,
+                    !derivedPersonalizationIsInvalidated
+                else {
+                    return
+                }
+                languageModel = updatedModel
+                voiceAssessment = updatedVoiceAssessment
+                try await refreshAfterRecording(
+                    generation: generation,
+                    consentGeneration: consentGeneration
+                )
             } catch {
                 operationError = String(describing: error)
             }
@@ -167,15 +565,56 @@ final class PersonalizationSettingsStore: ObservableObject {
             return
         }
         let policy = retentionPolicy
-        Task {
+        let generation = collectionGeneration
+        let consentGeneration = collectionConsentGeneration
+        let directConsentGeneration = directTypingConsentGeneration
+        enqueuePersistenceOperation { [self] in
+            guard
+                collectionEnabled,
+                collectDirectTyping,
+                generation == collectionGeneration,
+                consentGeneration == collectionConsentGeneration,
+                directConsentGeneration == directTypingConsentGeneration,
+                !derivedPersonalizationIsInvalidated
+            else {
+                return
+            }
             do {
-                languageModel = try await modelWorker.record(
+                let updatedModel = try await modelWorker.record(
                     episode,
-                    retentionPolicy: policy
+                    retentionPolicy: policy,
+                    generation: generation,
+                    consentGeneration: consentGeneration,
+                    directTypingConsentGeneration:
+                        directConsentGeneration
                 )
-                voiceAssessment =
+                let updatedVoiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
-                refresh()
+#if DEBUG
+                let didLoadDerivedState =
+                    recordDidLoadDerivedStateForTesting
+                recordDidLoadDerivedStateForTesting = nil
+                didLoadDerivedState?()
+#endif
+                guard
+                    generation == collectionGeneration,
+                    collectionEnabled,
+                    collectDirectTyping,
+                    consentGeneration == collectionConsentGeneration,
+                    directConsentGeneration
+                        == directTypingConsentGeneration,
+                    !derivedPersonalizationIsInvalidated
+                else {
+                    return
+                }
+                languageModel = updatedModel
+                voiceAssessment = updatedVoiceAssessment
+                try await refreshAfterRecording(
+                    generation: generation,
+                    consentGeneration: consentGeneration,
+                    directTypingConsentGeneration:
+                        directConsentGeneration
+                )
             } catch {
                 operationError = String(describing: error)
             }
@@ -185,46 +624,210 @@ final class PersonalizationSettingsStore: ObservableObject {
     func record(_ feedback: CompletionFeedbackCapture) {
         guard collectionEnabled, let modelWorker else { return }
         let policy = retentionPolicy
-        Task {
+        let generation = collectionGeneration
+        let consentGeneration = collectionConsentGeneration
+        enqueuePersistenceOperation { [self] in
+            guard
+                collectionEnabled,
+                generation == collectionGeneration,
+                consentGeneration == collectionConsentGeneration,
+                !derivedPersonalizationIsInvalidated
+            else {
+                return
+            }
             do {
-                languageModel = try await modelWorker.record(
+                let updatedModel = try await modelWorker.record(
                     feedback,
-                    retentionPolicy: policy
+                    retentionPolicy: policy,
+                    generation: generation,
+                    consentGeneration: consentGeneration
                 )
-                refresh()
+                guard
+                    generation == collectionGeneration,
+                    collectionEnabled,
+                    consentGeneration == collectionConsentGeneration,
+                    !derivedPersonalizationIsInvalidated
+                else {
+                    return
+                }
+                languageModel = updatedModel
+                try await refreshAfterRecording(
+                    generation: generation,
+                    consentGeneration: consentGeneration
+                )
             } catch {
                 operationError = String(describing: error)
             }
         }
     }
 
-    func deleteEvent(id: UUID) {
-        guard let modelWorker else { return }
-        Task {
+    func record(_ episode: CompletionEpisodeCapture) {
+        guard collectionEnabled, let modelWorker else { return }
+        if let invocationGeneration =
+            episode.invocation.collectionGeneration
+        {
+            guard invocationGeneration == collectionGeneration else { return }
+        } else {
+            let applicationDeletedAt =
+                episode.invocation.context.applicationBundleIdentifier
+                    .flatMap {
+                        completionEpisodeApplicationDeletionBoundaries[$0]
+                    }
+            guard CompletionEpisodeDeletionBoundaryPolicy.allowsCapture(
+                invocationStartedAt: episode.invocation.startedAt,
+                deleteAllAt: completionEpisodeDeleteAllBoundary,
+                applicationDeletedAt: applicationDeletedAt
+            ) else {
+                return
+            }
+        }
+        let policy = retentionPolicy
+        let generation = collectionGeneration
+        let consentGeneration = collectionConsentGeneration
+        enqueuePersistenceOperation { [self] in
+            guard
+                collectionEnabled,
+                generation == collectionGeneration,
+                consentGeneration == collectionConsentGeneration,
+                !derivedPersonalizationIsInvalidated
+            else {
+                return
+            }
             do {
-                languageModel = try await modelWorker.deleteEvent(id: id)
-                voiceAssessment =
-                    await modelWorker.voiceAssessmentSnapshot()
-                refresh()
+                let updatedModel = try await modelWorker.record(
+                    episode,
+                    retentionPolicy: policy,
+                    generation: generation,
+                    consentGeneration: consentGeneration
+                )
+                guard
+                    generation == collectionGeneration,
+                    collectionEnabled,
+                    consentGeneration == collectionConsentGeneration,
+                    !derivedPersonalizationIsInvalidated
+                else {
+                    return
+                }
+                languageModel = updatedModel
+                try await refreshAfterRecording(
+                    generation: generation,
+                    consentGeneration: consentGeneration
+                )
             } catch {
                 operationError = String(describing: error)
+            }
+        }
+    }
+
+    func flushPendingPersistence() async {
+        let tasks = Array(pendingPersistenceTasks.values)
+#if DEBUG
+        let didCaptureTasks = flushDidCaptureTasksForTesting
+        flushDidCaptureTasksForTesting = nil
+        didCaptureTasks?()
+#endif
+        for task in tasks {
+            await task.value
+        }
+    }
+
+#if DEBUG
+    func enqueuePersistenceOperationForTesting(
+        _ operation: @escaping @MainActor () async -> Void
+    ) {
+        enqueuePersistenceOperation(operation)
+    }
+#endif
+
+    @discardableResult
+    private func enqueuePersistenceOperation(
+        _ operation: @escaping @MainActor () async -> Void
+    ) -> Task<Void, Never> {
+        let id = UUID()
+        let predecessor = persistenceTail
+        let task = Task { [weak self] in
+            await predecessor?.value
+            if !Task.isCancelled {
+                await operation()
+            }
+            self?.pendingPersistenceTasks.removeValue(forKey: id)
+        }
+        pendingPersistenceTasks[id] = task
+        persistenceTail = task
+        return task
+    }
+
+    func deleteEvent(id: UUID) {
+        guard let modelWorker else { return }
+        invalidateDerivedPersonalization()
+        collectionGeneration &+= 1
+        let generation = collectionGeneration
+        enqueuePersistenceOperation { [self] in
+            do {
+                let rebuiltModel = try await modelWorker.deleteEvent(
+                    id: id,
+                    generation: generation
+                )
+                let rebuiltVoiceAssessment =
+                    await modelWorker.voiceAssessmentSnapshot()
+                guard generation == collectionGeneration else { return }
+                languageModel = rebuiltModel
+                voiceAssessment = rebuiltVoiceAssessment
+                finishDerivedPersonalizationInvalidation(
+                    generation: generation
+                )
+                refresh()
+            } catch {
+                await recoverAfterFailedDestructiveOperation(
+                    error,
+                    generation: generation,
+                    modelWorker: modelWorker
+                )
             }
         }
     }
 
     func deleteApplicationHistory(bundleIdentifier: String) {
         guard let modelWorker else { return }
-        Task {
+        invalidateDerivedPersonalization()
+        let previousBoundary =
+            completionEpisodeApplicationDeletionBoundaries[bundleIdentifier]
+        let attemptedBoundary = Date()
+        completionEpisodeApplicationDeletionBoundaries[bundleIdentifier] =
+            attemptedBoundary
+        collectionGeneration &+= 1
+        let generation = collectionGeneration
+        enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await modelWorker.deleteEvents(
+                let rebuiltModel = try await modelWorker.deleteEvents(
                     scopeKind: "application",
-                    value: bundleIdentifier
+                    value: bundleIdentifier,
+                    generation: generation
                 )
-                voiceAssessment =
+                let rebuiltVoiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
+                guard generation == collectionGeneration else { return }
+                languageModel = rebuiltModel
+                voiceAssessment = rebuiltVoiceAssessment
+                finishDerivedPersonalizationInvalidation(
+                    generation: generation
+                )
                 refresh()
             } catch {
-                operationError = String(describing: error)
+                if
+                    completionEpisodeApplicationDeletionBoundaries[
+                        bundleIdentifier
+                    ] == attemptedBoundary
+                {
+                    completionEpisodeApplicationDeletionBoundaries[
+                        bundleIdentifier
+                    ] = previousBoundary
+                }
+                await recoverAfterFailedDestructiveOperation(
+                    error,
+                    generation: generation,
+                    modelWorker: modelWorker
+                )
             }
         }
     }
@@ -235,6 +838,7 @@ final class PersonalizationSettingsStore: ObservableObject {
                 "Personalization database is unavailable"
             )
         }
+        await flushPendingPersistence()
         let export = try await database.exportCorpus()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -255,18 +859,89 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func enforceRetention() {
         guard let modelWorker else { return }
+        invalidateDerivedPersonalization()
+        collectionGeneration &+= 1
+        let generation = collectionGeneration
         let policy = retentionPolicy
-        Task {
+        enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await modelWorker.enforceRetention(
-                    policy
+                let rebuiltModel = try await modelWorker.enforceRetention(
+                    policy,
+                    generation: generation
                 )
-                voiceAssessment =
+                let rebuiltVoiceAssessment =
                     await modelWorker.voiceAssessmentSnapshot()
+                guard generation == collectionGeneration else { return }
+                languageModel = rebuiltModel
+                voiceAssessment = rebuiltVoiceAssessment
+                finishDerivedPersonalizationInvalidation(
+                    generation: generation
+                )
                 refresh()
             } catch {
-                operationError = String(describing: error)
+                await recoverAfterFailedDestructiveOperation(
+                    error,
+                    generation: generation,
+                    modelWorker: modelWorker
+                )
             }
+        }
+    }
+
+    private func invalidateDerivedPersonalization() {
+        derivedPersonalizationIsInvalidated = true
+        languageModel = PersonalLanguageModel()
+        voiceAssessment = nil
+        onHistoryReset?()
+    }
+
+    private func finishDerivedPersonalizationInvalidation(
+        generation: UInt64
+    ) {
+        guard generation == collectionGeneration else { return }
+        derivedPersonalizationIsInvalidated = false
+    }
+
+    private func recoverAfterFailedDestructiveOperation(
+        _ originalError: Error,
+        generation: UInt64,
+        modelWorker: PersonalizationModelWorker
+    ) async {
+        let originalErrorDescription = String(describing: originalError)
+        guard generation == collectionGeneration else {
+            operationError = originalErrorDescription
+            return
+        }
+        do {
+            let recoveredModel = try await modelWorker.prepare()
+            let recoveredVoiceAssessment =
+                await modelWorker.voiceAssessmentSnapshot()
+            let recoveredStatistics: PersonalizationStorageStatistics? =
+                if let database {
+                    try await database.storageStatistics()
+                } else {
+                    nil
+                }
+            guard generation == collectionGeneration else {
+                operationError = originalErrorDescription
+                return
+            }
+            languageModel = recoveredModel
+            voiceAssessment = recoveredVoiceAssessment
+            if let recoveredStatistics {
+                storedEventCount = recoveredStatistics.eventCount
+                encryptedPayloadBytes =
+                    recoveredStatistics.encryptedPayloadBytes
+            }
+            finishDerivedPersonalizationInvalidation(
+                generation: generation
+            )
+            operationError = originalErrorDescription
+        } catch {
+            operationError =
+                originalErrorDescription
+                + "; recovery failed: "
+                + String(describing: error)
         }
     }
 
@@ -275,10 +950,23 @@ final class PersonalizationSettingsStore: ObservableObject {
     }
 
     func reassessVoice() {
-        guard let modelWorker else { return }
-        Task {
+        guard
+            !derivedPersonalizationIsInvalidated,
+            let modelWorker
+        else {
+            return
+        }
+        let generation = collectionGeneration
+        enqueuePersistenceOperation { [self] in
             do {
-                voiceAssessment = try await modelWorker.reassessVoice()
+                let assessment = try await modelWorker.reassessVoice()
+                guard
+                    generation == collectionGeneration,
+                    !derivedPersonalizationIsInvalidated
+                else {
+                    return
+                }
+                voiceAssessment = assessment
                 operationError = nil
             } catch {
                 operationError = String(describing: error)
@@ -290,24 +978,50 @@ final class PersonalizationSettingsStore: ObservableObject {
         for prefix: String,
         context: PersonalizationContext
     ) -> PersonalCompletion? {
-        guard useLocalCompletions else { return nil }
+        guard
+            useLocalCompletions,
+            !derivedPersonalizationIsInvalidated
+        else {
+            return nil
+        }
         return languageModel.completion(for: prefix, context: context)
     }
 
     var vocabularyEntries: [PersonalVocabularyEntry] {
-        languageModel.vocabularyEntries(limit: 30)
+        guard !derivedPersonalizationIsInvalidated else { return [] }
+        return languageModel.vocabularyEntries(limit: 30)
     }
 
     func promptContext(
         for prefix: String,
         context: PersonalizationContext
     ) async -> PersonalizationPromptContext {
-        guard collectionEnabled, let modelWorker else { return .empty }
+        guard
+            collectionEnabled,
+            !derivedPersonalizationIsInvalidated,
+            let modelWorker
+        else {
+            return .empty
+        }
+        let generation = collectionGeneration
         do {
-            return try await modelWorker.promptContext(
+            let promptContext = try await modelWorker.promptContext(
                 for: prefix,
                 context: context
             )
+#if DEBUG
+            let didLoad = promptContextDidLoadForTesting
+            promptContextDidLoadForTesting = nil
+            didLoad?()
+#endif
+            guard
+                collectionEnabled,
+                generation == collectionGeneration,
+                !derivedPersonalizationIsInvalidated
+            else {
+                return .empty
+            }
+            return promptContext
         } catch {
             operationError = String(describing: error)
             return .empty
@@ -315,10 +1029,22 @@ final class PersonalizationSettingsStore: ObservableObject {
     }
 }
 
-private actor PersonalizationModelWorker {
+actor PersonalizationModelWorker {
     private struct EmbeddedText {
         let modelIdentifier: String
         let vector: [Double]
+    }
+
+    private struct VoiceSource {
+        let id: UUID
+        let context: PersonalizationContext
+    }
+
+    private struct VoiceInput {
+        let text: String
+        let id: UUID
+        let context: PersonalizationContext
+        let capturedAt: Date
     }
 
     private let database: PersonalizationDatabase
@@ -329,87 +1055,445 @@ private actor PersonalizationModelWorker {
     private var voiceAssessment: VoiceAssessment?
     private var voiceTexts: [String] = []
     private var voiceSourceEventCount = 0
+    private var voiceSources: [VoiceSource] = []
+    private var collectionGeneration: UInt64 = 0
+    private let collectionConsentEpoch: PersonalizationConsentEpoch
+    private let directTypingConsentEpoch: PersonalizationConsentEpoch
+    private var collectionOperationIsRunning = false
+    private var collectionOperationWaiters:
+        [CheckedContinuation<Void, Never>] = []
+#if DEBUG
+    private var recordDidPersistForTesting:
+        (@MainActor @Sendable () -> Void)?
+    private var recordWillFinalizeConsentForTesting:
+        (@MainActor @Sendable () -> Void)?
+#endif
 
-    init(database: PersonalizationDatabase) {
+    init(
+        database: PersonalizationDatabase,
+        collectionGeneration: UInt64 = 0,
+        collectionConsentEpoch: PersonalizationConsentEpoch =
+            PersonalizationConsentEpoch(),
+        directTypingConsentEpoch: PersonalizationConsentEpoch =
+            PersonalizationConsentEpoch()
+    ) {
         self.database = database
+        self.collectionGeneration = collectionGeneration
+        self.collectionConsentEpoch = collectionConsentEpoch
+        self.directTypingConsentEpoch = directTypingConsentEpoch
     }
 
-    func prepare() async throws -> PersonalLanguageModel {
-        if let stored = try await database.loadLanguageModel() {
+    func prepare(
+        retentionPolicy: PersonalizationRetentionPolicy? = nil
+    ) async throws -> PersonalLanguageModel {
+        _ = try await database.reconcilePendingConsentEvents(
+                collectionEpoch: collectionConsentEpoch,
+                directTypingEpoch: directTypingConsentEpoch
+            )
+        if let stored = try await database.loadLanguageModel(),
+           !stored.requiresRebuild {
             model = stored
         } else {
+            _ = try await rebuildLanguageModel()
+        }
+        if
+            let retentionPolicy,
+            try await database.enforceRetention(retentionPolicy) > 0
+        {
             _ = try await rebuildLanguageModel()
         }
         voiceAssessment = try await database.loadVoiceAssessment()
         try await reloadRetrievalIndex()
         try await updateVoiceAssessmentIfNeeded()
+        if let retentionPolicy {
+            // Rebuilding embeddings and voice projections can cross the
+            // configured byte cap even when canonical history fits. Apply
+            // only the byte cap here: re-evaluating maximumAge after the
+            // asynchronous rebuild could expire canonical rows that are
+            // already loaded in memory.
+            _ = try await database.enforceRetention(
+                PersonalizationRetentionPolicy(
+                    maximumAge: nil,
+                    maximumEncryptedBytes:
+                        retentionPolicy.maximumEncryptedBytes
+                )
+            )
+        }
         return model
     }
 
+#if DEBUG
+    func setRecordDidPersistForTesting(
+        _ callback: @escaping @MainActor @Sendable () -> Void
+    ) {
+        recordDidPersistForTesting = callback
+    }
+
+    func setRecordWillFinalizeConsentForTesting(
+        _ callback: @escaping @MainActor @Sendable () -> Void
+    ) {
+        recordWillFinalizeConsentForTesting = callback
+    }
+
+    func voiceTextsForTesting() -> [String] {
+        voiceTexts
+    }
+
+    func voiceSourceIDsForTesting() -> [UUID] {
+        voiceSources.map(\.id)
+    }
+
+    private func invokeRecordWillFinalizeConsentForTesting() async {
+        let callback = recordWillFinalizeConsentForTesting
+        recordWillFinalizeConsentForTesting = nil
+        await callback?()
+    }
+#endif
+
     func record(
         _ capture: AcceptedSuggestionCapture,
-        retentionPolicy: PersonalizationRetentionPolicy
+        retentionPolicy: PersonalizationRetentionPolicy,
+        generation: UInt64,
+        consentGeneration: UInt64 = 0
     ) async throws -> PersonalLanguageModel {
-        try await database.record(capture)
-        model.ingest(capture)
-        try await database.saveLanguageModel(model)
-        let example = PersonalizationExample(capture)
-        examples.append(example)
-        semanticExamples.append(example)
-        try await embedIfNeeded(example)
-        voiceTexts.append(capture.field.text + capture.insertion)
-        voiceSourceEventCount += 1
-        try await updateVoiceAssessmentIfNeeded()
-        let removed = try await database.enforceRetention(retentionPolicy)
-        if removed > 0 {
-            return try await rebuild()
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        guard
+            generation == collectionGeneration,
+            consentGeneration == collectionConsentEpoch.current
+        else {
+            return model
         }
-        return model
+        try await database.recordPendingConsent(
+            capture,
+            collectionGeneration: consentGeneration
+        )
+#if DEBUG
+        let didPersist = recordDidPersistForTesting
+        recordDidPersistForTesting = nil
+        await didPersist?()
+#endif
+        do {
+            if let revokedModel = try await removeRecordIfConsentRevoked(
+                id: capture.id,
+                consentGeneration: consentGeneration
+            ) {
+                return revokedModel
+            }
+            model.ingest(capture)
+            try await database.saveLanguageModel(model)
+            let example = PersonalizationExample(capture)
+            examples.append(example)
+            semanticExamples.append(example)
+            try await embedIfNeeded(example)
+            voiceSourceEventCount += 1
+            if let text = capture.field.replacingSelection(
+                with: capture.insertion
+            ) {
+                voiceTexts.append(text)
+                appendVoiceSource(id: capture.id, context: capture.context)
+            }
+            try await updateVoiceAssessmentIfNeeded()
+            let removed = try await database.enforceRetention(retentionPolicy)
+            if removed > 0 {
+                _ = try await rebuild()
+            }
+            if let revokedModel = try await settleRecordConsent(
+                id: capture.id,
+                consentGeneration: consentGeneration,
+                invokeTestingHook: true
+            ) {
+                return revokedModel
+            }
+            return model
+        } catch {
+            if let revokedModel = try await settleRecordConsent(
+                id: capture.id,
+                consentGeneration: consentGeneration
+            ) {
+                return revokedModel
+            }
+            throw error
+        }
     }
 
     func record(
         _ episode: WritingEpisodeCapture,
-        retentionPolicy: PersonalizationRetentionPolicy
+        retentionPolicy: PersonalizationRetentionPolicy,
+        generation: UInt64,
+        consentGeneration: UInt64 = 0,
+        directTypingConsentGeneration: UInt64 = 0
     ) async throws -> PersonalLanguageModel {
-        try await database.record(episode)
-        model.ingest(episode)
-        try await database.saveLanguageModel(model)
-        let removed = try await database.enforceRetention(retentionPolicy)
-        if removed > 0 {
-            return try await rebuild()
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        guard
+            generation == collectionGeneration,
+            consentGeneration == collectionConsentEpoch.current,
+            directTypingConsentGeneration
+                == directTypingConsentEpoch.current
+        else {
+            return model
         }
-        examples.append(
-            contentsOf: PersonalizationExample.directlyTyped(from: episode)
+        try await database.recordPendingConsent(
+            episode,
+            collectionGeneration: consentGeneration,
+            directTypingGeneration: directTypingConsentGeneration
         )
-        voiceTexts.append(episode.finalField.text)
-        voiceSourceEventCount += 1
-        try await updateVoiceAssessmentIfNeeded()
-        return model
+#if DEBUG
+        let didPersist = recordDidPersistForTesting
+        recordDidPersistForTesting = nil
+        await didPersist?()
+#endif
+        do {
+            if let revokedModel = try await removeRecordIfConsentRevoked(
+                id: episode.id,
+                consentGeneration: consentGeneration,
+                directTypingConsentGeneration:
+                    directTypingConsentGeneration
+            ) {
+                return revokedModel
+            }
+            model.ingest(episode)
+            try await database.saveLanguageModel(model)
+            let removed = try await database.enforceRetention(retentionPolicy)
+            if removed > 0 {
+                _ = try await rebuild()
+            } else {
+                examples.append(
+                    contentsOf:
+                        PersonalizationExample.directlyTyped(from: episode)
+                )
+                voiceTexts.append(episode.finalField.text)
+                voiceSourceEventCount += 1
+                appendVoiceSource(id: episode.id, context: episode.context)
+                try await updateVoiceAssessmentIfNeeded()
+            }
+            if let revokedModel = try await settleRecordConsent(
+                id: episode.id,
+                consentGeneration: consentGeneration,
+                directTypingConsentGeneration:
+                    directTypingConsentGeneration,
+                invokeTestingHook: true
+            ) {
+                return revokedModel
+            }
+            return model
+        } catch {
+            if let revokedModel = try await settleRecordConsent(
+                id: episode.id,
+                consentGeneration: consentGeneration,
+                directTypingConsentGeneration:
+                    directTypingConsentGeneration
+            ) {
+                return revokedModel
+            }
+            throw error
+        }
     }
 
     func record(
         _ feedback: CompletionFeedbackCapture,
-        retentionPolicy: PersonalizationRetentionPolicy
+        retentionPolicy: PersonalizationRetentionPolicy,
+        generation: UInt64,
+        consentGeneration: UInt64 = 0
     ) async throws -> PersonalLanguageModel {
-        try await database.record(feedback)
-        model.ingest(feedback)
-        try await database.saveLanguageModel(model)
-        let removed = try await database.enforceRetention(retentionPolicy)
-        if removed > 0 {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        guard
+            generation == collectionGeneration,
+            consentGeneration == collectionConsentEpoch.current
+        else {
+            return model
+        }
+        try await database.recordPendingConsent(
+            feedback,
+            collectionGeneration: consentGeneration
+        )
+#if DEBUG
+        let didPersist = recordDidPersistForTesting
+        recordDidPersistForTesting = nil
+        await didPersist?()
+#endif
+        do {
+            if let revokedModel = try await removeRecordIfConsentRevoked(
+                id: feedback.id,
+                consentGeneration: consentGeneration
+            ) {
+                return revokedModel
+            }
+            model.ingest(feedback)
+            try await database.saveLanguageModel(model)
+            let removed = try await database.enforceRetention(retentionPolicy)
+            if removed > 0 {
+                _ = try await rebuild()
+            }
+            if let revokedModel = try await settleRecordConsent(
+                id: feedback.id,
+                consentGeneration: consentGeneration,
+                invokeTestingHook: true
+            ) {
+                return revokedModel
+            }
+            return model
+        } catch {
+            if let revokedModel = try await settleRecordConsent(
+                id: feedback.id,
+                consentGeneration: consentGeneration
+            ) {
+                return revokedModel
+            }
+            throw error
+        }
+    }
+
+    func record(
+        _ episode: CompletionEpisodeCapture,
+        retentionPolicy: PersonalizationRetentionPolicy,
+        generation: UInt64,
+        consentGeneration: UInt64 = 0
+    ) async throws -> PersonalLanguageModel {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        guard
+            generation == collectionGeneration,
+            consentGeneration == collectionConsentEpoch.current
+        else {
+            return model
+        }
+        try await database.recordPendingConsent(
+            episode,
+            collectionGeneration: consentGeneration
+        )
+#if DEBUG
+        let didPersist = recordDidPersistForTesting
+        recordDidPersistForTesting = nil
+        await didPersist?()
+#endif
+        do {
+            if let revokedModel = try await removeRecordIfConsentRevoked(
+                id: episode.id,
+                consentGeneration: consentGeneration
+            ) {
+                return revokedModel
+            }
+            let removed = try await database.enforceRetention(retentionPolicy)
+            if removed > 0 {
+                _ = try await rebuild()
+            }
+            if let revokedModel = try await settleRecordConsent(
+                id: episode.id,
+                consentGeneration: consentGeneration,
+                invokeTestingHook: true
+            ) {
+                return revokedModel
+            }
+            return model
+        } catch {
+            if let revokedModel = try await settleRecordConsent(
+                id: episode.id,
+                consentGeneration: consentGeneration
+            ) {
+                return revokedModel
+            }
+            throw error
+        }
+    }
+
+    private func settleRecordConsent(
+        id: UUID,
+        consentGeneration: UInt64,
+        directTypingConsentGeneration: UInt64? = nil,
+        invokeTestingHook: Bool = false
+    ) async throws -> PersonalLanguageModel? {
+#if DEBUG
+        if invokeTestingHook {
+            await invokeRecordWillFinalizeConsentForTesting()
+        }
+#endif
+        if let revokedModel = try await removeRecordIfConsentRevoked(
+            id: id,
+            consentGeneration: consentGeneration,
+            directTypingConsentGeneration:
+                directTypingConsentGeneration,
+            rebuildDerivedState: true
+        ) {
+            return revokedModel
+        }
+        let finalized = try await finalizePendingConsentIfCurrent(
+            id: id,
+            consentGeneration: consentGeneration,
+            directTypingConsentGeneration:
+                directTypingConsentGeneration
+        )
+        guard !finalized else { return nil }
+        return try await removeRecordIfConsentRevoked(
+            id: id,
+            consentGeneration: consentGeneration,
+            directTypingConsentGeneration:
+                directTypingConsentGeneration,
+            rebuildDerivedState: true
+        )
+    }
+
+    private func finalizePendingConsentIfCurrent(
+        id: UUID,
+        consentGeneration: UInt64,
+        directTypingConsentGeneration: UInt64? = nil
+    ) async throws -> Bool {
+        try await database.finalizePendingConsentEvent(
+            id: id,
+            collectionEpoch: collectionConsentEpoch,
+            collectionGeneration: consentGeneration,
+            directTypingEpoch:
+                directTypingConsentGeneration == nil
+                ? nil
+                : directTypingConsentEpoch,
+            directTypingGeneration:
+                directTypingConsentGeneration
+        )
+    }
+
+    private func removeRecordIfConsentRevoked(
+        id: UUID,
+        consentGeneration: UInt64,
+        directTypingConsentGeneration: UInt64? = nil,
+        rebuildDerivedState: Bool = false
+    ) async throws -> PersonalLanguageModel? {
+        let collectionWasRevoked =
+            consentGeneration != collectionConsentEpoch.current
+        let directTypingWasRevoked =
+            directTypingConsentGeneration.map {
+                $0 != directTypingConsentEpoch.current
+            } ?? false
+        guard collectionWasRevoked || directTypingWasRevoked else {
+            return nil
+        }
+        _ = try await database.discardMostRecentlyRecordedEvent(id: id)
+        if rebuildDerivedState {
             return try await rebuild()
         }
         return model
     }
 
-    func deleteEvent(id: UUID) async throws -> PersonalLanguageModel {
+    func deleteEvent(
+        id: UUID,
+        generation: UInt64
+    ) async throws -> PersonalLanguageModel {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        collectionGeneration = max(collectionGeneration, generation)
         try await database.deleteEvent(id: id)
         return try await rebuild()
     }
 
     func deleteEvents(
         scopeKind: String,
-        value: String
+        value: String,
+        generation: UInt64
     ) async throws -> PersonalLanguageModel {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        collectionGeneration = max(collectionGeneration, generation)
         _ = try await database.deleteEvents(
             scopeKind: scopeKind,
             value: value
@@ -418,13 +1502,20 @@ private actor PersonalizationModelWorker {
     }
 
     func enforceRetention(
-        _ policy: PersonalizationRetentionPolicy
+        _ policy: PersonalizationRetentionPolicy,
+        generation: UInt64
     ) async throws -> PersonalLanguageModel {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        collectionGeneration = max(collectionGeneration, generation)
         let removed = try await database.enforceRetention(policy)
         return removed > 0 ? try await rebuild() : model
     }
 
-    func deleteAll() async throws -> PersonalLanguageModel {
+    func deleteAll(generation: UInt64) async throws -> PersonalLanguageModel {
+        await acquireCollectionOperation()
+        defer { releaseCollectionOperation() }
+        collectionGeneration = max(collectionGeneration, generation)
         try await database.deleteAll()
         model = PersonalLanguageModel()
         examples = []
@@ -432,8 +1523,27 @@ private actor PersonalizationModelWorker {
         embeddings = [:]
         voiceTexts = []
         voiceSourceEventCount = 0
+        voiceSources = []
         voiceAssessment = nil
         return model
+    }
+
+    private func acquireCollectionOperation() async {
+        guard collectionOperationIsRunning else {
+            collectionOperationIsRunning = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            collectionOperationWaiters.append(continuation)
+        }
+    }
+
+    private func releaseCollectionOperation() {
+        guard !collectionOperationWaiters.isEmpty else {
+            collectionOperationIsRunning = false
+            return
+        }
+        collectionOperationWaiters.removeFirst().resume()
     }
 
     func voiceAssessmentSnapshot() -> VoiceAssessment? {
@@ -457,7 +1567,11 @@ private actor PersonalizationModelWorker {
         guard let query = embedding(for: prefix) else {
             return PersonalizationPromptContext(
                 frecentExamples:
-                    PersonalizationExample.promptValue(from: frecent)
+                    PersonalizationExample.promptValue(from: frecent),
+                frecentSourceEventIDs: sourceEventIDs(from: frecent),
+                frecentSourceContexts: sourceContexts(from: frecent),
+                frecentRecordCharacterCounts:
+                    frecent.map { $0.promptText.count }
             )
         }
         let candidateVectors = Dictionary(
@@ -487,8 +1601,44 @@ private actor PersonalizationModelWorker {
             relevantExamples: PersonalizationExample.promptValue(
                 from: relevant
             ),
-            voiceAssessment: voiceAssessment?.summary
+            voiceAssessment: voiceAssessment?.summary,
+            frecentSourceEventIDs: sourceEventIDs(from: frecent),
+            frecentSourceContexts: sourceContexts(from: frecent),
+            frecentRecordCharacterCounts:
+                frecent.map { $0.promptText.count },
+            relevantSourceEventIDs: sourceEventIDs(from: relevant),
+            relevantSourceContexts: sourceContexts(from: relevant),
+            relevantRecordCharacterCounts:
+                relevant.map { $0.promptText.count },
+            voiceSourceEventIDs: voiceAssessment?.sourceEventIDs ?? [],
+            voiceSourceContexts: voiceAssessment?.sourceContexts ?? []
         )
+    }
+
+    private func appendVoiceSource(
+        id: UUID,
+        context: PersonalizationContext
+    ) {
+        voiceSources.append(VoiceSource(id: id, context: context))
+        let excess = max(0, voiceSources.count - 200)
+        if excess > 0 {
+            voiceSources.removeFirst(excess)
+            voiceTexts.removeFirst(excess)
+        }
+    }
+
+    private func sourceEventIDs(
+        from examples: [PersonalizationExample]
+    ) -> [UUID] {
+        examples.map { example in
+            example.sourceEventID ?? example.id
+        }
+    }
+
+    private func sourceContexts(
+        from examples: [PersonalizationExample]
+    ) -> [PersonalizationContext] {
+        examples.map(\.context)
     }
 
     private func rebuild() async throws -> PersonalLanguageModel {
@@ -530,12 +1680,40 @@ private actor PersonalizationModelWorker {
         for example in semanticExamples {
             try await embedIfNeeded(example)
         }
-        voiceTexts = Array(
-            (
-                episodes.map(\.finalField.text)
-                    + accepted.map { $0.field.text + $0.insertion }
-            ).suffix(200)
+        let voiceInputs: [VoiceInput] =
+            episodes.map {
+                VoiceInput(
+                    text: $0.finalField.text,
+                    id: $0.id,
+                    context: $0.context,
+                    capturedAt: $0.endedAt
+                )
+            }
+            + accepted.compactMap {
+                guard let text = $0.field.replacingSelection(
+                    with: $0.insertion
+                ) else {
+                    return nil
+                }
+                return VoiceInput(
+                    text: text,
+                    id: $0.id,
+                    context: $0.context,
+                    capturedAt: $0.capturedAt
+                )
+            }
+        let recentVoiceInputs = Array(
+            voiceInputs.sorted {
+                if $0.capturedAt != $1.capturedAt {
+                    return $0.capturedAt < $1.capturedAt
+                }
+                return $0.id.uuidString < $1.id.uuidString
+            }.suffix(200)
         )
+        voiceTexts = recentVoiceInputs.map(\.text)
+        voiceSources = recentVoiceInputs.map {
+            VoiceSource(id: $0.id, context: $0.context)
+        }
         voiceSourceEventCount = episodes.count + accepted.count
     }
 
@@ -589,14 +1767,19 @@ private actor PersonalizationModelWorker {
     ) async throws {
         let sourceEventCount = voiceSourceEventCount
         if sourceEventCount < 10 {
-            if force, voiceAssessment != nil {
+            if voiceAssessment != nil {
                 voiceAssessment = nil
                 try await database.deleteVoiceAssessment()
             }
             return
         }
+        let assessmentNeedsLineageRefresh =
+            voiceAssessment.map {
+                $0.sourceEventIDs.isEmpty || $0.sourceContexts.isEmpty
+            } ?? false
         guard
             force
+                || assessmentNeedsLineageRefresh
                 || VoiceAssessmentSchedule.shouldAssess(
                     existing: voiceAssessment,
                     sourceEventCount: sourceEventCount
@@ -607,7 +1790,19 @@ private actor PersonalizationModelWorker {
         guard
             let updated = VoiceAssessmentAnalyzer.assess(
                 texts: voiceTexts,
-                sourceEventCount: sourceEventCount
+                sourceEventCount: sourceEventCount,
+                sourceEventIDs: voiceSources.reduce(into: []) {
+                    result, source in
+                    if !result.contains(source.id) {
+                        result.append(source.id)
+                    }
+                },
+                sourceContexts: voiceSources.reduce(into: []) {
+                    result, source in
+                    if !result.contains(source.context) {
+                        result.append(source.context)
+                    }
+                }
             )
         else {
             voiceAssessment = nil

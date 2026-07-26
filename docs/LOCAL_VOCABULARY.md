@@ -5,8 +5,8 @@
 `PersonalLanguageModel` is an encrypted, rebuildable projection of the
 canonical event corpus. It learns:
 
-- personal words and preferred capitalization;
-- one-to-five-token transitions;
+- complete whitespace-delimited editor words and preferred capitalization;
+- one-to-five-word phrase transitions;
 - recency;
 - application, website, input-kind, and language scope evidence;
 - accepted-suggestion and typed-through positive feedback; and
@@ -17,10 +17,38 @@ Direct typing contributes `1.0` evidence, exact typed-through suggestions
 count during ranking. These are policy values, not schema, and can be tuned
 without migrating the corpus.
 
+Keyboard-event fragments are never vocabulary entries. Input events identify
+that an editor changed, but the projection extracts affected complete words
+from the reconstructed editor text. Phrase transitions retain separators such
+as commas and whitespace, while internal apostrophes and hyphens remain part of
+the word.
+
+The raw vocabulary table is not appended to the model prompt. It powers local
+partial-word and phrase completion, and can provide aggregate evidence to the
+automatic voice assessment. Prompt-time personalization comes from retrieved
+full examples and the compact voice assessment instead.
+
+## Voice assessment
+
+The periodic assessment derives compact first-person guidance from complete
+writing samples. In addition to length, casing, punctuation, contractions,
+questions, emoji, and technical terminology, it now detects:
+
+- sustained British English spelling preferences;
+- sustained American English spelling preferences;
+- a repeated mixture of both spelling systems; and
+- sustained switching between languages, such as English and Dutch.
+
+Dialect classification requires at least three distinct dialect markers in
+three separate samples. Repeating one spelling is insufficient. Language
+detection ignores short samples and requires several high-confidence samples
+for every language it reports. The analyzer is versioned so an application
+update can rebuild an older saved assessment from retained history immediately.
+
 ## Local completion
 
 Before scheduling model inference, the in-memory projection can generate up to
-eight tokens from the longest known context. It supports both next-word and
+eight words from the longest known context. It supports both next-word and
 partial-word completion while preserving learned casing and punctuation.
 
 StenoTab displays the result without calling the model only when:

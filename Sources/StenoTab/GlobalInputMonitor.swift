@@ -124,7 +124,7 @@ final class GlobalInputMonitor {
             if monitor.isSelectingScreenshotRegion {
                 return Unmanaged.passUnretained(event)
             }
-            monitor.onMutation(.invalidate)
+            monitor.onMutation(.focusChange)
             return Unmanaged.passUnretained(event)
         }
 
@@ -168,7 +168,7 @@ final class GlobalInputMonitor {
                 return nil
             }
             monitor.reconcileFocusOnTabKeyUp = true
-            monitor.onMutation(.invalidate)
+            monitor.onMutation(.focusChange)
             return Unmanaged.passUnretained(event)
         }
         if keyCode == 51 {

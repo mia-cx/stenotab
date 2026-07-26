@@ -1,4 +1,6 @@
 public enum CompletionSanitizer {
+    private static let maximumCharacters = 4_096
+
     public static func sanitize(
         _ rawCompletion: String,
         after prefix: String,
@@ -87,9 +89,12 @@ public enum CompletionSanitizer {
         var limited = ""
         var wordCount = 0
         var insideWord = false
+        var characterCount = 0
         for character in candidate {
+            guard characterCount < maximumCharacters else { break }
             if character.isWhitespace {
                 limited.append(character)
+                characterCount += 1
                 insideWord = false
                 continue
             }
@@ -99,6 +104,7 @@ public enum CompletionSanitizer {
                 insideWord = true
             }
             limited.append(character)
+            characterCount += 1
         }
         while limited.last?.isWhitespace == true {
             limited.removeLast()

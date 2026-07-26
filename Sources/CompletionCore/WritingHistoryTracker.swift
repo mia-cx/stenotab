@@ -2,6 +2,7 @@ import Foundation
 
 public enum WritingEditProvenance: String, Codable, Sendable, Equatable {
     case directlyTyped = "directly_typed"
+    case typedThroughSuggestion = "typed_through_suggestion"
     case acceptedSuggestion = "accepted_suggestion"
     case reconciled = "reconciled"
 }
@@ -13,6 +14,7 @@ public struct WritingEditCapture: Codable, Sendable, Equatable {
     public let selectionBefore: UTF16Selection
     public let selectionAfter: UTF16Selection
     public let fieldBefore: CapturedFieldState?
+    public let fieldAfter: CapturedFieldState?
     public let startedAt: Date
     public let endedAt: Date
 
@@ -23,6 +25,7 @@ public struct WritingEditCapture: Codable, Sendable, Equatable {
         selectionBefore: UTF16Selection,
         selectionAfter: UTF16Selection,
         fieldBefore: CapturedFieldState? = nil,
+        fieldAfter: CapturedFieldState? = nil,
         startedAt: Date,
         endedAt: Date
     ) {
@@ -32,6 +35,7 @@ public struct WritingEditCapture: Codable, Sendable, Equatable {
         self.selectionBefore = selectionBefore
         self.selectionAfter = selectionAfter
         self.fieldBefore = fieldBefore
+        self.fieldAfter = fieldAfter
         self.startedAt = startedAt
         self.endedAt = endedAt
     }
@@ -42,6 +46,8 @@ public enum WritingEpisodeBoundary: String, Codable, Sendable, Equatable {
     case focusChanged = "focus_changed"
     case idle
     case submitted
+    case collectionDisabled = "collection_disabled"
+    case applicationDisabled = "application_disabled"
     case applicationTerminated = "application_terminated"
 }
 
@@ -129,9 +135,11 @@ public struct WritingHistoryTracker: Sendable {
         if !active.currentField.text.isEmpty,
            field.text.isEmpty,
            !active.edits.isEmpty {
-            active.currentField = field
-            self.active = active
-            let completed = finalize(boundary: .cleared, at: date)
+            let completed = makeCapture(
+                from: active,
+                boundary: .cleared,
+                at: date
+            )
             start(
                 field: field,
                 context: context,
@@ -168,6 +176,7 @@ public struct WritingHistoryTracker: Sendable {
             selectionBefore: fieldBefore.selection,
             selectionAfter: fieldAfter.selection,
             fieldBefore: fieldBefore,
+            fieldAfter: fieldAfter,
             startedAt: date,
             endedAt: date
         )
@@ -180,6 +189,7 @@ public struct WritingHistoryTracker: Sendable {
                     selectionBefore: previous.selectionBefore,
                     selectionAfter: edit.selectionAfter,
                     fieldBefore: previous.fieldBefore,
+                    fieldAfter: edit.fieldAfter,
                     startedAt: previous.startedAt,
                     endedAt: date
                 )
@@ -214,6 +224,7 @@ public struct WritingHistoryTracker: Sendable {
                 selectionBefore: fieldBefore.selection,
                 selectionAfter: fieldAfter.selection,
                 fieldBefore: fieldBefore,
+                fieldAfter: fieldAfter,
                 startedAt: date,
                 endedAt: date
             )

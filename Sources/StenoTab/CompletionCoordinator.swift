@@ -16,6 +16,11 @@ final class CompletionCoordinator: NSObject {
         let editorIdentifier: String
     }
 
+    private enum SuggestionAssociationToken: Equatable {
+        case model(UInt64)
+        case refill(UInt64)
+    }
+
     private let accessibility = AccessibilityReader()
     private let overlay = SuggestionOverlay()
     private let ocrCapture = ScreenOCRContextCapture()
@@ -34,8 +39,12 @@ final class CompletionCoordinator: NSObject {
         @MainActor (AcceptedSuggestionCapture) -> Void
     private let onWritingEpisode:
         @MainActor (WritingEpisodeCapture) -> Void
+    private let writingHistoryCollectionIsEnabled:
+        @MainActor () -> Bool
     private let onCompletionFeedback:
         @MainActor (CompletionFeedbackCapture) -> Void
+    private let onCompletionEpisode:
+        @MainActor (CompletionEpisodeCapture) -> Void
     private let personalCompletion:
         @MainActor (String, PersonalizationContext) -> PersonalCompletion?
     private let personalizationPromptContext:
@@ -56,7 +65,7 @@ final class CompletionCoordinator: NSObject {
     private var lastSnapshot: EditorSnapshot?
     private var suggestion: String?
     private var suggestionConsumption: SuggestionConsumption?
-    private var suggestionRequestID: UInt64?
+    private var suggestionAssociationToken: SuggestionAssociationToken?
     private var newestRequestID: UInt64 = 0
     private var preparedRequestSnapshot:
         (requestID: UInt64, snapshot: EditorSnapshot)?
@@ -72,12 +81,35 @@ final class CompletionCoordinator: NSObject {
     private var refillTask: Task<Void, Never>?
     private var refillKey: RefillKey?
     private var awaitedRefillKey: RefillKey?
-    private var prefetchedRefill: (key: RefillKey, text: String)?
+    private var prefetchedRefill:
+        (
+            key: RefillKey,
+            text: String,
+            requestID: UInt64,
+            invocation: CompletionInvocationCapture?,
+            didFail: Bool
+        )?
     private var refillRequestID: UInt64 = 0
     private var consecutiveSnapshotFailures = 0
     private var writingHistoryTracker = WritingHistoryTracker()
     private var completionReversionTracker = CompletionReversionTracker()
+    private var completionEpisodeTracker = CompletionEpisodeTracker()
+    private var activeCompletionEpisodeToken: SuggestionAssociationToken?
+    private var pendingCompletionEpisodeResolution:
+        CompletionEpisodeResolution?
+    private var invalidationReconciliationNotBefore: Date?
+    private var invalidationReconciliationGeneration: UInt64 = 0
+    private var completionEpisodeAuthoritativeBaselineField:
+        CapturedFieldState?
+    private var completionEpisodeExpectedField:
+        CapturedFieldState?
+    private var completionEpisodeRequiresPostEventObservation = false
+    private var completionEpisodeObservationDeadline: Date?
     private var typedSuggestionOrigin: CapturedFieldState?
+    private let completionEpisodeCollectionIsEnabled:
+        @MainActor () -> Bool
+    private let completionEpisodeCollectionGeneration:
+        @MainActor () -> UInt64
 
     private lazy var requestPump = LatestStreamPump<
         CompletionRequest,
@@ -111,9 +143,18 @@ final class CompletionCoordinator: NSObject {
         onWritingEpisode: @escaping @MainActor (
             WritingEpisodeCapture
         ) -> Void = { _ in },
+        writingHistoryCollectionIsEnabled:
+            @escaping @MainActor () -> Bool = { true },
         onCompletionFeedback: @escaping @MainActor (
             CompletionFeedbackCapture
         ) -> Void = { _ in },
+        onCompletionEpisode: @escaping @MainActor (
+            CompletionEpisodeCapture
+        ) -> Void = { _ in },
+        completionEpisodeCollectionIsEnabled:
+            @escaping @MainActor () -> Bool = { true },
+        completionEpisodeCollectionGeneration:
+            @escaping @MainActor () -> UInt64 = { 0 },
         personalCompletion: @escaping @MainActor (
             String,
             PersonalizationContext
@@ -131,7 +172,14 @@ final class CompletionCoordinator: NSObject {
         self.onSuggestionAccepted = onSuggestionAccepted
         self.onPersonalizationCapture = onPersonalizationCapture
         self.onWritingEpisode = onWritingEpisode
+        self.writingHistoryCollectionIsEnabled =
+            writingHistoryCollectionIsEnabled
         self.onCompletionFeedback = onCompletionFeedback
+        self.onCompletionEpisode = onCompletionEpisode
+        self.completionEpisodeCollectionIsEnabled =
+            completionEpisodeCollectionIsEnabled
+        self.completionEpisodeCollectionGeneration =
+            completionEpisodeCollectionGeneration
         self.personalCompletion = personalCompletion
         self.personalizationPromptContext = personalizationPromptContext
         super.init()
@@ -217,6 +265,117 @@ final class CompletionCoordinator: NSObject {
         )
     }
 
+    func stop() {
+        let wasEnabled = enabled
+        enabled = false
+        reconciliationTimer?.invalidate()
+        reconciliationTimer = nil
+        invalidatePendingCompletion()
+        clearOCRContext()
+        let hasActiveCompletionEpisode =
+            pendingCompletionEpisodeResolution != nil
+            || completionEpisodeTracker.activeInvocationID != nil
+        let shouldObserveWriting =
+            wasEnabled
+            && policyAllowsCurrentApplication()
+            && writingHistoryCollectionIsEnabled()
+        let shutdownSnapshot =
+            (hasActiveCompletionEpisode || shouldObserveWriting)
+            ? accessibility.snapshot()
+            : nil
+        if
+            shouldObserveWriting,
+            let snapshot = shutdownSnapshot,
+            snapshot.editorIdentifier == lastSnapshot?.editorIdentifier
+        {
+            writingHistoryTracker.reconcile(
+                field: capturedField(from: snapshot),
+                at: Date()
+            )
+        }
+        if
+            shouldObserveWriting,
+            let shutdownSnapshot,
+            shutdownSnapshot.editorIdentifier
+                == lastSnapshot?.editorIdentifier,
+           let completed = writingHistoryTracker.finalize(
+               boundary: .applicationTerminated,
+               at: Date()
+           ) {
+            onWritingEpisode(completed)
+        } else {
+            writingHistoryTracker = WritingHistoryTracker()
+        }
+        if pendingCompletionEpisodeResolution != nil {
+            if
+                let snapshot = shutdownSnapshot,
+                snapshot.editorIdentifier == lastSnapshot?.editorIdentifier
+            {
+                let observedField = capturedField(from: snapshot)
+                let authoritativeBaselineField =
+                    completionEpisodeAuthoritativeBaselineField
+                let reconciliationDecision =
+                    CompletionEpisodeReconciliationPolicy.decision(
+                        previousEditorIdentifier:
+                            lastSnapshot?.editorIdentifier,
+                        observedEditorIdentifier:
+                            snapshot.editorIdentifier,
+                        authoritativeBaselineField:
+                            authoritativeBaselineField,
+                        expectedField: completionEpisodeExpectedField,
+                        observedField: observedField,
+                        requiresPostEventObservation:
+                            completionEpisodeRequiresPostEventObservation,
+                        observationDeadlineExceeded: true
+                    )
+                lastSnapshot = snapshot
+                _ = buffer.reconcile(
+                    prefix: snapshot.prefix,
+                    suffix: snapshot.suffix
+                )
+                switch CompletionEpisodeReconciliationPolicy.settlement(
+                    for: reconciliationDecision
+                ) {
+                case .wait, .discard:
+                    discardPendingCompletionEpisode()
+                case .finalizeFromAuthoritativeBaseline:
+                    finalizePendingCompletionEpisodeIfNeeded(
+                        finalField: authoritativeBaselineField
+                    )
+                case .finalizeFromObservedField:
+                    finalizePendingCompletionEpisodeIfNeeded(
+                        finalField: observedField
+                    )
+                }
+            } else {
+                discardPendingCompletionEpisode()
+            }
+        } else if completionEpisodeTracker.activeInvocationID != nil {
+            if
+                let snapshot = shutdownSnapshot,
+                snapshot.editorIdentifier == lastSnapshot?.editorIdentifier
+            {
+                lastSnapshot = snapshot
+                _ = buffer.reconcile(
+                    prefix: snapshot.prefix,
+                    suffix: snapshot.suffix
+                )
+                finalizeCompletionEpisode(
+                    resolution:
+                        completionEpisodeTracker
+                        .abandonedSuggestionResolution,
+                    finalField: capturedField(from: snapshot)
+                )
+            } else {
+                discardCompletionEpisodeAndSuggestion()
+            }
+        }
+        clearSuggestion(
+            resolution:
+                completionEpisodeTracker.abandonedSuggestionResolution
+        )
+    }
+
     private func publishPermissionState(force: Bool = false) {
         let state = currentPermissionState
         guard force || state != lastPermissionState else { return }
@@ -243,34 +402,161 @@ final class CompletionCoordinator: NSObject {
     }
 
     @objc func toggleEnabled(_ sender: NSMenuItem) {
+        if enabled {
+            // Take the last available authoritative observation before the
+            // disabled-state guard begins discarding unsettled episodes.
+            reconcile()
+            finalizeWritingHistoryBeforeCollectionPause(
+                boundary: .collectionDisabled
+            )
+        }
         enabled.toggle()
         sender.state = enabled ? .on : .off
         if !enabled {
             invalidatePendingCompletion()
             clearOCRContext()
-            clearSuggestion()
+            clearSuggestion(
+                resolution:
+                    completionEpisodeTracker.abandonedSuggestionResolution
+            )
         } else {
             reconcile()
         }
     }
 
     func applicationPolicyDidChange() {
+        if !policyAllowsCurrentApplication() {
+            finalizeWritingHistoryBeforeCollectionPause(
+                boundary: .applicationDisabled
+            )
+        }
         invalidatePendingCompletion()
         clearOCRContext()
-        clearSuggestion()
+        clearSuggestion(
+            resolution:
+                completionEpisodeTracker.abandonedSuggestionResolution
+        )
         reconcile()
+    }
+
+    func personalizationHistoryWillReset() {
+        invalidatePendingCompletion()
+        clearOCRContext()
+        discardCompletionEpisodeAndSuggestion()
+        writingHistoryWillReset()
+        completionReversionTracker = CompletionReversionTracker()
+    }
+
+    func writingHistoryWillReset() {
+        writingHistoryTracker = WritingHistoryTracker()
+    }
+
+    static func shouldDeferPendingOutcomeSettlementWhileClearing(
+        pendingResolution: CompletionEpisodeResolution?,
+        expectedField: CapturedFieldState?
+    ) -> Bool {
+        pendingResolution != nil && expectedField != nil
+    }
+
+    static func shouldFinalizePendingOutcomeBeforeMutation(
+        pendingResolution: CompletionEpisodeResolution?,
+        expectedField: CapturedFieldState?,
+        authoritativeField: CapturedFieldState?
+    ) -> Bool {
+        pendingResolution != nil
+            && expectedField != nil
+            && expectedField == authoritativeField
     }
 
     private func handle(_ mutation: ShadowTextBuffer.Mutation) {
         guard enabled, policyAllowsCurrentApplication() else {
             invalidatePendingCompletion()
-            clearSuggestion()
+            clearSuggestion(
+                resolution:
+                    completionEpisodeTracker.abandonedSuggestionResolution
+            )
             return
+        }
+        let shouldVerifyLiveEditor =
+            suggestionConsumption != nil
+            || CompletionEpisodeLiveEditorPolicy.requiresVerification(
+                activeInvocationID:
+                    completionEpisodeTracker.activeInvocationID
+            )
+        var authoritativePreMutationField: CapturedFieldState?
+        if shouldVerifyLiveEditor {
+            let expectedField = currentCapturedField()
+            let liveSnapshot = accessibility.snapshot()
+            guard
+                let expectedField,
+                let liveSnapshot,
+                CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                    activeEditorIdentifier: lastSnapshot?.editorIdentifier,
+                    liveEditorIdentifier: liveSnapshot.editorIdentifier,
+                    expectedField: expectedField,
+                    liveField: capturedField(from: liveSnapshot)
+                ),
+                CompletionPresentationPolicy.isCurrent(
+                    expectedPrefix: buffer.prefix,
+                    expectedSuffix: buffer.suffix,
+                    observedPrefix: liveSnapshot.prefix,
+                    observedSuffix: liveSnapshot.suffix
+                )
+            else {
+                invalidatePendingCompletion()
+                clearOCRContext()
+                buffer.apply(.invalidate)
+                deferCompletionEpisodeFinalization(
+                    resolution:
+                        completionEpisodeTracker
+                        .abandonedSuggestionResolution,
+                    requiresPostEventObservation: true
+                )
+                return
+            }
+            authoritativePreMutationField =
+                capturedField(from: liveSnapshot)
+        }
+        if
+            Self.shouldFinalizePendingOutcomeBeforeMutation(
+                pendingResolution: pendingCompletionEpisodeResolution,
+                expectedField: completionEpisodeExpectedField,
+                authoritativeField: authoritativePreMutationField
+            ),
+            let expectedField = completionEpisodeExpectedField
+        {
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: expectedField
+            )
+        }
+        if
+            case .focusChange = mutation,
+            pendingCompletionEpisodeResolution != nil
+        {
+            // Mouse-down and pass-through Tab arrive before the target app
+            // changes focus. Take the last chance to observe a preceding edit
+            // in its originating editor.
+            reconcile()
         }
         let snapshotBeforeMutation = lastSnapshot
         let fieldBeforeMutation = currentCapturedField()
         let deletion = fieldBeforeMutation.flatMap {
             deletionResult(for: mutation, fieldBefore: $0)
+        }
+        var suggestionConsumptionUpdate:
+            (consumption: SuggestionConsumption,
+             outcome: SuggestionConsumption.Outcome,
+             suggestionAttributedPrefix: String)?
+        if case let .insert(text) = mutation,
+           var consumption = suggestionConsumption {
+            let attributed = consumption.applyWithAttribution(
+                insertedText: text
+            )
+            suggestionConsumptionUpdate = (
+                consumption,
+                attributed.outcome,
+                attributed.suggestionAttributedPrefix
+            )
         }
         if case .deleteBackward = mutation,
            let fieldBeforeMutation,
@@ -283,17 +569,25 @@ final class CompletionCoordinator: NSObject {
         } else if case .insert = mutation {
             completionReversionTracker.cancel()
         }
-        buffer.apply(mutation)
-        if case let .insert(text) = mutation,
+        buffer.apply(
+            mutation,
+            replacingSelection:
+                fieldBeforeMutation?.selection.length ?? 0 > 0
+        )
+        if writingHistoryCollectionIsEnabled(),
+           case let .insert(text) = mutation,
            let fieldBeforeMutation {
-            writingHistoryTracker.recordInsertion(
+            recordWritingInsertion(
                 text,
-                provenance: .directlyTyped,
+                suggestionAttributedPrefix:
+                    suggestionConsumptionUpdate?
+                    .suggestionAttributedPrefix ?? "",
                 fieldBefore: fieldBeforeMutation,
                 fieldAfter: currentCapturedFieldFromBuffer(),
                 at: Date()
             )
-        } else if let deletion {
+        } else if writingHistoryCollectionIsEnabled(),
+                  let deletion {
             writingHistoryTracker.recordDeletion(
                 deletion.deletedText,
                 fieldBefore: deletion.fieldBefore,
@@ -303,9 +597,11 @@ final class CompletionCoordinator: NSObject {
         }
 
         if case let .insert(text) = mutation,
-           var consumption = suggestionConsumption {
-            let outcome = consumption.apply(insertedText: text)
+           let suggestionConsumptionUpdate {
+            let consumption = suggestionConsumptionUpdate.consumption
+            let outcome = suggestionConsumptionUpdate.outcome
             suggestionConsumption = consumption
+            synchronizeCompletionEpisodeTypedThrough(from: consumption)
 
             switch outcome {
             case let .matched(remaining):
@@ -329,22 +625,81 @@ final class CompletionCoordinator: NSObject {
                 return
             case .waitingForWhitespace:
                 recordTypedSuggestionMatch(from: consumption)
-                suggestion = nil
-                overlay.hide()
+                deferCompletionEpisodeFinalization(
+                    resolution:
+                        completionEpisodeTracker
+                        .completedSuggestionResolution
+                        ?? .typedThrough
+                )
+                suggestionConsumption = .waitingForWhitespace()
                 return
             case .triggerInference:
-                clearSuggestion()
+                recordTypedSuggestionMatch(from: consumption)
+                deferCompletionEpisodeFinalization(
+                    resolution:
+                        completionEpisodeTracker
+                        .completedSuggestionResolution
+                        ?? .typedThrough
+                )
                 scheduleCompletion()
                 return
             case .diverged:
-                clearSuggestion()
+                deferCompletionEpisodeFinalization(
+                    resolution:
+                        completionEpisodeTracker
+                        .abandonedSuggestionResolution
+                )
                 scheduleCompletion()
                 return
             }
         }
 
+        if case .invalidate = mutation {
+            invalidatePendingCompletion()
+            deferCompletionEpisodeFinalization(
+                resolution:
+                    completionEpisodeTracker
+                    .abandonedSuggestionResolution,
+                requiresPostEventObservation: true
+            )
+            return
+        }
+        if case .focusChange = mutation {
+            invalidatePendingCompletion()
+            deferCompletionEpisodeFinalization(
+                resolution:
+                    completionEpisodeTracker
+                    .abandonedSuggestionResolution,
+                requiresPostEventObservation: true
+            )
+            return
+        }
+
         invalidatePendingCompletion()
-        clearSuggestion()
+        if
+            deletion != nil,
+            completionEpisodeTracker.hasSuggestionRevisions
+        {
+            deferCompletionEpisodeFinalization(
+                resolution:
+                    completionEpisodeTracker
+                    .abandonedSuggestionResolution
+            )
+            scheduleCompletion()
+            return
+        }
+        if pendingCompletionEpisodeResolution != nil {
+            if buffer.needsReconciliation {
+                reconcile()
+            } else {
+                scheduleCompletion()
+            }
+            return
+        }
+        clearSuggestion(
+            resolution:
+                completionEpisodeTracker.abandonedSuggestionResolution
+        )
         if buffer.needsReconciliation {
             reconcile()
         } else {
@@ -353,15 +708,31 @@ final class CompletionCoordinator: NSObject {
     }
 
     private func reconcile(captureFocusedEditor: Bool = false) {
+        if
+            let notBefore = invalidationReconciliationNotBefore,
+            Date() < notBefore
+        {
+            scheduleInvalidationReconciliation()
+            return
+        }
+        invalidationReconciliationNotBefore = nil
         guard enabled else {
             clearOCRContext()
-            clearSuggestion()
+            reconcilePendingCompletionEpisodeWhileDisabled()
+            clearSuggestion(
+                resolution:
+                    completionEpisodeTracker.abandonedSuggestionResolution
+            )
             return
         }
         guard policyAllowsCurrentApplication() else {
             invalidatePendingCompletion()
             clearOCRContext()
-            clearSuggestion()
+            reconcilePendingCompletionEpisodeWhileDisabled()
+            clearSuggestion(
+                resolution:
+                    completionEpisodeTracker.abandonedSuggestionResolution
+            )
             return
         }
         let frontmostProcessID = NSWorkspace.shared.frontmostApplication?
@@ -370,6 +741,15 @@ final class CompletionCoordinator: NSObject {
             lastOCRFocusedEditorIdentifier = nil
         }
         guard let snapshot = accessibility.snapshot() else {
+            if completionEpisodeExpectedField != nil {
+                if completionEpisodeObservationDeadlineExceeded {
+                    buffer.apply(.invalidate)
+                    discardPendingCompletionEpisode()
+                    return
+                }
+                scheduleInvalidationReconciliation()
+                return
+            }
             if captureFocusedEditor {
                 lastOCRFocusedEditorIdentifier = nil
             }
@@ -382,7 +762,10 @@ final class CompletionCoordinator: NSObject {
                 frontmostProcessMatchesLastSnapshot: frontmostMatches
             ) {
                 invalidatePendingCompletion()
-                clearSuggestion()
+                clearSuggestion(
+                    resolution:
+                        completionEpisodeTracker.abandonedSuggestionResolution
+                )
             }
             return
         }
@@ -394,12 +777,63 @@ final class CompletionCoordinator: NSObject {
         let focusChanged = previousSnapshot.map {
             $0.editorIdentifier != snapshot.editorIdentifier
         } ?? true
+        let hadPendingAuthoritativeObservation =
+            completionEpisodeExpectedField != nil
+        let reconciliationDecision =
+            CompletionEpisodeReconciliationPolicy.decision(
+                previousEditorIdentifier:
+                    previousSnapshot?.editorIdentifier,
+                observedEditorIdentifier: snapshot.editorIdentifier,
+                authoritativeBaselineField:
+                    completionEpisodeAuthoritativeBaselineField,
+                expectedField: completionEpisodeExpectedField,
+                observedField: CapturedFieldState(
+                    text: snapshot.fieldText,
+                    selection: snapshot.selection
+                ),
+                requiresPostEventObservation:
+                    completionEpisodeRequiresPostEventObservation,
+                observationDeadlineExceeded:
+                    completionEpisodeObservationDeadlineExceeded
+            )
+        let reconciliationSettlement =
+            CompletionEpisodeReconciliationPolicy.settlement(
+                for: reconciliationDecision
+            )
+        if reconciliationSettlement == .wait {
+            scheduleInvalidationReconciliation()
+            return
+        }
+        let authoritativeBaselineField =
+            completionEpisodeAuthoritativeBaselineField
+        completionEpisodeAuthoritativeBaselineField = nil
+        completionEpisodeExpectedField = nil
+        completionEpisodeRequiresPostEventObservation = false
+        completionEpisodeObservationDeadline = nil
+        switch reconciliationSettlement {
+        case .discard:
+            discardPendingCompletionEpisode()
+        case .finalizeFromAuthoritativeBaseline:
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: authoritativeBaselineField
+            )
+        case .finalizeFromObservedField:
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: capturedField(from: snapshot)
+            )
+        case .wait:
+            break
+        }
         if focusChanged {
             invalidatePendingCompletion()
-            clearSuggestion()
+            clearSuggestion(
+                resolution:
+                    completionEpisodeTracker.abandonedSuggestionResolution
+            )
         }
         updateTypographyScale(from: previousSnapshot, to: snapshot)
-        if let completed = writingHistoryTracker.observe(
+        if writingHistoryCollectionIsEnabled(),
+           let completed = writingHistoryTracker.observe(
             field: CapturedFieldState(
                 text: snapshot.fieldText,
                 selection: snapshot.selection
@@ -428,19 +862,39 @@ final class CompletionCoordinator: NSObject {
                 suffix: snapshot.suffix
             )
             invalidatePendingCompletion()
-            clearSuggestion()
+            clearSuggestion(
+                resolution:
+                    completionEpisodeTracker.abandonedSuggestionResolution
+            )
             prepareOverlay(for: snapshot)
             return
         }
         prepareOverlay(for: snapshot)
 
-        if focusChanged || buffer.needsReconciliation ||
-            (buffer.prefix != snapshot.prefix && suggestion == nil) ||
+        let neededReconciliation = buffer.needsReconciliation
+        if focusChanged || neededReconciliation ||
+            (
+                (
+                    buffer.prefix != snapshot.prefix
+                        || buffer.suffix != snapshot.suffix
+                )
+                    && suggestion == nil
+                    && (
+                        suggestionConsumption == nil
+                            || hadPendingAuthoritativeObservation
+                    )
+            ) ||
             recoveringFromSnapshotFailure {
             let contentChanged = buffer.reconcile(
                 prefix: snapshot.prefix,
                 suffix: snapshot.suffix
             )
+            if neededReconciliation {
+                clearSuggestion(
+                    resolution:
+                        completionEpisodeTracker.abandonedSuggestionResolution
+                )
+            }
             if CompletionRefreshPolicy.shouldScheduleAfterReconciliation(
                 contentChanged: contentChanged,
                 recoveringFromSnapshotFailure:
@@ -451,6 +905,88 @@ final class CompletionCoordinator: NSObject {
             ) {
                 scheduleCompletion()
             }
+        }
+        if hadPendingAuthoritativeObservation, !focusChanged {
+            finalizePendingCompletionEpisodeIfNeeded()
+        }
+    }
+
+    private func finalizeWritingHistoryBeforeCollectionPause(
+        boundary: WritingEpisodeBoundary
+    ) {
+        guard writingHistoryCollectionIsEnabled() else {
+            writingHistoryTracker = WritingHistoryTracker()
+            return
+        }
+        guard
+            let snapshot = accessibility.snapshot(),
+            snapshot.editorIdentifier == lastSnapshot?.editorIdentifier
+        else {
+            writingHistoryTracker = WritingHistoryTracker()
+            return
+        }
+        let now = Date()
+        writingHistoryTracker.reconcile(
+            field: capturedField(from: snapshot),
+            at: now
+        )
+        if let completed = writingHistoryTracker.finalize(
+            boundary: boundary,
+            at: now
+        ) {
+            onWritingEpisode(completed)
+        } else {
+            writingHistoryTracker = WritingHistoryTracker()
+        }
+    }
+
+    private func reconcilePendingCompletionEpisodeWhileDisabled() {
+        guard
+            pendingCompletionEpisodeResolution != nil,
+            let expectedField = completionEpisodeExpectedField
+        else {
+            discardPendingCompletionEpisode()
+            return
+        }
+        guard
+            let snapshot = accessibility.snapshot(),
+            snapshot.editorIdentifier == lastSnapshot?.editorIdentifier
+        else {
+            if completionEpisodeObservationDeadlineExceeded {
+                discardPendingCompletionEpisode()
+            } else {
+                scheduleInvalidationReconciliation()
+            }
+            return
+        }
+        let observedField = capturedField(from: snapshot)
+        let decision = CompletionEpisodeReconciliationPolicy.decision(
+            previousEditorIdentifier: lastSnapshot?.editorIdentifier,
+            observedEditorIdentifier: snapshot.editorIdentifier,
+            authoritativeBaselineField:
+                completionEpisodeAuthoritativeBaselineField,
+            expectedField: expectedField,
+            observedField: observedField,
+            requiresPostEventObservation:
+                completionEpisodeRequiresPostEventObservation,
+            observationDeadlineExceeded:
+                completionEpisodeObservationDeadlineExceeded
+        )
+        switch CompletionEpisodeReconciliationPolicy.settlement(
+            for: decision
+        ) {
+        case .wait:
+            scheduleInvalidationReconciliation()
+        case .discard:
+            discardPendingCompletionEpisode()
+        case .finalizeFromAuthoritativeBaseline:
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: completionEpisodeAuthoritativeBaselineField
+            )
+        case .finalizeFromObservedField:
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: observedField
+            )
         }
     }
 
@@ -484,7 +1020,10 @@ final class CompletionCoordinator: NSObject {
             CompletionRequestPolicy.shouldRequest(prefix: buffer.prefix)
         else {
             invalidatePendingCompletion()
-            clearSuggestion()
+            clearSuggestion(
+                resolution:
+                    completionEpisodeTracker.abandonedSuggestionResolution
+            )
             return
         }
         if let candidateSnapshot = lastSnapshot,
@@ -514,14 +1053,19 @@ final class CompletionCoordinator: NSObject {
             debounceTask?.cancel()
             newestRequestID &+= 1
             preparedRequestSnapshot = nil
-            suggestionRequestID = nil
+            finalizeCompletionEpisode(resolution: .superseded)
+            suggestionAssociationToken = nil
             suggestion = completion.insertion
             suggestionConsumption = SuggestionConsumption(
                 suggestion: completion.insertion,
                 isFinal: true
             )
             typedSuggestionOrigin = currentCapturedField()
-            overlay.show(completion.insertion)
+            if !overlay.show(completion.insertion) {
+                suggestion = nil
+                suggestionConsumption = nil
+                typedSuggestionOrigin = nil
+            }
             return
         }
 
@@ -550,27 +1094,32 @@ final class CompletionCoordinator: NSObject {
                 learnedContext = .empty
             }
             guard !Task.isCancelled else { return }
+            guard
+                let preparedSnapshot = self.prepareCurrentPresentation(
+                    expectedPrefix: prefix,
+                    expectedSuffix: suffix
+                )
+            else {
+                return
+            }
+            self.preparedRequestSnapshot = (
+                requestID,
+                preparedSnapshot
+            )
+            self.finalizePendingCompletionEpisodeIfNeeded()
             let request = self.makeRequest(
                 id: requestID,
                 prefix: prefix,
                 suffix: suffix,
-                snapshot: snapshot,
+                snapshot: preparedSnapshot,
+                invocationField: CapturedFieldState(
+                    text: preparedSnapshot.fieldText,
+                    selection: preparedSnapshot.selection
+                ),
                 personalization: learnedContext
             )
-            guard self.prepare(request) else { return }
             await self.requestPump.submit(request)
         }
-    }
-
-    private func prepare(_ request: CompletionRequest) -> Bool {
-        guard let snapshot = prepareCurrentPresentation(
-            expectedPrefix: request.prefix,
-            expectedSuffix: request.suffix
-        ) else {
-            return false
-        }
-        preparedRequestSnapshot = (request.id, snapshot)
-        return true
     }
 
     private func prepareCurrentPresentation(
@@ -579,10 +1128,25 @@ final class CompletionCoordinator: NSObject {
     ) -> EditorSnapshot? {
         guard policyAllowsCurrentApplication() else {
             invalidatePendingCompletion()
-            clearSuggestion()
+            discardPendingCompletionEpisode()
+            clearSuggestion(
+                resolution:
+                    completionEpisodeTracker.abandonedSuggestionResolution
+            )
             return nil
         }
-        guard let snapshot = accessibility.snapshot() ?? lastSnapshot else {
+        let liveSnapshot = accessibility.snapshot()
+        if
+            completionEpisodeExpectedField != nil,
+            liveSnapshot == nil
+        {
+            if completionEpisodeObservationDeadlineExceeded {
+                buffer.apply(.invalidate)
+                discardPendingCompletionEpisode()
+            }
+            return nil
+        }
+        guard let snapshot = liveSnapshot ?? lastSnapshot else {
             return nil
         }
 
@@ -590,10 +1154,60 @@ final class CompletionCoordinator: NSObject {
         let focusChanged = previousSnapshot.map {
             $0.editorIdentifier != snapshot.editorIdentifier
         } ?? true
+        let reconciliationDecision =
+            CompletionEpisodeReconciliationPolicy.decision(
+                previousEditorIdentifier:
+                    previousSnapshot?.editorIdentifier,
+                observedEditorIdentifier: snapshot.editorIdentifier,
+                authoritativeBaselineField:
+                    completionEpisodeAuthoritativeBaselineField,
+                expectedField: completionEpisodeExpectedField,
+                observedField: CapturedFieldState(
+                    text: snapshot.fieldText,
+                    selection: snapshot.selection
+                ),
+                requiresPostEventObservation:
+                    completionEpisodeRequiresPostEventObservation,
+                observationDeadlineExceeded:
+                    completionEpisodeObservationDeadlineExceeded
+            )
+        let reconciliationSettlement =
+            CompletionEpisodeReconciliationPolicy.settlement(
+                for: reconciliationDecision
+            )
+        if reconciliationSettlement == .wait {
+            scheduleModelCompletion()
+            return nil
+        }
+        let authoritativeBaselineField =
+            completionEpisodeAuthoritativeBaselineField
+        completionEpisodeAuthoritativeBaselineField = nil
+        completionEpisodeExpectedField = nil
+        completionEpisodeRequiresPostEventObservation = false
+        completionEpisodeObservationDeadline = nil
+        switch reconciliationSettlement {
+        case .discard:
+            discardPendingCompletionEpisode()
+        case .finalizeFromAuthoritativeBaseline:
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: authoritativeBaselineField
+            )
+        case .finalizeFromObservedField:
+            finalizePendingCompletionEpisodeIfNeeded(
+                finalField: capturedField(from: snapshot)
+            )
+        case .wait:
+            break
+        }
         if focusChanged {
+            finalizeCompletionEpisode(
+                resolution:
+                    completionEpisodeTracker
+                    .abandonedSuggestionResolution
+            )
             suggestion = nil
             suggestionConsumption = nil
-            suggestionRequestID = nil
+            suggestionAssociationToken = nil
             overlay.hide()
         }
         updateTypographyScale(from: previousSnapshot, to: snapshot)
@@ -624,6 +1238,7 @@ final class CompletionCoordinator: NSObject {
         prefix: String,
         suffix: String,
         snapshot: EditorSnapshot?,
+        invocationField: CapturedFieldState?,
         personalization: PersonalizationPromptContext = .empty,
         detectPartialWord: Bool = true
     ) -> CompletionRequest {
@@ -631,6 +1246,36 @@ final class CompletionCoordinator: NSObject {
             ? incompleteWordFragment(in: prefix)
             : nil
         let configuration = promptConfiguration()
+        let includeFrecent = configuration.voice.includeInputHistory
+        let includeRelevant =
+            configuration.voice.includeRelevantInputHistory
+        let includeVoiceAssessment =
+            configuration.voice.includePeriodicAssessments
+        let invocationSeed =
+            completionEpisodeCollectionIsEnabled()
+            ? snapshot.flatMap { snapshot in
+                invocationField.map { field in
+                    CompletionInvocationSeed(
+                        id: UUID(),
+                        field: field,
+                        context: personalizationContext(for: snapshot),
+                        sourceEventIDs: personalization.sourceEventIDs(
+                            includeFrecent: includeFrecent,
+                            includeRelevant: includeRelevant,
+                            includeVoiceAssessment: includeVoiceAssessment
+                        ),
+                        sourceContexts: personalization.sourceContexts(
+                            includeFrecent: includeFrecent,
+                            includeRelevant: includeRelevant,
+                            includeVoiceAssessment: includeVoiceAssessment
+                        ),
+                        collectionGeneration:
+                            completionEpisodeCollectionGeneration(),
+                        startedAt: Date()
+                    )
+                }
+            }
+            : nil
         return CompletionRequest(
             id: id,
             prefix: prefix,
@@ -651,7 +1296,8 @@ final class CompletionCoordinator: NSObject {
             partialWordFragment: fragment,
             partialWordCandidates: fragment.map {
                 completionCandidates(for: $0)
-            } ?? []
+            } ?? [],
+            invocationSeed: invocationSeed
         )
     }
 
@@ -816,13 +1462,41 @@ final class CompletionCoordinator: NSObject {
             return
         }
 
-        guard let text = response.text, !text.isEmpty else {
-            return
+        if
+            let invocation = response.invocation,
+            completionEpisodeTracker.activeInvocationID != invocation.id
+        {
+            finalizeCompletionEpisode(resolution: .superseded)
+            completionEpisodeTracker.begin(invocation)
+            activeCompletionEpisodeToken = .model(response.requestID)
+        }
+        if response.didFail {
+            completionEpisodeTracker.recordGenerationFailure()
         }
 
+        guard let text = response.text, !text.isEmpty else {
+            if response.isFinal, response.invocation != nil {
+                let partialSuggestionRemains =
+                    suggestionAssociationToken == .model(response.requestID)
+                    && suggestionConsumption != nil
+                completionEpisodeTracker.recordGenerationFailure()
+                if partialSuggestionRemains,
+                   var consumption = suggestionConsumption {
+                    let outcome = consumption.finishStreaming()
+                    suggestionConsumption = consumption
+                    synchronizeCompletionEpisodeTypedThrough(
+                        from: consumption
+                    )
+                    presentStreamingOutcome(outcome)
+                } else {
+                    finalizeCompletionEpisode(resolution: .failed)
+                }
+            }
+            return
+        }
         let outcome: SuggestionConsumption.Outcome
         if
-            suggestionRequestID == response.requestID,
+            suggestionAssociationToken == .model(response.requestID),
             var consumption = suggestionConsumption
         {
             outcome = consumption.update(
@@ -830,8 +1504,9 @@ final class CompletionCoordinator: NSObject {
                 isFinal: response.isFinal
             )
             suggestionConsumption = consumption
+            synchronizeCompletionEpisodeTypedThrough(from: consumption)
         } else {
-            suggestionRequestID = response.requestID
+            suggestionAssociationToken = .model(response.requestID)
             typedSuggestionOrigin = CapturedFieldState(
                 text: preparedRequestSnapshot.snapshot.fieldText,
                 selection: preparedRequestSnapshot.snapshot.selection
@@ -842,7 +1517,22 @@ final class CompletionCoordinator: NSObject {
             )
             outcome = .matched(remaining: text)
         }
-        presentStreamingOutcome(outcome)
+        if case let .matched(remaining) = outcome {
+            guard presentStreamingSuggestion(remaining) else { return }
+            completionEpisodeTracker.observeSuggestion(
+                text,
+                isFinal: response.isFinal,
+                at: Date()
+            )
+        } else {
+            if response.isFinal {
+                completionEpisodeTracker.markSuggestionFinalIfObserved(
+                    text,
+                    at: Date()
+                )
+            }
+            presentStreamingOutcome(outcome)
+        }
     }
 
     private func presentStreamingOutcome(
@@ -850,8 +1540,7 @@ final class CompletionCoordinator: NSObject {
     ) {
         switch outcome {
         case let .matched(remaining):
-            suggestion = remaining
-            overlay.show(remaining)
+            _ = presentStreamingSuggestion(remaining)
         case .awaitingStream:
             suggestion = nil
             overlay.hide()
@@ -859,12 +1548,62 @@ final class CompletionCoordinator: NSObject {
             if let suggestionConsumption {
                 recordTypedSuggestionMatch(from: suggestionConsumption)
             }
+            deferCompletionEpisodeFinalization(
+                resolution:
+                    completionEpisodeTracker
+                    .completedSuggestionResolution
+                    ?? .typedThrough
+            )
             suggestion = nil
+            suggestionAssociationToken = nil
+            typedSuggestionOrigin = nil
             overlay.hide()
-        case .triggerInference, .diverged:
-            clearSuggestion()
+            suggestionConsumption = .waitingForWhitespace()
+        case .triggerInference:
+            if let suggestionConsumption {
+                recordTypedSuggestionMatch(from: suggestionConsumption)
+            }
+            deferCompletionEpisodeFinalization(
+                resolution:
+                    completionEpisodeTracker
+                    .completedSuggestionResolution
+                    ?? .typedThrough
+            )
+            scheduleCompletion()
+        case .diverged:
+            deferCompletionEpisodeFinalization(
+                resolution:
+                    completionEpisodeTracker
+                    .abandonedSuggestionResolution
+            )
             scheduleCompletion()
         }
+    }
+
+    @discardableResult
+    private func presentStreamingSuggestion(_ remaining: String) -> Bool {
+        suggestion = remaining
+        guard overlay.show(remaining) else {
+            if completionEpisodeTracker.hasSuggestionRevisions {
+                finalizeCompletionEpisode(
+                    resolution:
+                        completionEpisodeTracker
+                        .abandonedSuggestionResolution
+                )
+            } else {
+                completionEpisodeTracker.discard()
+                activeCompletionEpisodeToken = nil
+            }
+            if case .model = suggestionAssociationToken {
+                invalidatePendingCompletion()
+            }
+            suggestion = nil
+            suggestionConsumption = nil
+            suggestionAssociationToken = nil
+            typedSuggestionOrigin = nil
+            return false
+        }
+        return true
     }
 
     private func prepareOverlay(for snapshot: EditorSnapshot) {
@@ -876,6 +1615,7 @@ final class CompletionCoordinator: NSObject {
                 ]?.scale ?? 1
             ),
             foregroundColor: snapshot.foregroundColor,
+            backgroundColor: snapshot.backgroundColor,
             leadingWhitespaceCompensation: CGFloat(
                 (
                     whitespaceCalibrationByEditor[snapshot.editorIdentifier]
@@ -955,24 +1695,66 @@ final class CompletionCoordinator: NSObject {
         else {
             return false
         }
+        let liveSnapshot = accessibility.snapshot()
+        guard
+            let expectedField = currentCapturedField(),
+            let liveSnapshot,
+            CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                activeEditorIdentifier:
+                    lastSnapshot?.editorIdentifier,
+                liveEditorIdentifier: liveSnapshot.editorIdentifier,
+                expectedField: expectedField,
+                liveField: capturedField(from: liveSnapshot)
+            ),
+            CompletionPresentationPolicy.isCurrent(
+                expectedPrefix: buffer.prefix,
+                expectedSuffix: buffer.suffix,
+                observedPrefix: liveSnapshot.prefix,
+                observedSuffix: liveSnapshot.suffix
+            )
+        else {
+            invalidatePendingCompletion()
+            clearOCRContext()
+            discardCompletionEpisodeAndSuggestion()
+            buffer.apply(.invalidate)
+            return false
+        }
         caretReanchorTask?.cancel()
         let acceptance = SuggestionAcceptance.slice(
             in: suggestion,
             scope: scope
         )
         guard !acceptance.accepted.isEmpty else { return false }
+        let linkedEpisodeID: UUID?
+        if
+            let activeCompletionEpisodeToken,
+            activeCompletionEpisodeToken == suggestionAssociationToken
+        {
+            linkedEpisodeID = completionEpisodeTracker.activeInvocationID
+            completionEpisodeTracker.recordAcceptance(
+                acceptance.accepted,
+                scope: scope,
+                at: Date()
+            )
+        } else {
+            linkedEpisodeID = nil
+        }
         typedSuggestionOrigin = nil
-        let snapshotBeforeAcceptance = accessibility.snapshot() ?? lastSnapshot
-        let personalizationCapture = snapshotBeforeAcceptance.flatMap {
+        let snapshotBeforeAcceptance = liveSnapshot
+        let fieldBeforeAcceptance = currentCapturedField()
+        let personalizationCapture =
             PersonalizationCapture.acceptedSuggestion(
-                fieldText: $0.fieldText,
-                selection: $0.selection,
+                fieldText: snapshotBeforeAcceptance.fieldText,
+                selection: snapshotBeforeAcceptance.selection,
                 insertion: acceptance.accepted,
                 acceptanceScope: scope,
-                context: personalizationContext(for: $0)
+                completionEpisodeID: linkedEpisodeID,
+                context: personalizationContext(
+                    for: snapshotBeforeAcceptance
+                )
             )
-        }
-        if let fieldBefore = currentCapturedField() {
+        if writingHistoryCollectionIsEnabled(),
+           let fieldBefore = fieldBeforeAcceptance {
             let insertedUTF16Count = acceptance.accepted.utf16.count
             let afterText = replacingSelection(
                 in: fieldBefore.text,
@@ -1037,12 +1819,19 @@ final class CompletionCoordinator: NSObject {
                 previousSnapshot: snapshotBeforeAcceptance
             )
         case .waitingForWhitespace:
-            clearSuggestion()
+            deferCompletionEpisodeFinalization(
+                resolution:
+                    completionEpisodeTracker
+                    .completedSuggestionResolution
+                    ?? .accepted
+            )
             if !promoteOrAwaitRefill(for: buffer.prefix) {
                 scheduleCompletion()
             }
         case .triggerInference, .diverged:
-            clearSuggestion()
+            deferCompletionEpisodeFinalization(
+                resolution: .partiallyAccepted
+            )
             scheduleCompletion()
         }
         scheduleWhitespaceCalibration(
@@ -1085,6 +1874,13 @@ final class CompletionCoordinator: NSObject {
                 prefix: key.prefix,
                 suffix: key.suffix,
                 snapshot: snapshot,
+                invocationField: CapturedFieldState(
+                    text: key.prefix + key.suffix,
+                    selection: UTF16Selection(
+                        location: key.prefix.utf16.count,
+                        length: 0
+                    )
+                ),
                 personalization: learnedContext,
                 detectPartialWord: false
             )
@@ -1127,10 +1923,14 @@ final class CompletionCoordinator: NSObject {
     }
 
     private func currentCapturedField() -> CapturedFieldState? {
-        if buffer.needsReconciliation, let lastSnapshot {
-            return CapturedFieldState(
-                text: lastSnapshot.fieldText,
-                selection: lastSnapshot.selection
+        if let lastSnapshot {
+            return buffer.capturedField(
+                authoritativeField: CapturedFieldState(
+                    text: lastSnapshot.fieldText,
+                    selection: lastSnapshot.selection
+                ),
+                authoritativePrefix: lastSnapshot.prefix,
+                authoritativeSuffix: lastSnapshot.suffix
             )
         }
         return currentCapturedFieldFromBuffer()
@@ -1194,7 +1994,7 @@ final class CompletionCoordinator: NSObject {
                     )
                 else { return nil }
                 selection = resolved
-            case .insert, .invalidate:
+            case .insert, .invalidate, .focusChange:
                 return nil
             }
         }
@@ -1223,6 +2023,10 @@ final class CompletionCoordinator: NSObject {
     }
 
     private func finalizeIdleWritingEpisode() {
+        guard writingHistoryCollectionIsEnabled() else {
+            writingHistoryTracker = WritingHistoryTracker()
+            return
+        }
         if let completed = writingHistoryTracker.finalizeIfIdle(
             at: Date(),
             timeout: 2
@@ -1246,7 +2050,8 @@ final class CompletionCoordinator: NSObject {
         else {
             return false
         }
-        if let completed = writingHistoryTracker.finalize(
+        if writingHistoryCollectionIsEnabled(),
+           let completed = writingHistoryTracker.finalize(
             boundary: .submitted,
             at: Date()
         ) {
@@ -1274,13 +2079,25 @@ final class CompletionCoordinator: NSObject {
             return
         }
 
-        prefetchedRefill = (key, text)
+        prefetchedRefill = (
+            key,
+            text,
+            response.requestID,
+            response.invocation,
+            response.didFail
+        )
         if
             awaitedRefillKey == key,
             buffer.prefix == key.prefix,
             lastSnapshot?.editorIdentifier == key.editorIdentifier
         {
-            presentRefill(text, for: key)
+            presentRefill(
+                text,
+                requestID: response.requestID,
+                invocation: response.invocation,
+                didFail: response.didFail,
+                for: key
+            )
         }
     }
 
@@ -1297,12 +2114,24 @@ final class CompletionCoordinator: NSObject {
 
         awaitedRefillKey = key
         if let prefetchedRefill, prefetchedRefill.key == key {
-            presentRefill(prefetchedRefill.text, for: key)
+            presentRefill(
+                prefetchedRefill.text,
+                requestID: prefetchedRefill.requestID,
+                invocation: prefetchedRefill.invocation,
+                didFail: prefetchedRefill.didFail,
+                for: key
+            )
         }
         return true
     }
 
-    private func presentRefill(_ text: String, for key: RefillKey) {
+    private func presentRefill(
+        _ text: String,
+        requestID: UInt64,
+        invocation: CompletionInvocationCapture?,
+        didFail: Bool,
+        for key: RefillKey
+    ) {
         guard
             buffer.prefix == key.prefix,
             buffer.suffix == key.suffix,
@@ -1316,26 +2145,40 @@ final class CompletionCoordinator: NSObject {
         refillKey = nil
         awaitedRefillKey = nil
         prefetchedRefill = nil
-        suggestion = text
-        suggestionConsumption = SuggestionConsumption(suggestion: text)
-        suggestionRequestID = nil
-
-        if
+        guard
             let snapshot = accessibility.snapshot(),
             snapshot.prefix == key.prefix,
             snapshot.suffix == key.suffix,
             snapshot.editorIdentifier == key.editorIdentifier
-        {
-            updateTypographyScale(from: lastSnapshot, to: snapshot)
-            lastSnapshot = snapshot
-            prepareOverlay(for: snapshot)
-            overlay.show(text)
-        } else {
-            scheduleCaretReanchor(
-                expectedPrefix: key.prefix,
-                previousSnapshot: lastSnapshot
-            )
+        else {
+            scheduleCompletion()
+            return
         }
+        updateTypographyScale(from: lastSnapshot, to: snapshot)
+        lastSnapshot = snapshot
+        prepareOverlay(for: snapshot)
+        guard overlay.show(text) else {
+            scheduleCompletion()
+            return
+        }
+
+        if let invocation {
+            finalizeCompletionEpisode(resolution: .superseded)
+            completionEpisodeTracker.begin(invocation)
+            completionEpisodeTracker.observeSuggestion(
+                text,
+                isFinal: true,
+                at: Date()
+            )
+            if didFail {
+                completionEpisodeTracker.recordGenerationFailure()
+            }
+            activeCompletionEpisodeToken = .refill(requestID)
+        }
+        suggestion = text
+        suggestionConsumption = SuggestionConsumption(suggestion: text)
+        suggestionAssociationToken = .refill(requestID)
+        typedSuggestionOrigin = nil
     }
 
     private func scheduleCaretReanchor(
@@ -1476,13 +2319,253 @@ final class CompletionCoordinator: NSObject {
         return combinedWidth - contextWidth
     }
 
-    private func clearSuggestion(resetConsumption: Bool = true) {
+    private func synchronizeCompletionEpisodeTypedThrough(
+        from consumption: SuggestionConsumption
+    ) {
+        guard
+            let activeCompletionEpisodeToken,
+            activeCompletionEpisodeToken == suggestionAssociationToken
+        else {
+            return
+        }
+        completionEpisodeTracker.synchronizeTypedThrough(
+            consumedSuggestionText: consumption.consumedSuggestionText
+        )
+    }
+
+    private func finalizeCompletionEpisode(
+        resolution: CompletionEpisodeResolution,
+        finalField authoritativeFinalField: CapturedFieldState? = nil
+    ) {
+        guard completionEpisodeTracker.activeInvocationID != nil else {
+            resetCompletionEpisodeFinalizationState()
+            return
+        }
+        let effectiveResolution =
+            pendingCompletionEpisodeResolution ?? resolution
+        resetCompletionEpisodeFinalizationState()
+        guard
+            let finalField =
+                authoritativeFinalField
+                ?? currentCapturedField()
+                ?? completionEpisodeTracker.activeInitialField,
+            let episode = completionEpisodeTracker.finalize(
+                resolution: effectiveResolution,
+                finalField: finalField,
+                at: Date()
+            )
+        else {
+            completionEpisodeTracker.discard()
+            activeCompletionEpisodeToken = nil
+            return
+        }
+        activeCompletionEpisodeToken = nil
+        onCompletionEpisode(episode)
+    }
+
+    private func resetCompletionEpisodeFinalizationState() {
+        pendingCompletionEpisodeResolution = nil
+        invalidationReconciliationNotBefore = nil
+        completionEpisodeAuthoritativeBaselineField = nil
+        completionEpisodeExpectedField = nil
+        completionEpisodeRequiresPostEventObservation = false
+        completionEpisodeObservationDeadline = nil
+        invalidationReconciliationGeneration &+= 1
+        activeCompletionEpisodeToken = nil
+    }
+
+    private func discardCompletionEpisodeAndSuggestion() {
+        completionEpisodeTracker.discard()
+        resetCompletionEpisodeFinalizationState()
+        suggestion = nil
+        suggestionConsumption = nil
+        suggestionAssociationToken = nil
+        typedSuggestionOrigin = nil
+        overlay.hide()
+    }
+
+    private func deferCompletionEpisodeFinalization(
+        resolution: CompletionEpisodeResolution,
+        requiresPostEventObservation: Bool = false
+    ) {
+        guard completionEpisodeTracker.activeInvocationID != nil else {
+            resetCompletionEpisodeFinalizationState()
+            suggestion = nil
+            suggestionConsumption = nil
+            suggestionAssociationToken = nil
+            typedSuggestionOrigin = nil
+            overlay.hide()
+            return
+        }
+        pendingCompletionEpisodeResolution =
+            CompletionEpisodePendingResolutionPolicy.resolve(
+                existing: pendingCompletionEpisodeResolution,
+                proposed: resolution
+            )
+        let authoritativeBaseline = lastSnapshot.map {
+            CapturedFieldState(
+                text: $0.fieldText,
+                selection: $0.selection
+            )
+        }
+        let expectedField = currentCapturedFieldFromBuffer()
+        if
+            let authoritativeBaseline,
+            (
+                expectedField != authoritativeBaseline
+                    || requiresPostEventObservation
+            )
+        {
+            completionEpisodeAuthoritativeBaselineField =
+                authoritativeBaseline
+            completionEpisodeExpectedField = expectedField
+            completionEpisodeRequiresPostEventObservation =
+                requiresPostEventObservation
+            let now = Date()
+            completionEpisodeObservationDeadline =
+                now.addingTimeInterval(1)
+            invalidationReconciliationNotBefore =
+                now.addingTimeInterval(0.05)
+            invalidationReconciliationGeneration &+= 1
+            scheduleInvalidationReconciliation()
+        } else {
+            finalizeCompletionEpisode(resolution: resolution)
+        }
+        suggestion = nil
+        suggestionConsumption = nil
+        suggestionAssociationToken = nil
+        typedSuggestionOrigin = nil
+        overlay.hide()
+    }
+
+    private func scheduleInvalidationReconciliation() {
+        let generation = invalidationReconciliationGeneration
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            guard
+                !Task.isCancelled,
+                let self,
+                generation == self.invalidationReconciliationGeneration
+            else {
+                return
+            }
+            self.reconcile()
+        }
+    }
+
+    private func finalizePendingCompletionEpisodeIfNeeded(
+        finalField: CapturedFieldState? = nil
+    ) {
+        guard let resolution = pendingCompletionEpisodeResolution else {
+            return
+        }
+        finalizeCompletionEpisode(
+            resolution: resolution,
+            finalField: finalField
+        )
+    }
+
+    private func recordWritingInsertion(
+        _ text: String,
+        suggestionAttributedPrefix: String,
+        fieldBefore: CapturedFieldState,
+        fieldAfter: CapturedFieldState,
+        at date: Date
+    ) {
+        guard
+            !suggestionAttributedPrefix.isEmpty,
+            text.hasPrefix(suggestionAttributedPrefix)
+        else {
+            writingHistoryTracker.recordInsertion(
+                text,
+                provenance: .directlyTyped,
+                fieldBefore: fieldBefore,
+                fieldAfter: fieldAfter,
+                at: date
+            )
+            return
+        }
+        guard suggestionAttributedPrefix != text else {
+            writingHistoryTracker.recordInsertion(
+                text,
+                provenance: .typedThroughSuggestion,
+                fieldBefore: fieldBefore,
+                fieldAfter: fieldAfter,
+                at: date
+            )
+            return
+        }
+        let directSuffix = String(
+            text.dropFirst(suggestionAttributedPrefix.count)
+        )
+        guard
+            !directSuffix.isEmpty,
+            let intermediateText = fieldBefore.replacingSelection(
+                with: suggestionAttributedPrefix
+            )
+        else {
+            return
+        }
+        let intermediateField = CapturedFieldState(
+            text: intermediateText,
+            selection: UTF16Selection(
+                location:
+                    fieldBefore.selection.location
+                    + suggestionAttributedPrefix.utf16.count,
+                length: 0
+            )
+        )
+        writingHistoryTracker.recordInsertion(
+            suggestionAttributedPrefix,
+            provenance: .typedThroughSuggestion,
+            fieldBefore: fieldBefore,
+            fieldAfter: intermediateField,
+            at: date
+        )
+        writingHistoryTracker.recordInsertion(
+            directSuffix,
+            provenance: .directlyTyped,
+            fieldBefore: intermediateField,
+            fieldAfter: fieldAfter,
+            at: date
+        )
+    }
+
+    private func discardPendingCompletionEpisode() {
+        guard pendingCompletionEpisodeResolution != nil else { return }
+        completionEpisodeTracker.discard()
+        resetCompletionEpisodeFinalizationState()
+    }
+
+    private var completionEpisodeObservationDeadlineExceeded: Bool {
+        completionEpisodeObservationDeadline.map { Date() >= $0 } ?? false
+    }
+
+    private func capturedField(
+        from snapshot: EditorSnapshot
+    ) -> CapturedFieldState {
+        CapturedFieldState(
+            text: snapshot.fieldText,
+            selection: snapshot.selection
+        )
+    }
+
+    private func clearSuggestion(
+        resetConsumption: Bool = true,
+        resolution: CompletionEpisodeResolution
+    ) {
         debounceTask?.cancel()
         caretReanchorTask?.cancel()
         suggestion = nil
         if resetConsumption {
+            if !Self.shouldDeferPendingOutcomeSettlementWhileClearing(
+                pendingResolution: pendingCompletionEpisodeResolution,
+                expectedField: completionEpisodeExpectedField
+            ) {
+                finalizeCompletionEpisode(resolution: resolution)
+            }
             suggestionConsumption = nil
-            suggestionRequestID = nil
+            suggestionAssociationToken = nil
             typedSuggestionOrigin = nil
         }
         overlay.hide()

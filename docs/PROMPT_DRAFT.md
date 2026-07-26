@@ -6,7 +6,7 @@ each stable fragment into its corresponding file under
 `Sources/CompletionCore/Resources/Prompts/`.
 
 The canonical runtime fragments live in `Prompts/Base/` and are filename-
-prefixed in composition order (`00`, `01`, `01a`, …, `10d`). Files sharing a
+prefixed in composition order (`00`, `01`, `01a`, …, `10a`). Files sharing a
 number are alternatives or subparts of the same composed section. The only
 separate Chat resource is `Chat/00-system-instruction.md`; chat providers use
 the same canonical user prompt as local base models.
@@ -24,7 +24,7 @@ the same canonical user prompt as local base models.
 | Semantically relevant history | Live, off by default | Apple Natural Language embeddings stored encrypted |
 | Voice assessment | Live, off by default | Periodic local deterministic assessment |
 | Custom personalization | Live | Prompt Lab setting |
-| Text before and after cursor | Live | Focused editor through Accessibility |
+| Text before cursor | Live | Focused editor through Accessibility |
 | Shipped seed examples | Live fallback | Bundled Markdown examples; replaced by real history |
 
 ## Full base-model sample
@@ -205,6 +205,3 @@ Some examples of my writing:
 My writing:
 §<LIVE TEXT BEFORE THE CURSOR>
 ```
-
-For a mid-line completion, the final section instead contains the text before
-the cursor, the text after it, and the current trailing part being completed.

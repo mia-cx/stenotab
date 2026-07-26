@@ -13,6 +13,8 @@ final class PromptSettingsStore: ObservableObject {
     private let defaults: UserDefaults
     private let storageKey = "prompt-lab.overrides.v2"
     private let legacyStorageKey = "prompt-lab.configuration.v1"
+    private let contextRetentionDisclosureVersionKey =
+        "prompt-lab.context-retention-disclosure-version"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -31,6 +33,12 @@ final class PromptSettingsStore: ObservableObject {
             ) {
                 legacy.applyCanonicalFraming(to: &resolved)
             }
+            resolved = PromptContextRetentionMigration.migrate(
+                resolved,
+                fromDisclosureVersion: defaults.integer(
+                    forKey: contextRetentionDisclosureVersionKey
+                )
+            )
             configuration = resolved
             Self.persist(
                 resolved,
@@ -52,6 +60,12 @@ final class PromptSettingsStore: ObservableObject {
             ) {
                 legacy.applyCanonicalFraming(to: &resolved)
             }
+            resolved = PromptContextRetentionMigration.migrate(
+                resolved,
+                fromDisclosureVersion: defaults.integer(
+                    forKey: contextRetentionDisclosureVersionKey
+                )
+            )
             configuration = resolved
             Self.persist(
                 resolved,
@@ -61,8 +75,17 @@ final class PromptSettingsStore: ObservableObject {
             )
             defaults.removeObject(forKey: legacyStorageKey)
         } else {
-            configuration = bundledDefaults
+            configuration = PromptContextRetentionMigration.migrate(
+                bundledDefaults,
+                fromDisclosureVersion: defaults.integer(
+                    forKey: contextRetentionDisclosureVersionKey
+                )
+            )
         }
+        defaults.set(
+            PromptContextRetentionMigration.currentDisclosureVersion,
+            forKey: contextRetentionDisclosureVersionKey
+        )
     }
 
     func reset() {
@@ -102,7 +125,6 @@ final class PromptSettingsStore: ObservableObject {
             var inputHistoryHeading: String?
             var assessmentHeading: String?
             var customVoiceHeading: String?
-            var suffixHeading: String?
         }
 
         var framing: Framing?
@@ -125,9 +147,6 @@ final class PromptSettingsStore: ObservableObject {
             }
             if let value = framing.customVoiceHeading {
                 configuration.baseFraming.customVoiceHeading = value
-            }
-            if let value = framing.suffixHeading {
-                configuration.baseFraming.suffixHeading = value
             }
         }
     }

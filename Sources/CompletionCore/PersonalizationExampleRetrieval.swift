@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum PersonalizationExampleSource:
@@ -18,6 +19,7 @@ public struct PersonalizationExample:
     public let context: PersonalizationContext
     public let capturedAt: Date
     public let source: PersonalizationExampleSource
+    public let sourceEventID: UUID?
 
     public init(
         id: UUID,
@@ -25,7 +27,8 @@ public struct PersonalizationExample:
         insertion: String,
         context: PersonalizationContext,
         capturedAt: Date,
-        source: PersonalizationExampleSource
+        source: PersonalizationExampleSource,
+        sourceEventID: UUID? = nil
     ) {
         self.id = id
         self.inputText = inputText
@@ -33,6 +36,7 @@ public struct PersonalizationExample:
         self.context = context
         self.capturedAt = capturedAt
         self.source = source
+        self.sourceEventID = sourceEventID
     }
 
     public init(_ capture: AcceptedSuggestionCapture) {
@@ -42,7 +46,8 @@ public struct PersonalizationExample:
             insertion: capture.insertion,
             context: capture.context,
             capturedAt: capture.capturedAt,
-            source: .acceptedSuggestion
+            source: .acceptedSuggestion,
+            sourceEventID: capture.id
         )
     }
 
@@ -67,7 +72,7 @@ public struct PersonalizationExample:
     public static func directlyTyped(
         from episode: WritingEpisodeCapture
     ) -> [PersonalizationExample] {
-        episode.edits.compactMap { edit in
+        episode.edits.enumerated().compactMap { index, edit in
             guard
                 edit.provenance == .directlyTyped,
                 !edit.insertedText.isEmpty,
@@ -76,14 +81,39 @@ public struct PersonalizationExample:
                 return nil
             }
             return PersonalizationExample(
-                id: UUID(),
+                id: stableEditID(
+                    episodeID: episode.id,
+                    editIndex: index
+                ),
                 inputText: fieldBefore.text,
                 insertion: edit.insertedText,
                 context: episode.context,
                 capturedAt: edit.endedAt,
-                source: .directlyTyped
+                source: .directlyTyped,
+                sourceEventID: episode.id
             )
         }
+    }
+
+    private static func stableEditID(
+        episodeID: UUID,
+        editIndex: Int
+    ) -> UUID {
+        let seed = Data(
+            "\(episodeID.uuidString):\(editIndex)".utf8
+        )
+        let hex = SHA256.hash(data: seed)
+            .prefix(16)
+            .map { String(format: "%02X", $0) }
+            .joined()
+        let groups = [
+            String(hex.prefix(8)),
+            String(hex.dropFirst(8).prefix(4)),
+            String(hex.dropFirst(12).prefix(4)),
+            String(hex.dropFirst(16).prefix(4)),
+            String(hex.dropFirst(20).prefix(12)),
+        ]
+        return UUID(uuidString: groups.joined(separator: "-"))!
     }
 }
 
@@ -91,18 +121,151 @@ public struct PersonalizationPromptContext: Sendable, Equatable {
     public let frecentExamples: String?
     public let relevantExamples: String?
     public let voiceAssessment: String?
+    public let frecentSourceEventIDs: [UUID]
+    public let frecentSourceContexts: [PersonalizationContext]
+    public let frecentRecordCharacterCounts: [Int]
+    public let relevantSourceEventIDs: [UUID]
+    public let relevantSourceContexts: [PersonalizationContext]
+    public let relevantRecordCharacterCounts: [Int]
+    public let voiceSourceEventIDs: [UUID]
+    public let voiceSourceContexts: [PersonalizationContext]
 
     public init(
         frecentExamples: String? = nil,
         relevantExamples: String? = nil,
-        voiceAssessment: String? = nil
+        voiceAssessment: String? = nil,
+        frecentSourceEventIDs: [UUID] = [],
+        frecentSourceContexts: [PersonalizationContext] = [],
+        frecentRecordCharacterCounts: [Int] = [],
+        relevantSourceEventIDs: [UUID] = [],
+        relevantSourceContexts: [PersonalizationContext] = [],
+        relevantRecordCharacterCounts: [Int] = [],
+        voiceSourceEventIDs: [UUID] = [],
+        voiceSourceContexts: [PersonalizationContext] = []
     ) {
         self.frecentExamples = frecentExamples
         self.relevantExamples = relevantExamples
         self.voiceAssessment = voiceAssessment
+        self.frecentSourceEventIDs = frecentSourceEventIDs
+        self.frecentSourceContexts = frecentSourceContexts
+        self.frecentRecordCharacterCounts = frecentRecordCharacterCounts
+        self.relevantSourceEventIDs = relevantSourceEventIDs
+        self.relevantSourceContexts = relevantSourceContexts
+        self.relevantRecordCharacterCounts = relevantRecordCharacterCounts
+        self.voiceSourceEventIDs = voiceSourceEventIDs
+        self.voiceSourceContexts = voiceSourceContexts
     }
 
     public static let empty = PersonalizationPromptContext()
+
+    public func sourceEventIDs(
+        includeFrecent: Bool,
+        includeRelevant: Bool,
+        includeVoiceAssessment: Bool = false
+    ) -> [UUID] {
+        let candidates =
+            (
+                includeFrecent
+                    ? promptSourcePrefix(
+                        frecentSourceEventIDs,
+                        examples: frecentExamples,
+                        recordCharacterCounts:
+                            frecentRecordCharacterCounts
+                    )
+                    : []
+            )
+            + (
+                includeRelevant
+                    ? promptSourcePrefix(
+                        relevantSourceEventIDs,
+                        examples: relevantExamples,
+                        recordCharacterCounts:
+                            relevantRecordCharacterCounts
+                    )
+                    : []
+            )
+            + (includeVoiceAssessment ? voiceSourceEventIDs : [])
+        return candidates.reduce(into: []) { result, id in
+            if !result.contains(id) {
+                result.append(id)
+            }
+        }
+    }
+
+    public func sourceContexts(
+        includeFrecent: Bool,
+        includeRelevant: Bool,
+        includeVoiceAssessment: Bool = false
+    ) -> [PersonalizationContext] {
+        let candidates =
+            (
+                includeFrecent
+                    ? promptSourcePrefix(
+                        frecentSourceContexts,
+                        examples: frecentExamples,
+                        recordCharacterCounts:
+                            frecentRecordCharacterCounts
+                    )
+                    : []
+            )
+            + (
+                includeRelevant
+                    ? promptSourcePrefix(
+                        relevantSourceContexts,
+                        examples: relevantExamples,
+                        recordCharacterCounts:
+                            relevantRecordCharacterCounts
+                    )
+                    : []
+            )
+            + (includeVoiceAssessment ? voiceSourceContexts : [])
+        return candidates.reduce(into: []) { result, context in
+            if !result.contains(context) {
+                result.append(context)
+            }
+        }
+    }
+
+    private func promptSourcePrefix<Value>(
+        _ sources: [Value],
+        examples: String?,
+        recordCharacterCounts: [Int]
+    ) -> [Value] {
+        guard
+            let examples,
+            !examples.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty
+        else {
+            return []
+        }
+        if !recordCharacterCounts.isEmpty {
+            var nextRecordOffset = 0
+            var includedRecordCount = 0
+            for count in recordCharacterCounts {
+                guard nextRecordOffset < 3_000 else { break }
+                if count > 0 {
+                    includedRecordCount += 1
+                }
+                nextRecordOffset += max(0, count)
+                    + PersonalizationExample.promptRecordSeparator.count
+            }
+            return Array(sources.prefix(includedRecordCount))
+        }
+        let bounded = String(examples.prefix(3_000))
+        let includedRecordCount = bounded
+            .components(
+                separatedBy:
+                    PersonalizationExample.promptRecordSeparator
+            )
+            .filter {
+                !$0.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ).isEmpty
+            }
+            .count
+        return Array(sources.prefix(includedRecordCount))
+    }
 }
 
 public enum FrecentExampleRetriever {

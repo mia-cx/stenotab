@@ -1,4 +1,9 @@
 public struct SuggestionConsumption: Sendable, Equatable {
+    public struct AttributedOutcome: Sendable, Equatable {
+        public let outcome: Outcome
+        public let suggestionAttributedPrefix: String
+    }
+
     public enum Outcome: Sendable, Equatable {
         case matched(remaining: String)
         case awaitingStream
@@ -9,6 +14,7 @@ public struct SuggestionConsumption: Sendable, Equatable {
 
     private var streamed: [Character]
     private var consumed: [Character]
+    private var confirmedConsumedCount: Int
     private var isFinal: Bool
     private var isWaitingForWhitespace: Bool
 
@@ -17,12 +23,21 @@ public struct SuggestionConsumption: Sendable, Equatable {
     }
 
     public var consumedSuggestionText: String {
-        String(streamed.prefix(min(consumed.count, streamed.count)))
+        let maximumCount = min(
+            confirmedConsumedCount,
+            consumed.count,
+            streamed.count
+        )
+        let matchedCount = (0..<maximumCount).first {
+            consumed[$0] != streamed[$0]
+        } ?? maximumCount
+        return String(consumed.prefix(matchedCount))
     }
 
     public init(suggestion: String, isFinal: Bool = true) {
         streamed = Array(suggestion)
         consumed = []
+        confirmedConsumedCount = 0
         self.isFinal = isFinal
         isWaitingForWhitespace = isFinal && suggestion.isEmpty
     }
@@ -30,6 +45,7 @@ public struct SuggestionConsumption: Sendable, Equatable {
     private init(waitingForWhitespace: Bool) {
         streamed = []
         consumed = []
+        confirmedConsumedCount = 0
         isFinal = true
         isWaitingForWhitespace = waitingForWhitespace
     }
@@ -44,6 +60,24 @@ public struct SuggestionConsumption: Sendable, Equatable {
     ) -> Outcome {
         streamed = Array(suggestion)
         self.isFinal = isFinal
+        if
+            confirmedConsumedCount < consumed.count,
+            streamed.count > confirmedConsumedCount
+        {
+            // Text typed before it was streamed is direct writing. Once a
+            // later chunk reaches that run-ahead span, end this association
+            // instead of retroactively claiming it or showing a suffix whose
+            // provenance can no longer be represented as one matched prefix.
+            return .diverged
+        }
+        return evaluate()
+    }
+
+    public mutating func finishStreaming() -> Outcome {
+        isFinal = true
+        if confirmedConsumedCount < consumed.count {
+            return .diverged
+        }
         return evaluate()
     }
 
@@ -61,9 +95,29 @@ public struct SuggestionConsumption: Sendable, Equatable {
                 return .diverged
             }
             consumed.append(character)
+            if
+                index < streamed.count,
+                confirmedConsumedCount == index
+            {
+                confirmedConsumedCount += 1
+            }
         }
 
         return evaluate()
+    }
+
+    public mutating func applyWithAttribution(
+        insertedText: String
+    ) -> AttributedOutcome {
+        let consumedCountBefore = consumedSuggestionText.count
+        let outcome = apply(insertedText: insertedText)
+        let matchedPrefix = String(
+            consumedSuggestionText.dropFirst(consumedCountBefore)
+        )
+        return AttributedOutcome(
+            outcome: outcome,
+            suggestionAttributedPrefix: matchedPrefix
+        )
     }
 
     private mutating func evaluate() -> Outcome {
