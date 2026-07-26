@@ -51,7 +51,7 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
         XCTAssertEqual(decision, .waitForAuthoritativeChange)
     }
 
-    func testReconciliationUsesUnchangedAuthoritativeFieldAfterDeadline() {
+    func testReconciliationDiscardsUnchangedFieldAfterDeadline() {
         let before = CapturedFieldState(
             text: "before",
             selection: UTF16Selection(location: 6, length: 0)
@@ -70,7 +70,7 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
             observationDeadlineExceeded: true
         )
 
-        XCTAssertEqual(decision, .reconcile)
+        XCTAssertEqual(decision, .discardUnobservedAndReconcile)
     }
 
     func testPassThroughEventWaitsForPostEventObservation() {
@@ -275,6 +275,40 @@ final class CompletionEpisodeTrackerTests: XCTestCase {
             CompletionEpisodeLiveEditorPolicy.allowsCapture(
                 activeEditorIdentifier: "editor",
                 liveEditorIdentifier: "secure-or-different-editor"
+            )
+        )
+        let expectedField = CapturedFieldState(
+            text: "selected text",
+            selection: UTF16Selection(location: 0, length: 8)
+        )
+        XCTAssertTrue(
+            CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                activeEditorIdentifier: "editor",
+                liveEditorIdentifier: "editor",
+                expectedField: expectedField,
+                liveField: expectedField
+            )
+        )
+        XCTAssertFalse(
+            CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                activeEditorIdentifier: "editor",
+                liveEditorIdentifier: "editor",
+                expectedField: expectedField,
+                liveField: CapturedFieldState(
+                    text: "changed text",
+                    selection: expectedField.selection
+                )
+            )
+        )
+        XCTAssertFalse(
+            CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                activeEditorIdentifier: "editor",
+                liveEditorIdentifier: "editor",
+                expectedField: expectedField,
+                liveField: CapturedFieldState(
+                    text: expectedField.text,
+                    selection: UTF16Selection(location: 8, length: 0)
+                )
             )
         )
     }

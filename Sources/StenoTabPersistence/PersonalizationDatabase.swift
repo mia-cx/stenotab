@@ -166,7 +166,23 @@ public actor PersonalizationDatabase {
         try connection.execute("PRAGMA recursive_triggers = ON")
         try connection.execute("PRAGMA journal_mode = DELETE")
         try connection.execute("PRAGMA secure_delete = ON")
+        let hadAuthenticatedConsentTable =
+            try connection.query(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table'
+                    AND name = 'personalization_event_consent'
+                LIMIT 1
+                """
+            ).first != nil
         try connection.execute(Self.schema)
+        if !hadAuthenticatedConsentTable {
+            try Self.migrateAuthenticatedConsentState(
+                connection: connection,
+                keyData: keyData
+            )
+        }
         try Self.migrateScopeLookupHMACs(
             connection: connection,
             keyData: keyData
@@ -179,6 +195,78 @@ public actor PersonalizationDatabase {
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
             ofItemAtPath: databaseURL.path
+        )
+    }
+
+    private static func migrateAuthenticatedConsentState(
+        connection: SQLiteConnection,
+        keyData: Data
+    ) throws {
+        let rows = try connection.query(
+            """
+            SELECT
+                event.id,
+                pending.collection_generation,
+                pending.direct_typing_generation
+            FROM personalization_event AS event
+            LEFT JOIN personalization_event_consent AS consent
+                ON consent.event_id = event.id
+            LEFT JOIN pending_consent_event AS pending
+                ON pending.event_id = event.id
+            WHERE consent.event_id IS NULL
+            """
+        )
+        guard !rows.isEmpty else { return }
+        try connection.transaction {
+            for row in rows {
+                guard let eventID = row.text(at: 0) else { continue }
+                let collectionGeneration = row.text(at: 1) ?? ""
+                let directTypingGeneration = row.text(at: 2) ?? ""
+                let status =
+                    row.text(at: 1) == nil ? "finalized" : "pending"
+                let stateHMAC = try consentStateHMAC(
+                    eventID: eventID,
+                    status: status,
+                    collectionGeneration: collectionGeneration,
+                    directTypingGeneration: directTypingGeneration,
+                    keyData: keyData
+                )
+                try connection.execute(
+                    """
+                    INSERT INTO personalization_event_consent (
+                        event_id,
+                        status,
+                        collection_generation,
+                        direct_typing_generation,
+                        state_hmac
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    bindings: [
+                        .text(eventID),
+                        .text(status),
+                        .text(collectionGeneration),
+                        .text(directTypingGeneration),
+                        .blob(stateHMAC),
+                    ]
+                )
+            }
+        }
+    }
+
+    private static func consentStateHMAC(
+        eventID: String,
+        status: String,
+        collectionGeneration: String,
+        directTypingGeneration: String,
+        keyData: Data
+    ) throws -> Data {
+        try PersonalizationCryptography.scopeLookupHMAC(
+            kind: "personalization_event_consent_v1",
+            value:
+                eventID + "\u{0}" + status + "\u{0}"
+                + collectionGeneration + "\u{0}"
+                + directTypingGeneration,
+            keyData: keyData
         )
     }
 
@@ -1180,6 +1268,40 @@ public actor PersonalizationDatabase {
         )
     }
 
+    func deletePendingConsentMarkerForTesting(
+        eventID: UUID
+    ) throws {
+        try connection.execute(
+            "DELETE FROM pending_consent_event WHERE event_id = ?",
+            bindings: [.text(eventID.uuidString)]
+        )
+    }
+
+    func corruptAuthenticatedConsentStateForTesting(
+        eventID: UUID
+    ) throws {
+        try connection.execute(
+            """
+            UPDATE personalization_event_consent
+            SET collection_generation = 'tampered'
+            WHERE event_id = ?
+            """,
+            bindings: [.text(eventID.uuidString)]
+        )
+    }
+
+    func deleteAuthenticatedConsentStateForTesting(
+        eventID: UUID
+    ) throws {
+        try connection.execute(
+            """
+            DELETE FROM personalization_event_consent
+            WHERE event_id = ?
+            """,
+            bindings: [.text(eventID.uuidString)]
+        )
+    }
+
     func insertOrphanedEmbeddingForTesting() throws {
         let vector = [0.25, 0.75]
         let sealed = try PersonalizationCryptography.seal(
@@ -1261,6 +1383,195 @@ public actor PersonalizationDatabase {
                 .text(directTypingGeneration.map(String.init) ?? ""),
             ]
         )
+        try writeConsentState(
+            eventID: eventID.uuidString,
+            status: "pending",
+            collectionGeneration: String(collectionGeneration),
+            directTypingGeneration:
+                directTypingGeneration.map(String.init) ?? ""
+        )
+    }
+
+    private func writeConsentState(
+        eventID: String,
+        status: String,
+        collectionGeneration: String,
+        directTypingGeneration: String
+    ) throws {
+        let stateHMAC = try Self.consentStateHMAC(
+            eventID: eventID,
+            status: status,
+            collectionGeneration: collectionGeneration,
+            directTypingGeneration: directTypingGeneration,
+            keyData: keyData
+        )
+        try connection.execute(
+            """
+            INSERT INTO personalization_event_consent (
+                event_id,
+                status,
+                collection_generation,
+                direct_typing_generation,
+                state_hmac
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
+                status = excluded.status,
+                collection_generation = excluded.collection_generation,
+                direct_typing_generation =
+                    excluded.direct_typing_generation,
+                state_hmac = excluded.state_hmac
+            """,
+            bindings: [
+                .text(eventID),
+                .text(status),
+                .text(collectionGeneration),
+                .text(directTypingGeneration),
+                .blob(stateHMAC),
+            ]
+        )
+    }
+
+    private func validatedConsentState(
+        eventID: String,
+        status: String?,
+        collectionGeneration: String?,
+        directTypingGeneration: String?,
+        stateHMAC: Data?
+    ) throws -> (
+        status: String,
+        collectionGeneration: String,
+        directTypingGeneration: String
+    )? {
+        guard
+            let status,
+            let collectionGeneration,
+            let directTypingGeneration,
+            let stateHMAC,
+            status == "pending" || status == "finalized"
+        else {
+            return nil
+        }
+        let expectedHMAC = try Self.consentStateHMAC(
+            eventID: eventID,
+            status: status,
+            collectionGeneration: collectionGeneration,
+            directTypingGeneration: directTypingGeneration,
+            keyData: keyData
+        )
+        guard stateHMAC == expectedHMAC else { return nil }
+        return (
+            status,
+            collectionGeneration,
+            directTypingGeneration
+        )
+    }
+
+    private func validateFinalizedConsentState(
+        eventID: String
+    ) throws {
+        let row = try connection.query(
+            """
+            SELECT
+                status,
+                collection_generation,
+                direct_typing_generation,
+                state_hmac
+            FROM personalization_event_consent
+            WHERE event_id = ?
+            """,
+            bindings: [.text(eventID)]
+        ).first
+        let state = try validatedConsentState(
+            eventID: eventID,
+            status: row?.text(at: 0),
+            collectionGeneration: row?.text(at: 1),
+            directTypingGeneration: row?.text(at: 2),
+            stateHMAC: row?.blob(at: 3)
+        )
+        guard state?.status == "finalized" else {
+            throw PersonalizationPersistenceError.database(
+                "Invalid or pending authenticated consent state"
+            )
+        }
+    }
+
+    private func validatePendingConsentState(
+        eventID: String,
+        collectionGeneration: UInt64,
+        directTypingGeneration: UInt64?
+    ) throws {
+        let row = try connection.query(
+            """
+            SELECT
+                status,
+                collection_generation,
+                direct_typing_generation,
+                state_hmac
+            FROM personalization_event_consent
+            WHERE event_id = ?
+            """,
+            bindings: [.text(eventID)]
+        ).first
+        let state = try validatedConsentState(
+            eventID: eventID,
+            status: row?.text(at: 0),
+            collectionGeneration: row?.text(at: 1),
+            directTypingGeneration: row?.text(at: 2),
+            stateHMAC: row?.blob(at: 3)
+        )
+        guard
+            state?.status == "pending",
+            state?.collectionGeneration == String(collectionGeneration),
+            state?.directTypingGeneration
+                == (directTypingGeneration.map(String.init) ?? "")
+        else {
+            throw PersonalizationPersistenceError.database(
+                "Invalid authenticated pending consent state"
+            )
+        }
+    }
+
+    private func finalizeAuthenticatedPendingConsentState(
+        eventID: UUID,
+        collectionGeneration: UInt64,
+        directTypingGeneration: UInt64?
+    ) throws -> Bool {
+        try connection.transaction {
+            let storedEventID = eventID.uuidString
+            let eventExists = try connection.query(
+                """
+                SELECT 1
+                FROM personalization_event
+                WHERE id = ?
+                LIMIT 1
+                """,
+                bindings: [.text(storedEventID)]
+            ).first != nil
+            guard eventExists else {
+                // Retention may have already removed this just-recorded event.
+                // With no canonical row, there is no consent state to expose.
+                return true
+            }
+            try validatePendingConsentState(
+                eventID: storedEventID,
+                collectionGeneration: collectionGeneration,
+                directTypingGeneration: directTypingGeneration
+            )
+            try writeConsentState(
+                eventID: storedEventID,
+                status: "finalized",
+                collectionGeneration: "",
+                directTypingGeneration: ""
+            )
+            try connection.execute(
+                """
+                DELETE FROM pending_consent_event
+                WHERE event_id = ?
+                """,
+                bindings: [.text(storedEventID)]
+            )
+            return true
+        }
     }
 
     private func insertEvent(
@@ -1300,6 +1611,12 @@ public actor PersonalizationDatabase {
                 .blob(payloadHMAC),
                 .integer(Int64(Self.keyVersion)),
             ]
+        )
+        try writeConsentState(
+            eventID: id.uuidString,
+            status: "finalized",
+            collectionGeneration: "",
+            directTypingGeneration: ""
         )
 
         let eventScopes = ([context] + additionalContexts)
@@ -1686,6 +2003,10 @@ public actor PersonalizationDatabase {
             payloadIndex: Int,
             hmacIndex: Int
         ) throws -> CompletionEpisodeCapture? {
+            if excludingPendingConsent,
+               let eventID = row.text(at: idIndex) {
+                try validateFinalizedConsentState(eventID: eventID)
+            }
             let payload = try validatedEventPayload(
                 row,
                 idIndex: idIndex,
@@ -1725,10 +2046,11 @@ public actor PersonalizationDatabase {
         let pendingPredicate =
             excludingPendingConsent
             ? """
-             AND NOT EXISTS (
+             AND EXISTS (
                 SELECT 1
-                FROM pending_consent_event AS pending
-                WHERE pending.event_id = event.id
+                FROM personalization_event_consent AS consent
+                WHERE consent.event_id = event.id
+                    AND consent.status = 'finalized'
              )
             """
             : ""
@@ -1821,10 +2143,11 @@ public actor PersonalizationDatabase {
         let pendingPredicate =
             excludingPendingConsent
             ? """
-             AND NOT EXISTS (
+             AND EXISTS (
                 SELECT 1
-                FROM pending_consent_event AS pending
-                WHERE pending.event_id = event.id
+                FROM personalization_event_consent AS consent
+                WHERE consent.event_id = event.id
+                    AND consent.status = 'finalized'
              )
             """
             : ""
@@ -1841,6 +2164,10 @@ public actor PersonalizationDatabase {
 
         let decoded = try rows.map { row in
             try Task.checkCancellation()
+            if excludingPendingConsent,
+               let eventID = row.text(at: 0) {
+                try validateFinalizedConsentState(eventID: eventID)
+            }
             let payload = try validatedEventPayload(
                 row,
                 idIndex: 0,
@@ -2216,31 +2543,29 @@ public actor PersonalizationDatabase {
                     let directTypingEpoch,
                     let directTypingGeneration
                 {
-                    didFinalize =
+                    let directTypingIsCurrent =
                         try directTypingEpoch.performIfCurrent(
                             directTypingGeneration
                         ) {
-                            try connection.transaction {
-                                try connection.execute(
-                                    """
-                                    DELETE FROM pending_consent_event
-                                    WHERE event_id = ?
-                                    """,
-                                    bindings: [.text(id.uuidString)]
+                            didFinalize =
+                                try finalizeAuthenticatedPendingConsentState(
+                                    eventID: id,
+                                    collectionGeneration:
+                                        collectionGeneration,
+                                    directTypingGeneration:
+                                        directTypingGeneration
                                 )
-                            }
                         }
-                } else {
-                    try connection.transaction {
-                        try connection.execute(
-                            """
-                            DELETE FROM pending_consent_event
-                            WHERE event_id = ?
-                            """,
-                            bindings: [.text(id.uuidString)]
-                        )
+                    if !directTypingIsCurrent {
+                        didFinalize = false
                     }
-                    didFinalize = true
+                } else {
+                    didFinalize =
+                        try finalizeAuthenticatedPendingConsentState(
+                            eventID: id,
+                            collectionGeneration: collectionGeneration,
+                            directTypingGeneration: nil
+                        )
                 }
             }
         return collectionIsCurrent && didFinalize
@@ -2300,60 +2625,64 @@ public actor PersonalizationDatabase {
             let rows = try connection.query(
                 """
                 SELECT
-                    rowid,
-                    event_id,
-                    collection_generation,
-                    direct_typing_generation
-                FROM pending_consent_event
-                ORDER BY rowid ASC
+                    event.id,
+                    consent.status,
+                    consent.collection_generation,
+                    consent.direct_typing_generation,
+                    consent.state_hmac
+                FROM personalization_event AS event
+                LEFT JOIN personalization_event_consent AS consent
+                    ON consent.event_id = event.id
+                ORDER BY event.sequence ASC
                 """
             )
             var removedCount = 0
+            var promotedCount = 0
+            var encounteredUnfinalizedState = false
             for row in rows {
-                let markerRowID = row.integer(at: 0)
-                let eventID = row.text(at: 1)
-                guard
-                    let eventID,
-                    let storedCollectionText = row.text(at: 2),
-                    let storedCollection =
-                        UInt64(storedCollectionText),
-                    let storedDirectText = row.text(at: 3),
-                    storedDirectText.isEmpty
-                        || UInt64(storedDirectText) != nil
-                else {
-                    if let eventID {
-                        try connection.execute(
-                            """
-                            DELETE FROM completion_episode_source
-                            WHERE source_event_id = ?
-                            """,
-                            bindings: [.text(eventID)]
-                        )
-                        try connection.execute(
-                            "DELETE FROM personalization_event WHERE id = ?",
-                            bindings: [.text(eventID)]
-                        )
-                    }
-                    if let markerRowID {
-                        try connection.execute(
-                            "DELETE FROM pending_consent_event WHERE rowid = ?",
-                            bindings: [.integer(markerRowID)]
-                        )
-                    }
-                    removedCount += 1
+                guard let eventID = row.text(at: 0) else { continue }
+                let state = try validatedConsentState(
+                    eventID: eventID,
+                    status: row.text(at: 1),
+                    collectionGeneration: row.text(at: 2),
+                    directTypingGeneration: row.text(at: 3),
+                    stateHMAC: row.blob(at: 4)
+                )
+                if state?.status == "finalized" {
                     continue
                 }
-                let storedDirect =
-                    storedDirectText.isEmpty
-                    ? nil
-                    : UInt64(storedDirectText)
+                encounteredUnfinalizedState = true
+                let storedCollection =
+                    state.flatMap {
+                        UInt64($0.collectionGeneration)
+                    }
+                let storedDirect = state.flatMap {
+                    $0.directTypingGeneration.isEmpty
+                        ? nil
+                        : UInt64($0.directTypingGeneration)
+                }
+                let directGenerationIsValid =
+                    state?.directTypingGeneration.isEmpty == true
+                    || storedDirect != nil
                 let collectionIsCurrent =
                     storedCollection == collectionGeneration
                 let directIsCurrent =
                     storedDirect.map {
                         $0 == directTypingGeneration
                     } ?? true
-                if collectionIsCurrent, directIsCurrent {
+                if
+                    state?.status == "pending",
+                    storedCollection != nil,
+                    directGenerationIsValid,
+                    collectionIsCurrent,
+                    directIsCurrent
+                {
+                    try writeConsentState(
+                        eventID: eventID,
+                        status: "finalized",
+                        collectionGeneration: "",
+                        directTypingGeneration: ""
+                    )
                     try connection.execute(
                         """
                         DELETE FROM pending_consent_event
@@ -2361,6 +2690,7 @@ public actor PersonalizationDatabase {
                         """,
                         bindings: [.text(eventID)]
                     )
+                    promotedCount += 1
                     continue
                 }
                 try connection.execute(
@@ -2376,7 +2706,7 @@ public actor PersonalizationDatabase {
                 )
                 removedCount += 1
             }
-            if !rows.isEmpty {
+            if encounteredUnfinalizedState {
                 try invalidateDerivedProjections()
             }
             if removedCount > 0 {
@@ -2384,7 +2714,7 @@ public actor PersonalizationDatabase {
                 try pruneUnusedTextChunks()
             }
             return PendingConsentReconciliationResult(
-                promotedCount: rows.count - removedCount,
+                promotedCount: promotedCount,
                 removedCount: removedCount
             )
         }
@@ -2811,6 +3141,7 @@ public actor PersonalizationDatabase {
     }
 
     private func invalidateDerivedProjections() throws {
+        try connection.execute("DELETE FROM personalization_embedding")
         try connection.execute(
             """
             DELETE FROM personalization_projection
@@ -3005,6 +3336,15 @@ public actor PersonalizationDatabase {
                 REFERENCES personalization_event(id) ON DELETE CASCADE,
             collection_generation TEXT NOT NULL,
             direct_typing_generation TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS personalization_event_consent (
+            event_id TEXT PRIMARY KEY
+                REFERENCES personalization_event(id) ON DELETE CASCADE,
+            status TEXT NOT NULL,
+            collection_generation TEXT NOT NULL,
+            direct_typing_generation TEXT NOT NULL,
+            state_hmac BLOB NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS personalization_text_chunk (

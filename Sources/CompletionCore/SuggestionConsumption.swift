@@ -1,4 +1,9 @@
 public struct SuggestionConsumption: Sendable, Equatable {
+    public struct AttributedOutcome: Sendable, Equatable {
+        public let outcome: Outcome
+        public let suggestionAttributedPrefix: String
+    }
+
     public enum Outcome: Sendable, Equatable {
         case matched(remaining: String)
         case awaitingStream
@@ -69,6 +74,30 @@ public struct SuggestionConsumption: Sendable, Equatable {
         }
 
         return evaluate()
+    }
+
+    public mutating func applyWithAttribution(
+        insertedText: String
+    ) -> AttributedOutcome {
+        let consumedCountBefore = consumedSuggestionText.count
+        let outcome = apply(insertedText: insertedText)
+        let matchedPrefix = String(
+            consumedSuggestionText.dropFirst(consumedCountBefore)
+        )
+        let attributedPrefix: String
+        switch outcome {
+        case .awaitingStream:
+            // Text typed ahead of a partial stream cannot safely be treated
+            // as independent writing until the stream resolves.
+            attributedPrefix = insertedText
+        case .matched, .waitingForWhitespace, .triggerInference,
+             .diverged:
+            attributedPrefix = matchedPrefix
+        }
+        return AttributedOutcome(
+            outcome: outcome,
+            suggestionAttributedPrefix: attributedPrefix
+        )
     }
 
     private mutating func evaluate() -> Outcome {

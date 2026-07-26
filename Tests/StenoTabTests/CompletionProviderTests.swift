@@ -111,6 +111,38 @@ final class CompletionProviderTests: XCTestCase {
         )
     }
 
+    func testHeuristicProviderPreservesInvocationSeed() async throws {
+        let provider = HeuristicCompletionProvider()
+        var request = request()
+        request = CompletionRequest(
+            id: request.id,
+            prefix: "I am looking forward",
+            suffix: request.suffix,
+            context: request.context,
+            promptConfiguration: request.promptConfiguration,
+            partialWordFragment: request.partialWordFragment,
+            partialWordCandidates: request.partialWordCandidates,
+            invocationSeed: request.invocationSeed
+        )
+
+        let response = await provider.complete(request)
+        let invocation = try XCTUnwrap(response.invocation)
+
+        XCTAssertEqual(response.text, " to hearing from you")
+        XCTAssertEqual(
+            invocation.prompt.textPrompt,
+            "i am looking forward"
+        )
+        XCTAssertEqual(
+            invocation.generation.providerKind,
+            "built-in-heuristic"
+        )
+        XCTAssertEqual(invocation.id, request.invocationSeed?.id)
+        XCTAssertEqual(invocation.field, request.invocationSeed?.field)
+        XCTAssertEqual(invocation.sourceEventIDs, [])
+        XCTAssertEqual(invocation.sourceContexts, [])
+    }
+
     func testLocalEndpointUsesLocalProviderMetadataWithoutCredentials() throws {
         let provider = OpenAICompatibleCompletionProvider(
             endpoint: try XCTUnwrap(

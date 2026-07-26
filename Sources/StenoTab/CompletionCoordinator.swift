@@ -271,6 +271,25 @@ final class CompletionCoordinator: NSObject {
         reconciliationTimer = nil
         invalidatePendingCompletion()
         clearOCRContext()
+        let hasActiveCompletionEpisode =
+            pendingCompletionEpisodeResolution != nil
+            || completionEpisodeTracker.activeInvocationID != nil
+        let shouldObserveWriting =
+            writingHistoryCollectionIsEnabled()
+        let shutdownSnapshot =
+            (hasActiveCompletionEpisode || shouldObserveWriting)
+            ? accessibility.snapshot()
+            : nil
+        if
+            shouldObserveWriting,
+            let snapshot = shutdownSnapshot,
+            snapshot.editorIdentifier == lastSnapshot?.editorIdentifier
+        {
+            writingHistoryTracker.reconcile(
+                field: capturedField(from: snapshot),
+                at: Date()
+            )
+        }
         if writingHistoryCollectionIsEnabled(),
            let completed = writingHistoryTracker.finalize(
                boundary: .applicationTerminated,
@@ -280,13 +299,6 @@ final class CompletionCoordinator: NSObject {
         } else {
             writingHistoryTracker = WritingHistoryTracker()
         }
-        let hasActiveCompletionEpisode =
-            pendingCompletionEpisodeResolution != nil
-            || completionEpisodeTracker.activeInvocationID != nil
-        let shutdownSnapshot =
-            hasActiveCompletionEpisode
-            ? accessibility.snapshot()
-            : nil
         if pendingCompletionEpisodeResolution != nil {
             if
                 let snapshot = shutdownSnapshot,
@@ -307,8 +319,7 @@ final class CompletionCoordinator: NSObject {
                         observedField: observedField,
                         requiresPostEventObservation:
                             completionEpisodeRequiresPostEventObservation,
-                        observationDeadlineExceeded:
-                            completionEpisodeObservationDeadlineExceeded
+                        observationDeadlineExceeded: true
                     )
                 lastSnapshot = snapshot
                 _ = buffer.reconcile(
@@ -318,13 +329,7 @@ final class CompletionCoordinator: NSObject {
                 switch CompletionEpisodeReconciliationPolicy.settlement(
                     for: reconciliationDecision
                 ) {
-                case .wait:
-                    finalizePendingCompletionEpisodeIfNeeded(
-                        finalField:
-                            completionEpisodeExpectedField
-                            ?? authoritativeBaselineField
-                    )
-                case .discard:
+                case .wait, .discard:
                     discardPendingCompletionEpisode()
                 case .finalizeFromAuthoritativeBaseline:
                     finalizePendingCompletionEpisodeIfNeeded(
@@ -336,13 +341,7 @@ final class CompletionCoordinator: NSObject {
                     )
                 }
             } else {
-                if let expectedField = completionEpisodeExpectedField {
-                    finalizePendingCompletionEpisodeIfNeeded(
-                        finalField: expectedField
-                    )
-                } else {
-                    discardPendingCompletionEpisode()
-                }
+                discardPendingCompletionEpisode()
             }
         } else if completionEpisodeTracker.activeInvocationID != nil {
             if
@@ -396,6 +395,11 @@ final class CompletionCoordinator: NSObject {
     }
 
     @objc func toggleEnabled(_ sender: NSMenuItem) {
+        if enabled {
+            // Take the last available authoritative observation before the
+            // disabled-state guard begins discarding unsettled episodes.
+            reconcile()
+        }
         enabled.toggle()
         sender.state = enabled ? .on : .off
         if !enabled {
@@ -448,16 +452,29 @@ final class CompletionCoordinator: NSObject {
             )
             return
         }
-        if CompletionEpisodeLiveEditorPolicy.requiresVerification(
-            activeInvocationID:
-                completionEpisodeTracker.activeInvocationID
-        ) {
-            let liveEditorIdentifier =
-                accessibility.snapshot()?.editorIdentifier
+        let shouldVerifyLiveEditor =
+            suggestionConsumption != nil
+            || CompletionEpisodeLiveEditorPolicy.requiresVerification(
+                activeInvocationID:
+                    completionEpisodeTracker.activeInvocationID
+            )
+        if shouldVerifyLiveEditor {
+            let expectedField = currentCapturedField()
+            let liveSnapshot = accessibility.snapshot()
             guard
+                let expectedField,
+                let liveSnapshot,
                 CompletionEpisodeLiveEditorPolicy.allowsCapture(
                     activeEditorIdentifier: lastSnapshot?.editorIdentifier,
-                    liveEditorIdentifier: liveEditorIdentifier
+                    liveEditorIdentifier: liveSnapshot.editorIdentifier,
+                    expectedField: expectedField,
+                    liveField: capturedField(from: liveSnapshot)
+                ),
+                CompletionPresentationPolicy.isCurrent(
+                    expectedPrefix: buffer.prefix,
+                    expectedSuffix: buffer.suffix,
+                    observedPrefix: liveSnapshot.prefix,
+                    observedSuffix: liveSnapshot.suffix
                 )
             else {
                 invalidatePendingCompletion()
@@ -488,11 +505,18 @@ final class CompletionCoordinator: NSObject {
         }
         var suggestionConsumptionUpdate:
             (consumption: SuggestionConsumption,
-             outcome: SuggestionConsumption.Outcome)?
+             outcome: SuggestionConsumption.Outcome,
+             suggestionAttributedPrefix: String)?
         if case let .insert(text) = mutation,
            var consumption = suggestionConsumption {
-            let outcome = consumption.apply(insertedText: text)
-            suggestionConsumptionUpdate = (consumption, outcome)
+            let attributed = consumption.applyWithAttribution(
+                insertedText: text
+            )
+            suggestionConsumptionUpdate = (
+                consumption,
+                attributed.outcome,
+                attributed.suggestionAttributedPrefix
+            )
         }
         if case .deleteBackward = mutation,
            let fieldBeforeMutation,
@@ -513,12 +537,11 @@ final class CompletionCoordinator: NSObject {
         if writingHistoryCollectionIsEnabled(),
            case let .insert(text) = mutation,
            let fieldBeforeMutation {
-            writingHistoryTracker.recordInsertion(
+            recordWritingInsertion(
                 text,
-                provenance:
-                    suggestionConsumptionUpdate.map {
-                        Self.writingProvenance(for: $0.outcome)
-                    } ?? .directlyTyped,
+                suggestionAttributedPrefix:
+                    suggestionConsumptionUpdate?
+                    .suggestionAttributedPrefix ?? "",
                 fieldBefore: fieldBeforeMutation,
                 fieldAfter: currentCapturedFieldFromBuffer(),
                 at: Date()
@@ -1554,30 +1577,28 @@ final class CompletionCoordinator: NSObject {
             return false
         }
         let liveSnapshot = accessibility.snapshot()
-        if CompletionEpisodeLiveEditorPolicy.requiresVerification(
-            activeInvocationID:
-                completionEpisodeTracker.activeInvocationID
-        ) {
-            guard
-                let liveSnapshot,
-                CompletionEpisodeLiveEditorPolicy.allowsCapture(
-                    activeEditorIdentifier:
-                        lastSnapshot?.editorIdentifier,
-                    liveEditorIdentifier: liveSnapshot.editorIdentifier
-                ),
-                CompletionPresentationPolicy.isCurrent(
-                    expectedPrefix: buffer.prefix,
-                    expectedSuffix: buffer.suffix,
-                    observedPrefix: liveSnapshot.prefix,
-                    observedSuffix: liveSnapshot.suffix
-                )
-            else {
-                invalidatePendingCompletion()
-                clearOCRContext()
-                discardCompletionEpisodeAndSuggestion()
-                buffer.apply(.invalidate)
-                return false
-            }
+        guard
+            let expectedField = currentCapturedField(),
+            let liveSnapshot,
+            CompletionEpisodeLiveEditorPolicy.allowsCapture(
+                activeEditorIdentifier:
+                    lastSnapshot?.editorIdentifier,
+                liveEditorIdentifier: liveSnapshot.editorIdentifier,
+                expectedField: expectedField,
+                liveField: capturedField(from: liveSnapshot)
+            ),
+            CompletionPresentationPolicy.isCurrent(
+                expectedPrefix: buffer.prefix,
+                expectedSuffix: buffer.suffix,
+                observedPrefix: liveSnapshot.prefix,
+                observedSuffix: liveSnapshot.suffix
+            )
+        else {
+            invalidatePendingCompletion()
+            clearOCRContext()
+            discardCompletionEpisodeAndSuggestion()
+            buffer.apply(.invalidate)
+            return false
         }
         caretReanchorTask?.cancel()
         let acceptance = SuggestionAcceptance.slice(
@@ -1600,18 +1621,19 @@ final class CompletionCoordinator: NSObject {
             linkedEpisodeID = nil
         }
         typedSuggestionOrigin = nil
-        let snapshotBeforeAcceptance = liveSnapshot ?? lastSnapshot
+        let snapshotBeforeAcceptance = liveSnapshot
         let fieldBeforeAcceptance = currentCapturedField()
-        let personalizationCapture = snapshotBeforeAcceptance.flatMap {
+        let personalizationCapture =
             PersonalizationCapture.acceptedSuggestion(
-                fieldText: $0.fieldText,
-                selection: $0.selection,
+                fieldText: snapshotBeforeAcceptance.fieldText,
+                selection: snapshotBeforeAcceptance.selection,
                 insertion: acceptance.accepted,
                 acceptanceScope: scope,
                 completionEpisodeID: linkedEpisodeID,
-                context: personalizationContext(for: $0)
+                context: personalizationContext(
+                    for: snapshotBeforeAcceptance
+                )
             )
-        }
         if writingHistoryCollectionIsEnabled(),
            let fieldBefore = fieldBeforeAcceptance {
             let insertedUTF16Count = acceptance.accepted.utf16.count
@@ -2324,15 +2346,70 @@ final class CompletionCoordinator: NSObject {
         )
     }
 
-    private static func writingProvenance(
-        for outcome: SuggestionConsumption.Outcome
-    ) -> WritingEditProvenance {
-        switch outcome {
-        case .matched, .awaitingStream, .waitingForWhitespace:
-            .typedThroughSuggestion
-        case .triggerInference, .diverged:
-            .directlyTyped
+    private func recordWritingInsertion(
+        _ text: String,
+        suggestionAttributedPrefix: String,
+        fieldBefore: CapturedFieldState,
+        fieldAfter: CapturedFieldState,
+        at date: Date
+    ) {
+        guard
+            !suggestionAttributedPrefix.isEmpty,
+            text.hasPrefix(suggestionAttributedPrefix)
+        else {
+            writingHistoryTracker.recordInsertion(
+                text,
+                provenance: .directlyTyped,
+                fieldBefore: fieldBefore,
+                fieldAfter: fieldAfter,
+                at: date
+            )
+            return
         }
+        guard suggestionAttributedPrefix != text else {
+            writingHistoryTracker.recordInsertion(
+                text,
+                provenance: .typedThroughSuggestion,
+                fieldBefore: fieldBefore,
+                fieldAfter: fieldAfter,
+                at: date
+            )
+            return
+        }
+        let directSuffix = String(
+            text.dropFirst(suggestionAttributedPrefix.count)
+        )
+        guard
+            !directSuffix.isEmpty,
+            let intermediateText = fieldBefore.replacingSelection(
+                with: suggestionAttributedPrefix
+            )
+        else {
+            return
+        }
+        let intermediateField = CapturedFieldState(
+            text: intermediateText,
+            selection: UTF16Selection(
+                location:
+                    fieldBefore.selection.location
+                    + suggestionAttributedPrefix.utf16.count,
+                length: 0
+            )
+        )
+        writingHistoryTracker.recordInsertion(
+            suggestionAttributedPrefix,
+            provenance: .typedThroughSuggestion,
+            fieldBefore: fieldBefore,
+            fieldAfter: intermediateField,
+            at: date
+        )
+        writingHistoryTracker.recordInsertion(
+            directSuffix,
+            provenance: .directlyTyped,
+            fieldBefore: intermediateField,
+            fieldAfter: fieldAfter,
+            at: date
+        )
     }
 
     private func discardPendingCompletionEpisode() {

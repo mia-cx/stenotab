@@ -48,6 +48,36 @@ final class SuggestionConsumptionTests: XCTestCase {
         XCTAssertEqual(state.apply(insertedText: " "), .triggerInference)
     }
 
+    func testAttributionExcludesPunctuationTypedAfterSuggestion() {
+        var state = SuggestionConsumption.waitingForWhitespace()
+
+        let result = state.applyWithAttribution(insertedText: "!")
+
+        XCTAssertEqual(result.outcome, .waitingForWhitespace)
+        XCTAssertEqual(result.suggestionAttributedPrefix, "")
+    }
+
+    func testAttributionSplitsMatchedPrefixFromDivergence() {
+        var state = SuggestionConsumption(suggestion: "hello")
+
+        let result = state.applyWithAttribution(insertedText: "heX")
+
+        XCTAssertEqual(result.outcome, .diverged)
+        XCTAssertEqual(result.suggestionAttributedPrefix, "he")
+    }
+
+    func testAttributionFailsClosedWhileTypingAheadOfStream() {
+        var state = SuggestionConsumption(
+            suggestion: "he",
+            isFinal: false
+        )
+
+        let result = state.applyWithAttribution(insertedText: "hello")
+
+        XCTAssertEqual(result.outcome, .awaitingStream)
+        XCTAssertEqual(result.suggestionAttributedPrefix, "hello")
+    }
+
     func testDivergingFromSuggestionTriggersFreshInference() {
         var state = SuggestionConsumption(suggestion: " you")
 

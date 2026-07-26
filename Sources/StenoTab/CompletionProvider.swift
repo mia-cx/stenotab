@@ -123,7 +123,32 @@ struct HeuristicCompletionProvider: CompletionProvider {
     func complete(_ request: CompletionRequest) async -> CompletionResponse {
         let tail = request.prefix.lowercased().suffix(80)
         let text = phrases.first { tail.hasSuffix($0.trigger) }?.completion
-        return CompletionResponse(requestID: request.id, text: text)
+        let prompt = String(tail)
+        let invocation = request.invocationSeed.map {
+            CompletionInvocationCapture(
+                id: $0.id,
+                field: $0.field,
+                prompt: CapturedCompletionPrompt(
+                    transport: .textCompletion,
+                    textPrompt: prompt
+                ),
+                generation: CompletionGenerationMetadata(
+                    providerKind: "built-in-heuristic",
+                    modelIdentifier: "phrase-table-v1",
+                    maximumTokens: 0,
+                    temperature: 0,
+                    stopSequences: []
+                ),
+                context: $0.context,
+                collectionGeneration: $0.collectionGeneration,
+                startedAt: $0.startedAt
+            )
+        }
+        return CompletionResponse(
+            requestID: request.id,
+            text: text,
+            invocation: invocation
+        )
     }
 }
 

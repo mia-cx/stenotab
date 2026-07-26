@@ -320,6 +320,173 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(finalizedExport.acceptedSuggestions, [capture])
     }
 
+    func testRemovingPendingMarkerCannotFinalizeRevokedCapture()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "authenticated pending state",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date(timeIntervalSince1970: 124)
+        )
+        try await fixture.database.recordPendingConsent(
+            capture,
+            collectionGeneration: 0
+        )
+        try await fixture.database.deletePendingConsentMarkerForTesting(
+            eventID: capture.id
+        )
+
+        let export = try await fixture.database.exportCorpus()
+        let removed =
+            try await fixture.database.reconcilePendingConsentEvents(
+                collectionGeneration: 1,
+                directTypingGeneration: 0
+            )
+
+        XCTAssertEqual(export.acceptedSuggestions, [])
+        XCTAssertEqual(removed, 1)
+        let remaining =
+            try await fixture.database.acceptedSuggestions()
+        XCTAssertEqual(remaining, [])
+    }
+
+    func testCorruptAuthenticatedConsentStateFailsClosed()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "tamper evidence",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date(timeIntervalSince1970: 125)
+        )
+        try await fixture.database.record(capture)
+        try await fixture.database
+            .corruptAuthenticatedConsentStateForTesting(
+                eventID: capture.id
+            )
+
+        do {
+            _ = try await fixture.database.exportCorpus()
+            XCTFail("Expected authenticated consent corruption to fail")
+        } catch {
+            XCTAssertEqual(
+                error as? PersonalizationPersistenceError,
+                .database(
+                    "Invalid or pending authenticated consent state"
+                )
+            )
+        }
+        let removed =
+            try await fixture.database.reconcilePendingConsentEvents(
+                collectionGeneration: 0,
+                directTypingGeneration: 0
+        )
+
+        XCTAssertEqual(removed, 1)
+        let remaining =
+            try await fixture.database.acceptedSuggestions()
+        XCTAssertEqual(remaining, [])
+    }
+
+    func testRestartDoesNotBackfillDeletedAuthenticatedConsentState()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "missing authenticated state",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date(timeIntervalSince1970: 126)
+        )
+        try await fixture.database.record(capture)
+        try await fixture.database
+            .deleteAuthenticatedConsentStateForTesting(eventID: capture.id)
+
+        let reopened = try PersonalizationDatabase(
+            databaseURL: fixture.directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let export = try await reopened.exportCorpus()
+        let removed = try await reopened.reconcilePendingConsentEvents(
+            collectionGeneration: 0,
+            directTypingGeneration: 0
+        )
+
+        XCTAssertEqual(export.acceptedSuggestions, [])
+        XCTAssertEqual(removed, 1)
+        let remaining = try await reopened.acceptedSuggestions()
+        XCTAssertEqual(remaining, [])
+    }
+
+    func testFinalizeCannotOverwriteCorruptPendingConsentState()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "corrupt pending state",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date(timeIntervalSince1970: 127)
+        )
+        try await fixture.database.recordPendingConsent(
+            capture,
+            collectionGeneration: 0
+        )
+        try await fixture.database
+            .corruptAuthenticatedConsentStateForTesting(
+                eventID: capture.id
+            )
+
+        do {
+            _ = try await fixture.database.finalizePendingConsentEvent(
+                id: capture.id,
+                collectionEpoch: PersonalizationConsentEpoch(),
+                collectionGeneration: 0
+            )
+            XCTFail("Expected corrupt pending state to fail finalization")
+        } catch {
+            XCTAssertEqual(
+                error as? PersonalizationPersistenceError,
+                .database(
+                    "Invalid authenticated pending consent state"
+                )
+            )
+        }
+        let export = try await fixture.database.exportCorpus()
+        XCTAssertEqual(export.acceptedSuggestions, [])
+    }
+
     func testRestartRevocationPrunesPendingCompletionChunks()
         async throws
     {
@@ -1955,9 +2122,12 @@ final class PersonalizationDatabaseTests: XCTestCase {
                     beforeDerivedData.encryptedPayloadBytes
             )
         )
-        XCTAssertEqual(removed, 1)
+        XCTAssertEqual(removed, 0)
+        let remainingSuggestions =
+            try await fixture.database.acceptedSuggestions()
         let remainingEmbeddings =
             try await fixture.database.embeddings()
+        XCTAssertEqual(remainingSuggestions.map(\.id), [capture.id])
         XCTAssertEqual(remainingEmbeddings, [])
     }
 

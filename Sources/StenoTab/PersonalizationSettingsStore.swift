@@ -1093,6 +1093,13 @@ actor PersonalizationModelWorker {
         voiceAssessment = try await database.loadVoiceAssessment()
         try await reloadRetrievalIndex()
         try await updateVoiceAssessmentIfNeeded()
+        if let retentionPolicy {
+            // Rebuilding embeddings and voice projections can cross the
+            // configured byte cap even when canonical history fits. Derived
+            // rows are reproducible, so enforce once more after regeneration
+            // and retain the already-loaded in-memory state for this run.
+            _ = try await database.enforceRetention(retentionPolicy)
+        }
         return model
     }
 

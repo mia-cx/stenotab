@@ -278,21 +278,22 @@ public enum CompletionEpisodeReconciliationPolicy {
         }
         let focusChanged =
             previousEditorIdentifier != observedEditorIdentifier
-        if
-            !focusChanged,
-            (
-                (
-                    expectedField != authoritativeBaselineField
-                        && observedField != expectedField
-                )
-                    || (
-                        requiresPostEventObservation
-                            && observedField == authoritativeBaselineField
-                    )
-            ),
-            !observationDeadlineExceeded
-        {
-            return .waitForAuthoritativeChange
+        if !focusChanged {
+            if
+                expectedField != authoritativeBaselineField,
+                observedField != expectedField
+            {
+                return observationDeadlineExceeded
+                    ? .discardUnobservedAndReconcile
+                    : .waitForAuthoritativeChange
+            }
+            if
+                requiresPostEventObservation,
+                observedField == authoritativeBaselineField,
+                !observationDeadlineExceeded
+            {
+                return .waitForAuthoritativeChange
+            }
         }
         if focusChanged {
             return expectedField == authoritativeBaselineField
@@ -349,6 +350,20 @@ public enum CompletionEpisodeLiveEditorPolicy {
             return false
         }
         return activeEditorIdentifier == liveEditorIdentifier
+    }
+
+    public static func allowsCapture(
+        activeEditorIdentifier: String?,
+        liveEditorIdentifier: String?,
+        expectedField: CapturedFieldState?,
+        liveField: CapturedFieldState?
+    ) -> Bool {
+        allowsCapture(
+            activeEditorIdentifier: activeEditorIdentifier,
+            liveEditorIdentifier: liveEditorIdentifier
+        )
+            && expectedField != nil
+            && expectedField == liveField
     }
 }
 

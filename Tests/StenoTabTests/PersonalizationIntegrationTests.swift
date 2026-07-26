@@ -2032,6 +2032,58 @@ final class PersonalizationIntegrationTests: XCTestCase {
         XCTAssertFalse(sourceIDs.contains(acceptedIDs[0]))
     }
 
+    func testPrepareReenforcesByteCapAfterDerivedRegeneration()
+        async throws
+    {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "canonical",
+                selection: UTF16Selection(location: 9, length: 0)
+            ),
+            insertion: " history",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date()
+        )
+        try await database.record(capture)
+        let canonicalBytes =
+            try await database.storageStatistics().encryptedPayloadBytes
+        let worker = PersonalizationModelWorker(database: database)
+
+        _ = try await worker.prepare(
+            retentionPolicy: PersonalizationRetentionPolicy(
+                maximumAge: nil,
+                maximumEncryptedBytes: canonicalBytes
+            )
+        )
+
+        let finalStatistics = try await database.storageStatistics()
+        let remaining = try await database.acceptedSuggestions()
+        let storedProjection = try await database.loadLanguageModel()
+        XCTAssertLessThanOrEqual(
+            finalStatistics.encryptedPayloadBytes,
+            canonicalBytes
+        )
+        XCTAssertEqual(remaining.map(\.id), [capture.id])
+        XCTAssertNil(storedProjection)
+    }
+
     private func makeCompletionEpisode(
         context: PersonalizationContext,
         index: Int,
