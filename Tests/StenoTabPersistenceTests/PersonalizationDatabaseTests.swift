@@ -115,6 +115,52 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(deletedCount, 1)
     }
 
+    func testUnreadableLegacyScopeFailsMigrationClosed() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appending(
+            path: "personalization.sqlite"
+        )
+        let keyProvider = StaticPersonalizationKeyProvider(
+            keyData: Data(repeating: 0x42, count: 64)
+        )
+        let database = try PersonalizationDatabase(
+            databaseURL: databaseURL,
+            keyProvider: keyProvider
+        )
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "corrupt scope migration",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(
+                inputKind: "message",
+                editorIdentifier: "editor"
+            ),
+            capturedAt: Date()
+        )
+        try await database.record(capture)
+        try await database.corruptScopeCiphertextForTesting(
+            kind: "input_kind",
+            value: "message"
+        )
+
+        XCTAssertThrowsError(
+            try PersonalizationDatabase(
+                databaseURL: databaseURL,
+                keyProvider: keyProvider
+            )
+        )
+    }
+
     func testAcceptedCaptureRoundTripsEncryptedAndCanBeDeleted() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -171,6 +217,56 @@ final class PersonalizationDatabaseTests: XCTestCase {
         let deletedCaptures = try await database.acceptedSuggestions()
         XCTAssertEqual(deletedEventCount, 0)
         XCTAssertEqual(deletedCaptures, [])
+    }
+
+    func testMatchingPendingConsentMarkerKeepsCaptureOnRecovery()
+        async throws
+    {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "pending recovery",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date()
+        )
+        try await database.recordPendingConsent(
+            capture,
+            collectionGeneration: 7
+        )
+
+        let removed = try await database.reconcilePendingConsentEvents(
+            collectionGeneration: 7,
+            directTypingGeneration: 3
+        )
+        let laterRemoved = try await database.reconcilePendingConsentEvents(
+            collectionGeneration: 8,
+            directTypingGeneration: 3
+        )
+        let storedCaptureIDs =
+            try await database.acceptedSuggestions().map(\.id)
+
+        XCTAssertEqual(removed, 0)
+        XCTAssertEqual(laterRemoved, 0)
+        XCTAssertEqual(storedCaptureIDs, [capture.id])
     }
 
     func testCompletionEpisodeRoundTripsEncryptedAndAppearsInExport()

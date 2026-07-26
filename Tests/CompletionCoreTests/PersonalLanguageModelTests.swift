@@ -1434,6 +1434,48 @@ final class PersonalLanguageModelTests: XCTestCase {
         XCTAssertEqual(model.vocabularyEntries(), [])
     }
 
+    func testWholeFieldRewriteDoesNotReplaceCapturedInsertion() {
+        let date = Date(timeIntervalSince1970: 134.355)
+        let initial = CapturedFieldState(
+            text: "",
+            selection: UTF16Selection(location: 0, length: 0)
+        )
+        let predicted = CapturedFieldState(
+            text: "typed",
+            selection: UTF16Selection(location: 5, length: 0)
+        )
+        let authoritative = CapturedFieldState(
+            text: "unrelated model output",
+            selection: UTF16Selection(location: 22, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: authoritative,
+            edits: [
+                WritingEditCapture(
+                    insertedText: predicted.text,
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: predicted.selection,
+                    fieldBefore: initial,
+                    fieldAfter: predicted,
+                    startedAt: date,
+                    endedAt: date
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date,
+            boundary: .submitted
+        )
+
+        var model = PersonalLanguageModel(minimumEvidence: 0)
+        model.ingest(episode)
+
+        XCTAssertEqual(model.vocabularyEntries(), [])
+    }
+
     func testAmbiguousPureDeletionAbortsEarlierEditReconstruction() {
         let date = Date(timeIntervalSince1970: 134.36)
         let initial = CapturedFieldState(

@@ -411,7 +411,7 @@ final class CompletionCoordinator: NSObject {
         writingHistoryTracker = WritingHistoryTracker()
     }
 
-    static func shouldDiscardPendingOutcomeBeforeClearing(
+    static func shouldDeferPendingOutcomeSettlementWhileClearing(
         pendingResolution: CompletionEpisodeResolution?,
         expectedField: CapturedFieldState?
     ) -> Bool {
@@ -2312,12 +2312,10 @@ final class CompletionCoordinator: NSObject {
         caretReanchorTask?.cancel()
         suggestion = nil
         if resetConsumption {
-            if Self.shouldDiscardPendingOutcomeBeforeClearing(
+            if !Self.shouldDeferPendingOutcomeSettlementWhileClearing(
                 pendingResolution: pendingCompletionEpisodeResolution,
                 expectedField: completionEpisodeExpectedField
             ) {
-                discardPendingCompletionEpisode()
-            } else {
                 finalizeCompletionEpisode(resolution: resolution)
             }
             suggestionConsumption = nil

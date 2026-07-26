@@ -436,7 +436,9 @@ public actor PersonalizationDatabase {
                             keyData: keyData
                         )
                 else {
-                    continue
+                    throw PersonalizationPersistenceError.database(
+                        "Unable to migrate encrypted personalization scope"
+                    )
                 }
                 let existingID = try connection.query(
                     """
@@ -501,6 +503,20 @@ public actor PersonalizationDatabase {
         )
     }
 
+    public func recordPendingConsent(
+        _ capture: AcceptedSuggestionCapture,
+        collectionGeneration: UInt64
+    ) throws {
+        try recordEvent(
+            id: capture.id,
+            kind: Self.acceptedSuggestionKind,
+            capturedAt: capture.capturedAt,
+            payload: capture,
+            context: capture.context,
+            pendingConsent: (collectionGeneration, nil)
+        )
+    }
+
     public func record(_ episode: WritingEpisodeCapture) throws {
         try recordEvent(
             id: episode.id,
@@ -508,6 +524,24 @@ public actor PersonalizationDatabase {
             capturedAt: episode.endedAt,
             payload: episode,
             context: episode.context
+        )
+    }
+
+    public func recordPendingConsent(
+        _ episode: WritingEpisodeCapture,
+        collectionGeneration: UInt64,
+        directTypingGeneration: UInt64
+    ) throws {
+        try recordEvent(
+            id: episode.id,
+            kind: Self.writingEpisodeKind,
+            capturedAt: episode.endedAt,
+            payload: episode,
+            context: episode.context,
+            pendingConsent: (
+                collectionGeneration,
+                directTypingGeneration
+            )
         )
     }
 
@@ -521,11 +555,38 @@ public actor PersonalizationDatabase {
         )
     }
 
+    public func recordPendingConsent(
+        _ feedback: CompletionFeedbackCapture,
+        collectionGeneration: UInt64
+    ) throws {
+        try recordEvent(
+            id: feedback.id,
+            kind: Self.completionFeedbackKind,
+            capturedAt: feedback.capturedAt,
+            payload: feedback,
+            context: feedback.context,
+            pendingConsent: (collectionGeneration, nil)
+        )
+    }
+
     public func record(_ episode: CompletionEpisodeCapture) throws {
         try record(
             episode,
             storageVersion: StoredCompletionEpisode.currentStorageVersion,
-            generationDidFail: episode.generationDidFail
+            generationDidFail: episode.generationDidFail,
+            pendingConsent: nil
+        )
+    }
+
+    public func recordPendingConsent(
+        _ episode: CompletionEpisodeCapture,
+        collectionGeneration: UInt64
+    ) throws {
+        try record(
+            episode,
+            storageVersion: StoredCompletionEpisode.currentStorageVersion,
+            generationDidFail: episode.generationDidFail,
+            pendingConsent: (collectionGeneration, nil)
         )
     }
 
@@ -536,7 +597,8 @@ public actor PersonalizationDatabase {
         try record(
             episode,
             storageVersion: 2,
-            generationDidFail: nil
+            generationDidFail: nil,
+            pendingConsent: nil
         )
     }
 #endif
@@ -544,7 +606,11 @@ public actor PersonalizationDatabase {
     private func record(
         _ episode: CompletionEpisodeCapture,
         storageVersion: Int,
-        generationDidFail: Bool?
+        generationDidFail: Bool?,
+        pendingConsent: (
+            collection: UInt64,
+            directTyping: UInt64?
+        )?
     ) throws {
         try connection.transaction {
             let sourceEventIDs = episode.invocation.sourceEventIDs.reduce(
@@ -675,6 +741,14 @@ public actor PersonalizationDatabase {
                         .text(episode.id.uuidString),
                         .text(sourceEventID.uuidString),
                     ]
+                )
+            }
+            if let pendingConsent {
+                try insertPendingConsentMarker(
+                    eventID: episode.id,
+                    collectionGeneration: pendingConsent.collection,
+                    directTypingGeneration:
+                        pendingConsent.directTyping
                 )
             }
         }
@@ -829,6 +903,30 @@ public actor PersonalizationDatabase {
                 .blob(legacyHMAC),
                 .text(kind),
                 .blob(currentHMAC),
+            ]
+        )
+    }
+
+    func corruptScopeCiphertextForTesting(
+        kind: String,
+        value: String
+    ) throws {
+        let lookupHMAC =
+            try PersonalizationCryptography.scopeLookupHMAC(
+                kind: kind,
+                value: value,
+                keyData: keyData
+            )
+        try connection.execute(
+            """
+            UPDATE personalization_scope
+            SET value_sealed = ?
+            WHERE kind = ? AND lookup_hmac = ?
+            """,
+            bindings: [
+                .blob(Data(repeating: 0xA5, count: 32)),
+                .text(kind),
+                .blob(lookupHMAC),
             ]
         )
     }
@@ -1040,7 +1138,11 @@ public actor PersonalizationDatabase {
         kind: String,
         capturedAt: Date,
         payload value: Payload,
-        context: PersonalizationContext
+        context: PersonalizationContext,
+        pendingConsent: (
+            collection: UInt64,
+            directTyping: UInt64?
+        )? = nil
     ) throws {
         let payload = try encoder.encode(value)
         try connection.transaction {
@@ -1051,7 +1153,36 @@ public actor PersonalizationDatabase {
                 payload: payload,
                 context: context
             )
+            if let pendingConsent {
+                try insertPendingConsentMarker(
+                    eventID: id,
+                    collectionGeneration: pendingConsent.collection,
+                    directTypingGeneration:
+                        pendingConsent.directTyping
+                )
+            }
         }
+    }
+
+    private func insertPendingConsentMarker(
+        eventID: UUID,
+        collectionGeneration: UInt64,
+        directTypingGeneration: UInt64?
+    ) throws {
+        try connection.execute(
+            """
+            INSERT INTO pending_consent_event (
+                event_id,
+                collection_generation,
+                direct_typing_generation
+            ) VALUES (?, ?, ?)
+            """,
+            bindings: [
+                .text(eventID.uuidString),
+                .text(String(collectionGeneration)),
+                .text(directTypingGeneration.map(String.init) ?? ""),
+            ]
+        )
     }
 
     private func insertEvent(
@@ -1900,8 +2031,19 @@ public actor PersonalizationDatabase {
         }
     }
 
-    public func discardMostRecentlyRecordedEvent(id: UUID) throws {
+    @discardableResult
+    public func discardMostRecentlyRecordedEvent(id: UUID) throws -> Bool {
         try connection.transaction {
+            let targetExists = try connection.query(
+                """
+                SELECT 1
+                FROM personalization_event
+                WHERE id = ?
+                LIMIT 1
+                """,
+                bindings: [.text(id.uuidString)]
+            ).first != nil
+            guard targetExists else { return false }
             let newestID = try connection.query(
                 """
                 SELECT id
@@ -1910,7 +2052,7 @@ public actor PersonalizationDatabase {
                 LIMIT 1
                 """
             ).first?.text(at: 0)
-            guard let newestID else { return }
+            guard let newestID else { return false }
             guard newestID == id.uuidString else {
                 throw PersonalizationPersistenceError.database(
                     "Consent-revoked event is no longer the newest record"
@@ -1934,6 +2076,125 @@ public actor PersonalizationDatabase {
             )
             try pruneUnusedScopes()
             try pruneUnusedTextChunks()
+            return true
+        }
+    }
+
+    public func finalizePendingConsentEvent(
+        id: UUID,
+        collectionEpoch: PersonalizationConsentEpoch,
+        collectionGeneration: UInt64,
+        directTypingEpoch: PersonalizationConsentEpoch? = nil,
+        directTypingGeneration: UInt64? = nil
+    ) throws -> Bool {
+        var didFinalize = false
+        let collectionIsCurrent =
+            try collectionEpoch.performIfCurrent(collectionGeneration) {
+                if
+                    let directTypingEpoch,
+                    let directTypingGeneration
+                {
+                    didFinalize =
+                        try directTypingEpoch.performIfCurrent(
+                            directTypingGeneration
+                        ) {
+                            try connection.transaction {
+                                try connection.execute(
+                                    """
+                                    DELETE FROM pending_consent_event
+                                    WHERE event_id = ?
+                                    """,
+                                    bindings: [.text(id.uuidString)]
+                                )
+                            }
+                        }
+                } else {
+                    try connection.transaction {
+                        try connection.execute(
+                            """
+                            DELETE FROM pending_consent_event
+                            WHERE event_id = ?
+                            """,
+                            bindings: [.text(id.uuidString)]
+                        )
+                    }
+                    didFinalize = true
+                }
+            }
+        return collectionIsCurrent && didFinalize
+    }
+
+    @discardableResult
+    public func reconcilePendingConsentEvents(
+        collectionGeneration: UInt64,
+        directTypingGeneration: UInt64
+    ) throws -> Int {
+        try connection.transaction {
+            let rows = try connection.query(
+                """
+                SELECT
+                    event_id,
+                    collection_generation,
+                    direct_typing_generation
+                FROM pending_consent_event
+                ORDER BY rowid ASC
+                """
+            )
+            var removedCount = 0
+            for row in rows {
+                guard
+                    let eventID = row.text(at: 0),
+                    let storedCollectionText = row.text(at: 1),
+                    let storedCollection =
+                        UInt64(storedCollectionText),
+                    let storedDirectText = row.text(at: 2)
+                else {
+                    throw PersonalizationPersistenceError.database(
+                        "Invalid pending consent marker"
+                    )
+                }
+                let collectionIsCurrent =
+                    storedCollection == collectionGeneration
+                let directIsCurrent: Bool
+                if storedDirectText.isEmpty {
+                    directIsCurrent = true
+                } else if let storedDirect = UInt64(storedDirectText) {
+                    directIsCurrent =
+                        storedDirect == directTypingGeneration
+                } else {
+                    throw PersonalizationPersistenceError.database(
+                        "Invalid pending direct-typing consent marker"
+                    )
+                }
+                if collectionIsCurrent, directIsCurrent {
+                    try connection.execute(
+                        """
+                        DELETE FROM pending_consent_event
+                        WHERE event_id = ?
+                        """,
+                        bindings: [.text(eventID)]
+                    )
+                    continue
+                }
+                try connection.execute(
+                    """
+                    DELETE FROM completion_episode_source
+                    WHERE source_event_id = ?
+                    """,
+                    bindings: [.text(eventID)]
+                )
+                try connection.execute(
+                    "DELETE FROM personalization_event WHERE id = ?",
+                    bindings: [.text(eventID)]
+                )
+                removedCount += 1
+            }
+            if removedCount > 0 {
+                try invalidateDerivedProjections()
+                try pruneUnusedScopes()
+                try pruneUnusedTextChunks()
+            }
+            return removedCount
         }
     }
 
@@ -2546,6 +2807,13 @@ public actor PersonalizationDatabase {
 
         CREATE INDEX IF NOT EXISTS personalization_event_kind_time
         ON personalization_event(kind, captured_at_ms DESC);
+
+        CREATE TABLE IF NOT EXISTS pending_consent_event (
+            event_id TEXT PRIMARY KEY
+                REFERENCES personalization_event(id) ON DELETE CASCADE,
+            collection_generation TEXT NOT NULL,
+            direct_typing_generation TEXT NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS personalization_text_chunk (
             chunk_hmac BLOB PRIMARY KEY,

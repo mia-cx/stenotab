@@ -1038,14 +1038,17 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             }
             let hasTwoLiteralAnchors =
                 !predictedPrefix.isEmpty && !predictedSuffix.isEmpty
-            let replacesWholeField =
+            let isBoundedWholeFieldCorrection =
                 predictedPrefix.isEmpty
                 && predictedSuffix.isEmpty
-                && !edit.insertedText.isEmpty
+                && isPlausibleAuthoritativeCorrection(
+                    captured: edit.insertedText,
+                    authoritative: candidateText
+                )
             guard
                 candidateText == edit.insertedText
                 || hasTwoLiteralAnchors
-                || replacesWholeField
+                || isBoundedWholeFieldCorrection
             else {
                 return nil
             }
@@ -1084,6 +1087,51 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
             }
         }
         return nil
+    }
+
+    private static func isPlausibleAuthoritativeCorrection(
+        captured: String,
+        authoritative: String
+    ) -> Bool {
+        let maximumDistance = 2
+        let capturedUnits = Array(captured.utf16)
+        let authoritativeUnits = Array(authoritative.utf16)
+        guard
+            !capturedUnits.isEmpty,
+            !authoritativeUnits.isEmpty,
+            abs(capturedUnits.count - authoritativeUnits.count)
+                <= maximumDistance
+        else {
+            return false
+        }
+        var previous = Array(0...authoritativeUnits.count)
+        for (capturedIndex, capturedUnit) in capturedUnits.enumerated() {
+            var current = Array(
+                repeating: 0,
+                count: authoritativeUnits.count + 1
+            )
+            current[0] = capturedIndex + 1
+            var rowMinimum = current[0]
+            for (
+                authoritativeIndex,
+                authoritativeUnit
+            ) in authoritativeUnits.enumerated() {
+                let substitutionCost =
+                    capturedUnit == authoritativeUnit ? 0 : 1
+                current[authoritativeIndex + 1] = min(
+                    previous[authoritativeIndex + 1] + 1,
+                    current[authoritativeIndex] + 1,
+                    previous[authoritativeIndex] + substitutionCost
+                )
+                rowMinimum = min(
+                    rowMinimum,
+                    current[authoritativeIndex + 1]
+                )
+            }
+            guard rowMinimum <= maximumDistance else { return false }
+            previous = current
+        }
+        return previous[authoritativeUnits.count] <= maximumDistance
     }
 
     private static func hasLiteralUTF16Prefix(

@@ -5,6 +5,14 @@ import OSLog
 import StenoTabPersistence
 
 @MainActor
+protocol PersonalizationHistoryResetting: AnyObject {
+    func personalizationHistoryWillReset()
+    func writingHistoryWillReset()
+}
+
+extension CompletionCoordinator: PersonalizationHistoryResetting {}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     NSWindowDelegate
 {
@@ -113,13 +121,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             }
         )
         self.coordinator = coordinator
-        personalizationSettings.onHistoryReset = { [weak coordinator] in
-            coordinator?.personalizationHistoryWillReset()
-        }
-        personalizationSettings.onWritingHistoryReset = {
-            [weak coordinator] in
-            coordinator?.writingHistoryWillReset()
-        }
+        Self.connectPersonalizationResetHandlers(
+            settings: personalizationSettings,
+            resetter: coordinator
+        )
         applicationPolicy.onChange = { [weak coordinator] in
             coordinator?.applicationPolicyDidChange()
         }
@@ -135,6 +140,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             updateModelStatus(.externalAPI)
         } else {
             applyProviderSettings()
+        }
+    }
+
+    static func connectPersonalizationResetHandlers(
+        settings: PersonalizationSettingsStore,
+        resetter: any PersonalizationHistoryResetting
+    ) {
+        settings.onHistoryReset = { [weak resetter] in
+            resetter?.personalizationHistoryWillReset()
+        }
+        settings.onWritingHistoryReset = { [weak resetter] in
+            resetter?.writingHistoryWillReset()
         }
     }
 

@@ -111,6 +111,37 @@ final class CompletionProviderTests: XCTestCase {
         )
     }
 
+    func testLocalEndpointUsesLocalProviderMetadataWithoutCredentials() throws {
+        let provider = OpenAICompatibleCompletionProvider(
+            endpoint: try XCTUnwrap(
+                URL(
+                    string:
+                        "http://user:secret@127.0.0.1:11434/private/v1"
+                )
+            ),
+            apiKey: nil,
+            model: "local-model",
+            apiStyle: .textCompletions,
+            maximumWords: 8
+        )
+
+        let invocation = try XCTUnwrap(
+            provider.makeURLRequest(
+                for: request(),
+                stream: true
+            ).invocation
+        )
+
+        XCTAssertEqual(
+            invocation.generation.providerKind,
+            "local-openai-compatible"
+        )
+        XCTAssertEqual(
+            invocation.generation.endpointOrigin,
+            "http://127.0.0.1:11434"
+        )
+    }
+
     func testCapturedProviderInputMatchesEveryEncodedRequestStyle() throws {
         for style in [
             CompletionAPIStyle.textCompletions,
