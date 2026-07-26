@@ -77,7 +77,7 @@ public struct KeychainPersonalizationKeyProvider:
         }
     }
 
-    func deleteKeyForTesting() throws {
+    public func deleteKey() throws {
         let status = SecItemDelete(baseQuery as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw PersonalizationPersistenceError.keychain(status)

@@ -42,6 +42,11 @@ public struct PersonalizationStorageStatistics: Sendable, Equatable {
     }
 }
 
+public struct PendingConsentReconciliationResult: Sendable, Equatable {
+    public let promotedCount: Int
+    public let removedCount: Int
+}
+
 public struct PersonalizationCorpusExport: Codable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case formatVersion
@@ -1131,6 +1136,49 @@ public actor PersonalizationDatabase {
             )
         }
     }
+
+    func corruptPendingConsentGenerationForTesting(
+        eventID: UUID
+    ) throws {
+        try connection.execute(
+            """
+            UPDATE pending_consent_event
+            SET collection_generation = 'invalid'
+            WHERE event_id = ?
+            """,
+            bindings: [.text(eventID.uuidString)]
+        )
+    }
+
+    func insertOrphanedEmbeddingForTesting() throws {
+        let vector = [0.25, 0.75]
+        let sealed = try PersonalizationCryptography.seal(
+            try encoder.encode(vector),
+            keyData: keyData
+        )
+        try connection.execute("PRAGMA foreign_keys = OFF")
+        defer {
+            try? connection.execute("PRAGMA foreign_keys = ON")
+        }
+        try connection.execute(
+            """
+            INSERT INTO personalization_embedding (
+                event_id,
+                model_identifier,
+                dimension,
+                vector_sealed,
+                created_at_ms
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            bindings: [
+                .text(UUID().uuidString),
+                .text("orphaned-test-model"),
+                .integer(Int64(vector.count)),
+                .blob(sealed),
+                .integer(0),
+            ]
+        )
+    }
 #endif
 
     private func recordEvent<Payload: Encodable>(
@@ -1505,6 +1553,7 @@ public actor PersonalizationDatabase {
         missingChunkMessage: String =
             "Missing completion episode text chunk"
     ) throws -> Data {
+        try Task.checkCancellation()
         if let cached = chunkCache[chunkHMAC] {
             return cached
         }
@@ -1560,36 +1609,44 @@ public actor PersonalizationDatabase {
     }
 
     public func acceptedSuggestions(
-        limit: Int? = nil
+        limit: Int? = nil,
+        excludingPendingConsent: Bool = false
     ) throws -> [AcceptedSuggestionCapture] {
         try decodedEvents(
             kind: Self.acceptedSuggestionKind,
             as: AcceptedSuggestionCapture.self,
-            limit: limit
+            limit: limit,
+            excludingPendingConsent: excludingPendingConsent
         )
     }
 
     public func writingEpisodes(
-        limit: Int? = nil
+        limit: Int? = nil,
+        excludingPendingConsent: Bool = false
     ) throws -> [WritingEpisodeCapture] {
         try decodedEvents(
             kind: Self.writingEpisodeKind,
             as: WritingEpisodeCapture.self,
-            limit: limit
+            limit: limit,
+            excludingPendingConsent: excludingPendingConsent
         )
     }
 
-    public func completionFeedback() throws
+    public func completionFeedback(
+        excludingPendingConsent: Bool = false
+    ) throws
         -> [CompletionFeedbackCapture]
     {
         try decodedEvents(
             kind: Self.completionFeedbackKind,
-            as: CompletionFeedbackCapture.self
+            as: CompletionFeedbackCapture.self,
+            excludingPendingConsent: excludingPendingConsent
         )
     }
 
     public func completionEpisodes(
-        limit: Int? = nil
+        limit: Int? = nil,
+        excludingPendingConsent: Bool = false
     ) throws -> [CompletionEpisodeCapture] {
         var chunkCache: [Data: Data] = [:]
         func decode(
@@ -1635,18 +1692,30 @@ public actor PersonalizationDatabase {
             )
         }
 
+        let pendingPredicate =
+            excludingPendingConsent
+            ? """
+             AND NOT EXISTS (
+                SELECT 1
+                FROM pending_consent_event AS pending
+                WHERE pending.event_id = event.id
+             )
+            """
+            : ""
         guard let limit else {
             let rows = try connection.query(
                 """
                 SELECT id, kind, payload_sealed, payload_hmac
-                FROM personalization_event
+                FROM personalization_event AS event
                 WHERE kind = ?
+                \(pendingPredicate)
                 ORDER BY sequence ASC
                 """,
                 bindings: [.text(Self.completionEpisodeKind)]
             )
             return try rows.compactMap {
-                try decode(
+                try Task.checkCancellation()
+                return try decode(
                     $0,
                     idIndex: 0,
                     kindIndex: 1,
@@ -1675,8 +1744,9 @@ public actor PersonalizationDatabase {
             let rows = try connection.query(
                 """
                 SELECT sequence, id, kind, payload_sealed, payload_hmac
-                FROM personalization_event
+                FROM personalization_event AS event
                 WHERE kind = ?\(cursorPredicate)
+                \(pendingPredicate)
                 ORDER BY sequence DESC
                 LIMIT ?
                 """,
@@ -1685,6 +1755,7 @@ public actor PersonalizationDatabase {
             guard !rows.isEmpty else { break }
 
             for row in rows {
+                try Task.checkCancellation()
                 if let episode = try decode(
                     row,
                     idIndex: 1,
@@ -1712,21 +1783,34 @@ public actor PersonalizationDatabase {
     private func decodedEvents<Value: Decodable>(
         kind expectedKind: String,
         as type: Value.Type,
-        limit: Int? = nil
+        limit: Int? = nil,
+        excludingPendingConsent: Bool = false
     ) throws -> [Value] {
         let order = limit == nil ? "ASC" : "DESC"
         let limitClause = limit.map { " LIMIT \(max(0, $0))" } ?? ""
+        let pendingPredicate =
+            excludingPendingConsent
+            ? """
+             AND NOT EXISTS (
+                SELECT 1
+                FROM pending_consent_event AS pending
+                WHERE pending.event_id = event.id
+             )
+            """
+            : ""
         let rows = try connection.query(
             """
             SELECT id, kind, payload_sealed, payload_hmac
-            FROM personalization_event
+            FROM personalization_event AS event
             WHERE kind = ?
+            \(pendingPredicate)
             ORDER BY sequence \(order)\(limitClause)
             """,
             bindings: [.text(expectedKind)]
         )
 
         let decoded = try rows.map { row in
+            try Task.checkCancellation()
             let payload = try validatedEventPayload(
                 row,
                 idIndex: 0,
@@ -1751,6 +1835,7 @@ public actor PersonalizationDatabase {
         struct EventIdentity: Decodable {
             let id: UUID
         }
+        try Task.checkCancellation()
         guard
             let rowID = row.text(at: idIndex),
             let kind = row.text(at: kindIndex),
@@ -1790,10 +1875,14 @@ public actor PersonalizationDatabase {
     ) throws -> PersonalizationCorpusExport {
         PersonalizationCorpusExport(
             exportedAt: date,
-            acceptedSuggestions: try acceptedSuggestions(),
-            completionFeedback: try completionFeedback(),
-            writingEpisodes: try writingEpisodes(),
-            completionEpisodes: try completionEpisodes()
+            acceptedSuggestions:
+                try acceptedSuggestions(excludingPendingConsent: true),
+            completionFeedback:
+                try completionFeedback(excludingPendingConsent: true),
+            writingEpisodes:
+                try writingEpisodes(excludingPendingConsent: true),
+            completionEpisodes:
+                try completionEpisodes(excludingPendingConsent: true)
         )
     }
 
@@ -2003,6 +2092,9 @@ public actor PersonalizationDatabase {
 
     public func deleteAll() throws {
         try connection.transaction {
+            try connection.execute("DELETE FROM pending_consent_event")
+            try connection.execute("DELETE FROM personalization_embedding")
+            try connection.execute("DELETE FROM event_text_chunk")
             try connection.execute("DELETE FROM event_scope")
             // This index is rebuilt from authenticated payloads for targeted
             // operations, but Delete All must also recover from an attacker-
@@ -2126,13 +2218,59 @@ public actor PersonalizationDatabase {
 
     @discardableResult
     public func reconcilePendingConsentEvents(
+        collectionEpoch: PersonalizationConsentEpoch,
+        directTypingEpoch: PersonalizationConsentEpoch
+    ) throws -> PendingConsentReconciliationResult {
+        while true {
+            let collectionGeneration = collectionEpoch.current
+            let directTypingGeneration = directTypingEpoch.current
+            var result: PendingConsentReconciliationResult?
+            let collectionIsCurrent =
+                try collectionEpoch.performIfCurrent(
+                    collectionGeneration
+                ) {
+                    let directTypingIsCurrent =
+                        try directTypingEpoch.performIfCurrent(
+                            directTypingGeneration
+                        ) {
+                            result =
+                                try reconcilePendingConsentEventsLocked(
+                                    collectionGeneration:
+                                        collectionGeneration,
+                                    directTypingGeneration:
+                                        directTypingGeneration
+                                )
+                        }
+                    if !directTypingIsCurrent {
+                        result = nil
+                    }
+                }
+            if collectionIsCurrent, let result {
+                return result
+            }
+        }
+    }
+
+    @discardableResult
+    public func reconcilePendingConsentEvents(
         collectionGeneration: UInt64,
         directTypingGeneration: UInt64
     ) throws -> Int {
+        try reconcilePendingConsentEventsLocked(
+            collectionGeneration: collectionGeneration,
+            directTypingGeneration: directTypingGeneration
+        ).removedCount
+    }
+
+    private func reconcilePendingConsentEventsLocked(
+        collectionGeneration: UInt64,
+        directTypingGeneration: UInt64
+    ) throws -> PendingConsentReconciliationResult {
         try connection.transaction {
             let rows = try connection.query(
                 """
                 SELECT
+                    rowid,
                     event_id,
                     collection_generation,
                     direct_typing_generation
@@ -2142,30 +2280,49 @@ public actor PersonalizationDatabase {
             )
             var removedCount = 0
             for row in rows {
+                let markerRowID = row.integer(at: 0)
+                let eventID = row.text(at: 1)
                 guard
-                    let eventID = row.text(at: 0),
-                    let storedCollectionText = row.text(at: 1),
+                    let eventID,
+                    let storedCollectionText = row.text(at: 2),
                     let storedCollection =
                         UInt64(storedCollectionText),
-                    let storedDirectText = row.text(at: 2)
+                    let storedDirectText = row.text(at: 3),
+                    storedDirectText.isEmpty
+                        || UInt64(storedDirectText) != nil
                 else {
-                    throw PersonalizationPersistenceError.database(
-                        "Invalid pending consent marker"
-                    )
+                    if let eventID {
+                        try connection.execute(
+                            """
+                            DELETE FROM completion_episode_source
+                            WHERE source_event_id = ?
+                            """,
+                            bindings: [.text(eventID)]
+                        )
+                        try connection.execute(
+                            "DELETE FROM personalization_event WHERE id = ?",
+                            bindings: [.text(eventID)]
+                        )
+                    }
+                    if let markerRowID {
+                        try connection.execute(
+                            "DELETE FROM pending_consent_event WHERE rowid = ?",
+                            bindings: [.integer(markerRowID)]
+                        )
+                    }
+                    removedCount += 1
+                    continue
                 }
+                let storedDirect =
+                    storedDirectText.isEmpty
+                    ? nil
+                    : UInt64(storedDirectText)
                 let collectionIsCurrent =
                     storedCollection == collectionGeneration
-                let directIsCurrent: Bool
-                if storedDirectText.isEmpty {
-                    directIsCurrent = true
-                } else if let storedDirect = UInt64(storedDirectText) {
-                    directIsCurrent =
-                        storedDirect == directTypingGeneration
-                } else {
-                    throw PersonalizationPersistenceError.database(
-                        "Invalid pending direct-typing consent marker"
-                    )
-                }
+                let directIsCurrent =
+                    storedDirect.map {
+                        $0 == directTypingGeneration
+                    } ?? true
                 if collectionIsCurrent, directIsCurrent {
                     try connection.execute(
                         """
@@ -2189,12 +2346,17 @@ public actor PersonalizationDatabase {
                 )
                 removedCount += 1
             }
-            if removedCount > 0 {
+            if !rows.isEmpty {
                 try invalidateDerivedProjections()
+            }
+            if removedCount > 0 {
                 try pruneUnusedScopes()
                 try pruneUnusedTextChunks()
             }
-            return removedCount
+            return PendingConsentReconciliationResult(
+                promotedCount: rows.count - removedCount,
+                removedCount: removedCount
+            )
         }
     }
 

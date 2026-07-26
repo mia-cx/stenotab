@@ -17,7 +17,7 @@ final class PersonalizationDatabaseTests: XCTestCase {
             service: "cx.mia.stenotab.tests.\(UUID().uuidString)",
             account: "corpus-key"
         )
-        defer { try? provider.deleteKeyForTesting() }
+        defer { try? provider.deleteKey() }
 
         let first = try provider.keyData()
         let second = try provider.keyData()
@@ -219,6 +219,20 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(deletedCaptures, [])
     }
 
+    func testDeleteAllRemovesOrphanedDerivedRows() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        try await fixture.database.insertOrphanedEmbeddingForTesting()
+        let before = try await fixture.database.storageStatistics()
+        XCTAssertGreaterThan(before.encryptedPayloadBytes, 0)
+
+        try await fixture.database.deleteAll()
+
+        let after = try await fixture.database.storageStatistics()
+        XCTAssertEqual(after.eventCount, 0)
+        XCTAssertEqual(after.encryptedPayloadBytes, 0)
+    }
+
     func testMatchingPendingConsentMarkerKeepsCaptureOnRecovery()
         async throws
     {
@@ -246,7 +260,7 @@ final class PersonalizationDatabaseTests: XCTestCase {
             insertion: "pending recovery",
             acceptanceScope: .entireSuggestion,
             context: PersonalizationContext(editorIdentifier: "editor"),
-            capturedAt: Date()
+            capturedAt: Date(timeIntervalSince1970: 123)
         )
         try await database.recordPendingConsent(
             capture,
@@ -267,6 +281,121 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(removed, 0)
         XCTAssertEqual(laterRemoved, 0)
         XCTAssertEqual(storedCaptureIDs, [capture.id])
+    }
+
+    func testExportExcludesPendingConsentCapture() async throws {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "unfinalized export",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date(timeIntervalSince1970: 123)
+        )
+        try await fixture.database.recordPendingConsent(
+            capture,
+            collectionGeneration: 0
+        )
+
+        let pendingExport = try await fixture.database.exportCorpus()
+        XCTAssertEqual(pendingExport.acceptedSuggestions, [])
+
+        _ = try await fixture.database.reconcilePendingConsentEvents(
+            collectionGeneration: 0,
+            directTypingGeneration: 0
+        )
+        let finalizedExport = try await fixture.database.exportCorpus()
+        XCTAssertEqual(finalizedExport.acceptedSuggestions, [capture])
+    }
+
+    func testRestartRevocationPrunesPendingCompletionChunks()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let episode = makeCompletionEpisode(
+            id: UUID(),
+            input: String(repeating: "private completion input ", count: 40),
+            suggestion: "suggested continuation",
+            outcome: "",
+            date: Date()
+        )
+        try await fixture.database.recordPendingConsent(
+            episode,
+            collectionGeneration: 0
+        )
+        let before =
+            try await fixture.database
+                .completionEpisodeStorageStatistics()
+        XCTAssertGreaterThan(before.uniqueTextChunkCount, 0)
+
+        let removed =
+            try await fixture.database.reconcilePendingConsentEvents(
+                collectionGeneration: 1,
+                directTypingGeneration: 0
+            )
+
+        XCTAssertEqual(removed, 1)
+        let storedEpisodes =
+            try await fixture.database.completionEpisodes()
+        XCTAssertEqual(storedEpisodes, [])
+        let after =
+            try await fixture.database
+                .completionEpisodeStorageStatistics()
+        XCTAssertEqual(after.uniqueTextChunkCount, 0)
+        XCTAssertEqual(after.textChunkReferenceCount, 0)
+    }
+
+    func testMalformedPendingMarkerDoesNotBlockOtherRecovery()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        func capture(_ insertion: String) -> AcceptedSuggestionCapture {
+            AcceptedSuggestionCapture(
+                id: UUID(),
+                field: CapturedFieldState(
+                    text: "",
+                    selection: UTF16Selection(location: 0, length: 0)
+                ),
+                insertion: insertion,
+                acceptanceScope: .entireSuggestion,
+                context: PersonalizationContext(
+                    editorIdentifier: "editor"
+                ),
+                capturedAt: Date()
+            )
+        }
+        let malformed = capture("malformed marker")
+        let revoked = capture("revoked marker")
+        try await fixture.database.recordPendingConsent(
+            malformed,
+            collectionGeneration: 0
+        )
+        try await fixture.database.recordPendingConsent(
+            revoked,
+            collectionGeneration: 0
+        )
+        try await fixture.database
+            .corruptPendingConsentGenerationForTesting(
+                eventID: malformed.id
+            )
+
+        let removed =
+            try await fixture.database.reconcilePendingConsentEvents(
+                collectionGeneration: 1,
+                directTypingGeneration: 0
+            )
+
+        XCTAssertEqual(removed, 2)
+        let storedCaptures =
+            try await fixture.database.acceptedSuggestions()
+        XCTAssertEqual(storedCaptures, [])
     }
 
     func testCompletionEpisodeRoundTripsEncryptedAndAppearsInExport()

@@ -1520,17 +1520,17 @@ final class CompletionCoordinator: NSObject {
         else {
             return false
         }
+        let liveSnapshot = accessibility.snapshot()
         if CompletionEpisodeLiveEditorPolicy.requiresVerification(
             activeInvocationID:
                 completionEpisodeTracker.activeInvocationID
         ) {
-            let liveEditorIdentifier =
-                accessibility.snapshot()?.editorIdentifier
             guard
                 CompletionEpisodeLiveEditorPolicy.allowsCapture(
                     activeEditorIdentifier:
                         lastSnapshot?.editorIdentifier,
-                    liveEditorIdentifier: liveEditorIdentifier
+                    liveEditorIdentifier:
+                        liveSnapshot?.editorIdentifier
                 )
             else {
                 invalidatePendingCompletion()
@@ -1561,7 +1561,7 @@ final class CompletionCoordinator: NSObject {
             linkedEpisodeID = nil
         }
         typedSuggestionOrigin = nil
-        let snapshotBeforeAcceptance = accessibility.snapshot() ?? lastSnapshot
+        let snapshotBeforeAcceptance = liveSnapshot ?? lastSnapshot
         let fieldBeforeAcceptance = currentCapturedField()
         let personalizationCapture = snapshotBeforeAcceptance.flatMap {
             PersonalizationCapture.acceptedSuggestion(

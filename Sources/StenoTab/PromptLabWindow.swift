@@ -387,7 +387,10 @@ private struct PersonalizationSettingsView: View {
                         Button("Delete All…") {
                             confirmsDeletion = true
                         }
-                        .disabled(store.storedEventCount == 0)
+                        .disabled(
+                            store.storedEventCount == 0
+                                && !store.recoveryDeletionIsAvailable
+                        )
                     }
 
                     Text(

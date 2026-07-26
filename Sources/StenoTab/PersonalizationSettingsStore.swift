@@ -21,6 +21,10 @@ final class PersonalizationSettingsStore: ObservableObject {
             "personalization.collectionConsentGeneration"
         static let directTypingConsentGeneration =
             "personalization.directTypingConsentGeneration"
+        static let collectionConsentState =
+            "personalization.collectionConsentState"
+        static let directTypingConsentState =
+            "personalization.directTypingConsentState"
         static let useLocalCompletions =
             "personalization.useLocalCompletions"
         static let retentionDays = "personalization.retentionDays"
@@ -32,37 +36,47 @@ final class PersonalizationSettingsStore: ObservableObject {
         didSet {
             if oldValue, !collectionEnabled {
                 collectionConsentGeneration &+= 1
-                defaults.set(
-                    String(collectionConsentGeneration),
-                    forKey: Keys.collectionConsentGeneration
+                Self.persistConsentState(
+                    enabled: collectionEnabled,
+                    generation: collectionConsentGeneration,
+                    defaults: defaults,
+                    key: Keys.collectionConsentState
                 )
                 let consentGeneration = collectionConsentGeneration
                 collectionConsentEpoch.advance(to: consentGeneration)
                 onHistoryReset?()
+            } else {
+                Self.persistConsentState(
+                    enabled: collectionEnabled,
+                    generation: collectionConsentGeneration,
+                    defaults: defaults,
+                    key: Keys.collectionConsentState
+                )
             }
-            defaults.set(
-                collectionEnabled,
-                forKey: Keys.collectionEnabled
-            )
         }
     }
     @Published var collectDirectTyping: Bool {
         didSet {
             if oldValue, !collectDirectTyping {
                 directTypingConsentGeneration &+= 1
-                defaults.set(
-                    String(directTypingConsentGeneration),
-                    forKey: Keys.directTypingConsentGeneration
+                Self.persistConsentState(
+                    enabled: collectDirectTyping,
+                    generation: directTypingConsentGeneration,
+                    defaults: defaults,
+                    key: Keys.directTypingConsentState
                 )
                 directTypingConsentEpoch.advance(
                     to: directTypingConsentGeneration
                 )
                 onWritingHistoryReset?()
+            } else {
+                Self.persistConsentState(
+                    enabled: collectDirectTyping,
+                    generation: directTypingConsentGeneration,
+                    defaults: defaults,
+                    key: Keys.directTypingConsentState
+                )
             }
-            defaults.set(
-                collectDirectTyping,
-                forKey: Keys.collectDirectTyping
-            )
         }
     }
     @Published var useLocalCompletions: Bool {
@@ -90,6 +104,7 @@ final class PersonalizationSettingsStore: ObservableObject {
     }
     @Published private(set) var storedEventCount = 0
     @Published private(set) var encryptedPayloadBytes = 0
+    @Published private(set) var recoveryDeletionIsAvailable = false
     @Published private(set) var recentEpisodes: [WritingEpisodeCapture] = []
     @Published private(set) var recentAcceptedSuggestions:
         [AcceptedSuggestionCapture] = []
@@ -116,7 +131,10 @@ final class PersonalizationSettingsStore: ObservableObject {
     private var database: PersonalizationDatabase?
     private var isHistoryInspectorVisible = false
     private var historyInspectorGeneration: UInt64 = 0
+    private var historyInspectorRefreshTask: Task<Void, Never>?
     private var modelWorker: PersonalizationModelWorker?
+    private var recoveryDeleteAll:
+        (@MainActor () async throws -> Void)?
     private var pendingPersistenceTasks: [UUID: Task<Void, Never>] = [:]
     private var persistenceTail: Task<Void, Never>?
 #if DEBUG
@@ -138,32 +156,42 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        let storedCollectionConsentGeneration =
-            Self.storedConsentGeneration(
-                defaults: defaults,
-                key: Keys.collectionConsentGeneration
-            )
-        let storedDirectTypingConsentGeneration =
-            Self.storedConsentGeneration(
-                defaults: defaults,
-                key: Keys.directTypingConsentGeneration
-            )
+        let storedCollectionConsent = Self.storedConsentState(
+            defaults: defaults,
+            stateKey: Keys.collectionConsentState,
+            legacyEnabledKey: Keys.collectionEnabled,
+            legacyGenerationKey: Keys.collectionConsentGeneration
+        )
+        let storedDirectTypingConsent = Self.storedConsentState(
+            defaults: defaults,
+            stateKey: Keys.directTypingConsentState,
+            legacyEnabledKey: Keys.collectDirectTyping,
+            legacyGenerationKey: Keys.directTypingConsentGeneration
+        )
+        Self.persistConsentState(
+            enabled: storedCollectionConsent.enabled,
+            generation: storedCollectionConsent.generation,
+            defaults: defaults,
+            key: Keys.collectionConsentState
+        )
+        Self.persistConsentState(
+            enabled: storedDirectTypingConsent.enabled,
+            generation: storedDirectTypingConsent.generation,
+            defaults: defaults,
+            key: Keys.directTypingConsentState
+        )
         collectionConsentGeneration =
-            storedCollectionConsentGeneration
+            storedCollectionConsent.generation
         collectionConsentEpoch = PersonalizationConsentEpoch(
-            generation: storedCollectionConsentGeneration
+            generation: storedCollectionConsent.generation
         )
         directTypingConsentGeneration =
-            storedDirectTypingConsentGeneration
+            storedDirectTypingConsent.generation
         directTypingConsentEpoch = PersonalizationConsentEpoch(
-            generation: storedDirectTypingConsentGeneration
+            generation: storedDirectTypingConsent.generation
         )
-        collectionEnabled = defaults.object(
-            forKey: Keys.collectionEnabled
-        ) as? Bool ?? true
-        collectDirectTyping = defaults.object(
-            forKey: Keys.collectDirectTyping
-        ) as? Bool ?? true
+        collectionEnabled = storedCollectionConsent.enabled
+        collectDirectTyping = storedDirectTypingConsent.enabled
         useLocalCompletions = defaults.object(
             forKey: Keys.useLocalCompletions
         ) as? Bool ?? true
@@ -173,6 +201,47 @@ final class PersonalizationSettingsStore: ObservableObject {
         maximumStorageMegabytes = defaults.object(
             forKey: Keys.maximumStorageMegabytes
         ) as? Int ?? 100
+    }
+
+    private static func storedConsentState(
+        defaults: UserDefaults,
+        stateKey: String,
+        legacyEnabledKey: String,
+        legacyGenerationKey: String
+    ) -> (enabled: Bool, generation: UInt64) {
+        if
+            let state = defaults.dictionary(forKey: stateKey),
+            let enabled = state["enabled"] as? Bool,
+            let generationText = state["generation"] as? String,
+            let generation = UInt64(generationText)
+        {
+            return (enabled, generation)
+        }
+        return (
+            defaults.object(forKey: legacyEnabledKey) as? Bool ?? true,
+            storedConsentGeneration(
+                defaults: defaults,
+                key: legacyGenerationKey
+            )
+        )
+    }
+
+    private static func persistConsentState(
+        enabled: Bool,
+        generation: UInt64,
+        defaults: UserDefaults,
+        key: String
+    ) {
+        defaults.set(
+            [
+                "enabled": enabled,
+                "generation": String(generation),
+            ],
+            forKey: key
+        )
+        // Consent is a privacy boundary, so do not leave this transition only
+        // in UserDefaults' deferred write buffer.
+        _ = defaults.synchronize()
     }
 
     private static func storedConsentGeneration(
@@ -190,6 +259,8 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func attach(database: PersonalizationDatabase) {
         self.database = database
+        recoveryDeleteAll = nil
+        recoveryDeletionIsAvailable = false
         let worker = PersonalizationModelWorker(
             database: database,
             collectionConsentEpoch: collectionConsentEpoch,
@@ -199,7 +270,9 @@ final class PersonalizationSettingsStore: ObservableObject {
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
             do {
-                let preparedModel = try await worker.prepare()
+                let preparedModel = try await worker.prepare(
+                    retentionPolicy: retentionPolicy
+                )
                 let preparedVoiceAssessment =
                     await worker.voiceAssessmentSnapshot()
                 let statistics = try await database.storageStatistics()
@@ -220,7 +293,10 @@ final class PersonalizationSettingsStore: ObservableObject {
         let generation = collectionGeneration
         let inspectorWasVisible = isHistoryInspectorVisible
         let inspectorGeneration = historyInspectorGeneration
-        enqueuePersistenceOperation { [self] in
+        if inspectorWasVisible {
+            historyInspectorRefreshTask?.cancel()
+        }
+        let refreshTask = enqueuePersistenceOperation { [self] in
             do {
                 let statistics = try await database.storageStatistics()
                 var episodes: [WritingEpisodeCapture] = []
@@ -272,8 +348,12 @@ final class PersonalizationSettingsStore: ObservableObject {
                 }
                 operationError = nil
             } catch {
+                guard !Task.isCancelled else { return }
                 operationError = String(describing: error)
             }
+        }
+        if inspectorWasVisible {
+            historyInspectorRefreshTask = refreshTask
         }
     }
 
@@ -284,6 +364,8 @@ final class PersonalizationSettingsStore: ObservableObject {
         if isVisible {
             refresh()
         } else {
+            historyInspectorRefreshTask?.cancel()
+            historyInspectorRefreshTask = nil
             recentEpisodes = []
             recentAcceptedSuggestions = []
             recentCompletionEpisodes = []
@@ -378,13 +460,43 @@ final class PersonalizationSettingsStore: ObservableObject {
     }
 
     func deleteAll() {
-        guard let modelWorker else { return }
+        guard modelWorker != nil || recoveryDeleteAll != nil else { return }
         invalidateDerivedPersonalization()
         let previousBoundary = completionEpisodeDeleteAllBoundary
         let attemptedBoundary = Date()
         completionEpisodeDeleteAllBoundary = attemptedBoundary
         collectionGeneration &+= 1
         let generation = collectionGeneration
+        guard let modelWorker else {
+            guard let recoveryDeleteAll else { return }
+            enqueuePersistenceOperation { [self] in
+                do {
+                    try await recoveryDeleteAll()
+                    guard generation == collectionGeneration else { return }
+                    storedEventCount = 0
+                    encryptedPayloadBytes = 0
+                    recentEpisodes = []
+                    recentAcceptedSuggestions = []
+                    recentCompletionEpisodes = []
+                    recoveryDeletionIsAvailable = false
+                    self.recoveryDeleteAll = nil
+                    finishDerivedPersonalizationInvalidation(
+                        generation: generation
+                    )
+                    operationError = nil
+                } catch {
+                    if
+                        completionEpisodeDeleteAllBoundary
+                            == attemptedBoundary
+                    {
+                        completionEpisodeDeleteAllBoundary =
+                            previousBoundary
+                    }
+                    operationError = String(describing: error)
+                }
+            }
+            return
+        }
         enqueuePersistenceOperation { [self] in
             do {
                 let rebuiltModel = try await modelWorker.deleteAll(
@@ -415,6 +527,16 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
             }
         }
+    }
+
+    func attachRecoveryDeleteAll(
+        _ deleteAll: @escaping @MainActor () async throws -> Void
+    ) {
+        recoveryDeleteAll = deleteAll
+        recoveryDeletionIsAvailable = true
+        operationError =
+            "Personalization storage could not be opened. "
+            + "Delete All remains available."
     }
 
     func record(_ capture: AcceptedSuggestionCapture) {
@@ -642,18 +764,22 @@ final class PersonalizationSettingsStore: ObservableObject {
         }
     }
 
+    @discardableResult
     private func enqueuePersistenceOperation(
         _ operation: @escaping @MainActor () async -> Void
-    ) {
+    ) -> Task<Void, Never> {
         let id = UUID()
         let predecessor = persistenceTail
         let task = Task { [weak self] in
             await predecessor?.value
-            await operation()
+            if !Task.isCancelled {
+                await operation()
+            }
             self?.pendingPersistenceTasks.removeValue(forKey: id)
         }
         pendingPersistenceTasks[id] = task
         persistenceTail = task
+        return task
     }
 
     func deleteEvent(id: UUID) {
@@ -737,6 +863,7 @@ final class PersonalizationSettingsStore: ObservableObject {
                 "Personalization database is unavailable"
             )
         }
+        await flushPendingPersistence()
         let export = try await database.exportCorpus()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -811,7 +938,9 @@ final class PersonalizationSettingsStore: ObservableObject {
             return
         }
         do {
-            let recoveredModel = try await modelWorker.prepare()
+            let recoveredModel = try await modelWorker.prepare(
+                retentionPolicy: retentionPolicy
+            )
             let recoveredVoiceAssessment =
                 await modelWorker.voiceAssessmentSnapshot()
             let recoveredStatistics: PersonalizationStorageStatistics? =
@@ -972,15 +1101,25 @@ actor PersonalizationModelWorker {
         self.directTypingConsentEpoch = directTypingConsentEpoch
     }
 
-    func prepare() async throws -> PersonalLanguageModel {
-        _ = try await database.reconcilePendingConsentEvents(
-            collectionGeneration: collectionConsentEpoch.current,
-            directTypingGeneration: directTypingConsentEpoch.current
-        )
+    func prepare(
+        retentionPolicy: PersonalizationRetentionPolicy? = nil
+    ) async throws -> PersonalLanguageModel {
+        let reconciliation =
+            try await database.reconcilePendingConsentEvents(
+                collectionEpoch: collectionConsentEpoch,
+                directTypingEpoch: directTypingConsentEpoch
+            )
         if let stored = try await database.loadLanguageModel(),
            !stored.requiresRebuild {
             model = stored
         } else {
+            _ = try await rebuildLanguageModel()
+        }
+        if
+            reconciliation.promotedCount > 0,
+            let retentionPolicy,
+            try await database.enforceRetention(retentionPolicy) > 0
+        {
             _ = try await rebuildLanguageModel()
         }
         voiceAssessment = try await database.loadVoiceAssessment()

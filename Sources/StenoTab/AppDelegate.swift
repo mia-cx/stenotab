@@ -346,6 +346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
     }
 
     private func configurePersonalizationDatabase() {
+        let databaseURL: URL
         do {
             let applicationSupport = try FileManager.default.url(
                 for: .applicationSupportDirectory,
@@ -353,10 +354,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                 appropriateFor: nil,
                 create: true
             )
-            let databaseURL = applicationSupport
+            databaseURL = applicationSupport
                 .appending(path: "StenoTab", directoryHint: .isDirectory)
-                .appending(path: "Personalization", directoryHint: .isDirectory)
+                .appending(
+                    path: "Personalization",
+                    directoryHint: .isDirectory
+                )
                 .appending(path: "personalization.sqlite")
+        } catch {
+            let description = String(describing: error)
+            personalizationLogger.error(
+                "Could not locate personalization storage: \(description, privacy: .public)"
+            )
+            return
+        }
+        do {
             personalizationDatabase = try PersonalizationDatabase(
                 databaseURL: databaseURL,
                 keyProvider: KeychainPersonalizationKeyProvider()
@@ -367,9 +379,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
                 )
             }
         } catch {
+            personalizationSettings.attachRecoveryDeleteAll {
+                try Self.deleteUnopenablePersonalizationStorage(
+                    databaseURL: databaseURL
+                )
+            }
+            let description = String(describing: error)
             personalizationLogger.error(
-                "Could not initialize personalization storage: \(String(describing: error), privacy: .public)"
+                "Could not initialize personalization storage: \(description, privacy: .public)"
             )
+        }
+    }
+
+    static func deleteUnopenablePersonalizationStorage(
+        databaseURL: URL,
+        keyProvider: KeychainPersonalizationKeyProvider =
+            KeychainPersonalizationKeyProvider(),
+        fileManager: FileManager = .default
+    ) throws {
+        try keyProvider.deleteKey()
+        for suffix in ["", "-journal", "-wal", "-shm"] {
+            let artifact = URL(fileURLWithPath: databaseURL.path + suffix)
+            if fileManager.fileExists(atPath: artifact.path) {
+                try fileManager.removeItem(at: artifact)
+            }
         }
     }
 
