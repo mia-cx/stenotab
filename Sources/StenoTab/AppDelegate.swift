@@ -401,13 +401,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate,
             KeychainPersonalizationKeyProvider(),
         fileManager: FileManager = .default
     ) throws {
-        try keyProvider.deleteKey()
         for suffix in ["", "-journal", "-wal", "-shm"] {
             let artifact = URL(fileURLWithPath: databaseURL.path + suffix)
             if fileManager.fileExists(atPath: artifact.path) {
                 try fileManager.removeItem(at: artifact)
             }
         }
+        try keyProvider.deleteKey()
     }
 
     private func recordPersonalizationCapture(

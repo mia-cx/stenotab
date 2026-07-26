@@ -19,6 +19,30 @@ final class PersonalizationIntegrationTests: XCTestCase {
         }
     }
 
+    private actor SuspensionGate {
+        private var isOpen = false
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        func wait() async {
+            guard !isOpen else { return }
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+            }
+        }
+
+        func open() {
+            isOpen = true
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
+    private final class FailingRemovalFileManager: FileManager {
+        override func removeItem(at URL: URL) throws {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+    }
+
     func testInFlightRecordIsRemovedWhenConsentIsRevoked()
         async throws
     {
@@ -624,6 +648,40 @@ final class PersonalizationIntegrationTests: XCTestCase {
         let storedIDs =
             try await reopened.acceptedSuggestions().map(\.id)
         XCTAssertEqual(storedIDs, [capture.id])
+    }
+
+    @MainActor
+    func testRecoveryDeletionPreservesKeyWhenArtifactRemovalFails() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appending(
+            path: "personalization.sqlite"
+        )
+        try Data("encrypted database".utf8).write(to: databaseURL)
+        let provider = KeychainPersonalizationKeyProvider(
+            service: "cx.mia.stenotab.tests.\(UUID().uuidString)",
+            account: "corpus-key"
+        )
+        defer { try? provider.deleteKey() }
+        let keyBeforeFailure = try provider.keyData()
+
+        XCTAssertThrowsError(
+            try AppDelegate.deleteUnopenablePersonalizationStorage(
+                databaseURL: databaseURL,
+                keyProvider: provider,
+                fileManager: FailingRemovalFileManager()
+            )
+        )
+
+        XCTAssertEqual(try provider.keyData(), keyBeforeFailure)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: databaseURL.path)
+        )
     }
 
     @MainActor
@@ -1383,6 +1441,49 @@ final class PersonalizationIntegrationTests: XCTestCase {
         XCTAssertEqual(export.acceptedSuggestions, [])
         XCTAssertEqual(export.writingEpisodes, [])
         XCTAssertEqual(export.completionEpisodes, [])
+    }
+
+    @MainActor
+    func testFlushDoesNotWaitForWorkEnqueuedAfterEntry() async throws {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        let releaseInitialTask = SuspensionGate()
+        let releaseFollowupTask = SuspensionGate()
+        let flushCapturedTasks = expectation(
+            description: "flush captured its entry snapshot"
+        )
+        let followupStarted = expectation(
+            description: "follow-up persistence task started"
+        )
+        let flushFinished = expectation(
+            description: "flush ignored later work"
+        )
+        store.flushDidCaptureTasksForTesting = {
+            flushCapturedTasks.fulfill()
+        }
+        store.enqueuePersistenceOperationForTesting {
+            await releaseInitialTask.wait()
+            store.enqueuePersistenceOperationForTesting {
+                followupStarted.fulfill()
+                await releaseFollowupTask.wait()
+            }
+        }
+
+        Task {
+            await store.flushPendingPersistence()
+            flushFinished.fulfill()
+        }
+        await fulfillment(of: [flushCapturedTasks], timeout: 1)
+        await releaseInitialTask.open()
+        await fulfillment(of: [followupStarted], timeout: 1)
+        await fulfillment(of: [flushFinished], timeout: 1)
+
+        await releaseFollowupTask.open()
+        await store.flushPendingPersistence()
     }
 
     @MainActor

@@ -140,6 +140,7 @@ final class PersonalizationSettingsStore: ObservableObject {
     var promptContextDidLoadForTesting: (() -> Void)?
     var recordDidLoadDerivedStateForTesting: (() -> Void)?
     var historyInspectorWillLoadRecordsForTesting: (() -> Void)?
+    var flushDidCaptureTasksForTesting: (() -> Void)?
 
     func setRecordDidPersistForTesting(
         _ callback: @escaping @MainActor @Sendable () -> Void
@@ -719,13 +720,24 @@ final class PersonalizationSettingsStore: ObservableObject {
     }
 
     func flushPendingPersistence() async {
-        while !pendingPersistenceTasks.isEmpty {
-            let tasks = Array(pendingPersistenceTasks.values)
-            for task in tasks {
-                await task.value
-            }
+        let tasks = Array(pendingPersistenceTasks.values)
+#if DEBUG
+        let didCaptureTasks = flushDidCaptureTasksForTesting
+        flushDidCaptureTasksForTesting = nil
+        didCaptureTasks?()
+#endif
+        for task in tasks {
+            await task.value
         }
     }
+
+#if DEBUG
+    func enqueuePersistenceOperationForTesting(
+        _ operation: @escaping @MainActor () async -> Void
+    ) {
+        enqueuePersistenceOperation(operation)
+    }
+#endif
 
     @discardableResult
     private func enqueuePersistenceOperation(
