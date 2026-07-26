@@ -16,6 +16,18 @@ final class SuggestionConsumptionTests: XCTestCase {
         XCTAssertTrue(state.hasFinishedStreaming)
     }
 
+    func testInterruptedPartialStreamWithRunAheadDivergesOnFinish() {
+        var state = SuggestionConsumption(
+            suggestion: "he",
+            isFinal: false
+        )
+        _ = state.applyWithAttribution(insertedText: "hello")
+
+        XCTAssertEqual(state.finishStreaming(), .diverged)
+        XCTAssertEqual(state.consumedSuggestionText, "he")
+        XCTAssertTrue(state.hasFinishedStreaming)
+    }
+
     func testMatchingCharactersConsumeSuggestionWithoutTriggeringInference() {
         var state = SuggestionConsumption(suggestion: " you")
 

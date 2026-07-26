@@ -2067,6 +2067,113 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertEqual(completionEpisodes, [])
     }
 
+    func testInvalidSourceConsentCascadesThroughNestedCompletionLineage()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let sourceContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Source",
+            editorIdentifier: "source"
+        )
+        let source = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                id: UUID(),
+                fieldText: "private source",
+                selection: UTF16Selection(location: 14, length: 0),
+                insertion: " text",
+                acceptanceScope: .entireSuggestion,
+                context: sourceContext,
+                capturedAt: Date(timeIntervalSince1970: 860)
+            )
+        )
+        let dependent = makeCompletionEpisode(
+            id: UUID(),
+            input: "dependent prompt",
+            suggestion: " dependent suggestion",
+            outcome: "",
+            date: Date(timeIntervalSince1970: 861),
+            sourceEventIDs: [source.id],
+            sourceContexts: [sourceContext]
+        )
+        let nested = makeCompletionEpisode(
+            id: UUID(),
+            input: "nested prompt",
+            suggestion: " nested suggestion",
+            outcome: "",
+            date: Date(timeIntervalSince1970: 862),
+            sourceEventIDs: [dependent.id],
+            sourceContexts: [dependent.invocation.context]
+        )
+        try await fixture.database.record(source)
+        try await fixture.database.record(dependent)
+        try await fixture.database.record(nested)
+        try await fixture.database
+            .corruptAuthenticatedConsentStateForTesting(
+                eventID: source.id
+            )
+
+        _ = try await fixture.database.reconcilePendingConsentEvents(
+            collectionGeneration: 0,
+            directTypingGeneration: 0
+        )
+
+        let eventCount = try await fixture.database.eventCount()
+        XCTAssertEqual(eventCount, 0)
+        let completionEpisodes =
+            try await fixture.database.completionEpisodes()
+        XCTAssertEqual(completionEpisodes, [])
+    }
+
+    func testInvalidSourceConsentDeletesCorruptDependentCompletionEpisode()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let sourceContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Source",
+            editorIdentifier: "source"
+        )
+        let source = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                id: UUID(),
+                fieldText: "private source",
+                selection: UTF16Selection(location: 14, length: 0),
+                insertion: " text",
+                acceptanceScope: .entireSuggestion,
+                context: sourceContext,
+                capturedAt: Date(timeIntervalSince1970: 870)
+            )
+        )
+        let dependent = makeCompletionEpisode(
+            id: UUID(),
+            input: "dependent prompt",
+            suggestion: " dependent suggestion",
+            outcome: "",
+            date: Date(timeIntervalSince1970: 871),
+            sourceEventIDs: [source.id],
+            sourceContexts: [sourceContext]
+        )
+        try await fixture.database.record(source)
+        try await fixture.database.record(dependent)
+        let corrupted =
+            try await fixture.database
+                .corruptFirstCompletionEventPayloadForTesting()
+        XCTAssertTrue(corrupted)
+        try await fixture.database
+            .corruptAuthenticatedConsentStateForTesting(
+                eventID: source.id
+            )
+
+        _ = try await fixture.database.reconcilePendingConsentEvents(
+            collectionGeneration: 0,
+            directTypingGeneration: 0
+        )
+
+        let eventCount = try await fixture.database.eventCount()
+        XCTAssertEqual(eventCount, 0)
+    }
+
     func testStorageCapRecomputesAfterSourceCascadeDeletion() async throws {
         let fixture = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }

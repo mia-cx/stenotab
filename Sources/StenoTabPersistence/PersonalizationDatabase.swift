@@ -2893,6 +2893,8 @@ public actor PersonalizationDatabase {
             """,
             bindings: [.text(Self.completionEpisodeKind)]
         )
+        var sourceIDsByCompletionEventID: [String: Set<String>] = [:]
+        var corruptCompletionEventIDs = Set<String>()
         for row in rows {
             guard let completionEventID = row.text(at: 0) else {
                 continue
@@ -2915,6 +2917,7 @@ public actor PersonalizationDatabase {
                     header.storageVersion
                         == StoredCompletionEpisode.currentStorageVersion
                 else {
+                    corruptCompletionEventIDs.insert(completionEventID)
                     continue
                 }
                 storedEpisode = try decoder.decode(
@@ -2922,18 +2925,49 @@ public actor PersonalizationDatabase {
                     from: payload
                 )
             } catch {
-                // A separately corrupt episode is not exportable and cannot
-                // provide authenticated lineage. Leave it for its own recovery
-                // path instead of blocking unrelated consent cleanup.
+                // A corrupt episode cannot provide authenticated lineage.
+                // Delete it fail closed so restoring replayed payload bytes
+                // cannot resurrect content after its source was removed.
+                corruptCompletionEventIDs.insert(completionEventID)
                 continue
             }
-            guard
-                storedEpisode.invocation.sourceEventIDs?.contains(
-                    where: { $0.uuidString == sourceEventID }
-                ) == true
-            else {
-                continue
+            sourceIDsByCompletionEventID[completionEventID] = Set(
+                storedEpisode.invocation.sourceEventIDs?.map(\.uuidString)
+                    ?? []
+            )
+        }
+
+        // Build the complete authenticated descendant closure before deleting
+        // any lineage edges. Removing a direct dependent's source edges first
+        // would otherwise prevent the recursive trigger from reaching nested
+        // completion episodes.
+        var descendantClosure = corruptCompletionEventIDs
+        descendantClosure.insert(sourceEventID)
+        var addedDescendant = true
+        while addedDescendant {
+            addedDescendant = false
+            for (completionEventID, sourceIDs)
+            in sourceIDsByCompletionEventID
+            where !descendantClosure.contains(completionEventID) {
+                if !sourceIDs.isDisjoint(with: descendantClosure) {
+                    descendantClosure.insert(completionEventID)
+                    addedDescendant = true
+                }
             }
+        }
+
+        let completionEventIDsToDelete = descendantClosure
+            .filter {
+                $0 != sourceEventID
+                    && (
+                        sourceIDsByCompletionEventID[$0] != nil
+                            || corruptCompletionEventIDs.contains($0)
+                    )
+            }
+            .sorted()
+        for completionEventID in completionEventIDsToDelete {
+            // Suppress unauthenticated or stale index edges before deleting.
+            // Every authenticated descendant is already in the closure.
             try connection.execute(
                 """
                 DELETE FROM completion_episode_source
@@ -2941,6 +2975,8 @@ public actor PersonalizationDatabase {
                 """,
                 bindings: [.text(completionEventID)]
             )
+        }
+        for completionEventID in completionEventIDsToDelete {
             try connection.execute(
                 "DELETE FROM personalization_event WHERE id = ?",
                 bindings: [.text(completionEventID)]
