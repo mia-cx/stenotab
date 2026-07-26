@@ -93,6 +93,20 @@ final class SuggestionConsumptionTests: XCTestCase {
         XCTAssertEqual(state.consumedSuggestionText, "he")
     }
 
+    func testMatchingLaterStreamEndsRunAheadAssociation() {
+        var state = SuggestionConsumption(
+            suggestion: "he",
+            isFinal: false
+        )
+        _ = state.applyWithAttribution(insertedText: "hel")
+
+        XCTAssertEqual(
+            state.update(suggestion: "hello", isFinal: true),
+            .diverged
+        )
+        XCTAssertEqual(state.consumedSuggestionText, "he")
+    }
+
     func testDivergingFromSuggestionTriggersFreshInference() {
         var state = SuggestionConsumption(suggestion: " you")
 

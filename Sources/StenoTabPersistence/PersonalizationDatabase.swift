@@ -173,17 +173,43 @@ public actor PersonalizationDatabase {
             try connection.query("PRAGMA user_version")
                 .first?.integer(at: 0) ?? 0
         )
+        let externalSchemaVersion =
+            try keyProvider.authenticatedConsentSchemaVersion()
         try connection.execute(Self.schema)
         try connection.execute(Self.remainingSchema)
-        if schemaVersion < Self.authenticatedConsentSchemaVersion {
+        if let externalSchemaVersion {
+            guard
+                externalSchemaVersion
+                    == Self.authenticatedConsentSchemaVersion
+            else {
+                throw PersonalizationPersistenceError.database(
+                    "Unsupported authenticated consent schema version"
+                )
+            }
+            try Self.validateAuthenticatedConsentSchema(
+                connection: connection,
+                keyData: keyData,
+                schemaVersion: schemaVersion
+            )
+        } else if schemaVersion < Self.authenticatedConsentSchemaVersion {
             try Self.migrateAuthenticatedConsentState(
                 connection: connection,
                 keyData: keyData
             )
+            try keyProvider.persistAuthenticatedConsentSchemaVersion(
+                Self.authenticatedConsentSchemaVersion
+            )
         } else {
             try Self.validateAuthenticatedConsentSchema(
                 connection: connection,
-                keyData: keyData
+                keyData: keyData,
+                schemaVersion: schemaVersion
+            )
+            // A previous database migration may have committed before its
+            // Keychain anchor was written. Validate the authenticated in-DB
+            // marker first, then repair only the missing external anchor.
+            try keyProvider.persistAuthenticatedConsentSchemaVersion(
+                Self.authenticatedConsentSchemaVersion
             )
         }
         try Self.migrateScopeLookupHMACs(
@@ -316,8 +342,14 @@ public actor PersonalizationDatabase {
 
     private static func validateAuthenticatedConsentSchema(
         connection: SQLiteConnection,
-        keyData: Data
+        keyData: Data,
+        schemaVersion: Int
     ) throws {
+        guard schemaVersion == authenticatedConsentSchemaVersion else {
+            throw PersonalizationPersistenceError.database(
+                "Invalid authenticated consent schema version"
+            )
+        }
         let requiredTables = [
             "personalization_event_consent",
             "personalization_schema_state",
@@ -1430,6 +1462,18 @@ public actor PersonalizationDatabase {
         try connection.execute(
             "DROP TABLE personalization_schema_state"
         )
+    }
+
+    func rollBackAuthenticatedConsentSchemaForTesting() throws {
+        try connection.transaction {
+            try connection.execute(
+                "DROP TABLE personalization_event_consent"
+            )
+            try connection.execute(
+                "DROP TABLE personalization_schema_state"
+            )
+            try connection.execute("PRAGMA user_version = 0")
+        }
     }
 
     func prepareMalformedLegacyPendingConsentForTesting(
@@ -2809,6 +2853,7 @@ public actor PersonalizationDatabase {
                 // finalization completed. Startup cannot prove whether a
                 // persisted preference generation was rolled back, so never
                 // promote crash-interrupted data; discard it fail closed.
+                try deleteCompletionEpisodesDependingOnSource(eventID)
                 try connection.execute(
                     """
                     DELETE FROM completion_episode_source
@@ -2832,6 +2877,73 @@ public actor PersonalizationDatabase {
             return PendingConsentReconciliationResult(
                 promotedCount: 0,
                 removedCount: removedCount
+            )
+        }
+    }
+
+    private func deleteCompletionEpisodesDependingOnSource(
+        _ sourceEventID: String
+    ) throws {
+        let rows = try connection.query(
+            """
+            SELECT id, kind, payload_sealed, payload_hmac
+            FROM personalization_event
+            WHERE kind = ?
+            ORDER BY sequence ASC
+            """,
+            bindings: [.text(Self.completionEpisodeKind)]
+        )
+        for row in rows {
+            guard let completionEventID = row.text(at: 0) else {
+                continue
+            }
+            let storedEpisode: StoredCompletionEpisode
+            do {
+                let payload = try validatedEventPayload(
+                    row,
+                    idIndex: 0,
+                    kindIndex: 1,
+                    payloadIndex: 2,
+                    hmacIndex: 3,
+                    expectedKind: Self.completionEpisodeKind
+                )
+                guard
+                    let header = try? decoder.decode(
+                        StoredCompletionEpisodeHeader.self,
+                        from: payload
+                    ),
+                    header.storageVersion
+                        == StoredCompletionEpisode.currentStorageVersion
+                else {
+                    continue
+                }
+                storedEpisode = try decoder.decode(
+                    StoredCompletionEpisode.self,
+                    from: payload
+                )
+            } catch {
+                // A separately corrupt episode is not exportable and cannot
+                // provide authenticated lineage. Leave it for its own recovery
+                // path instead of blocking unrelated consent cleanup.
+                continue
+            }
+            guard
+                storedEpisode.invocation.sourceEventIDs?.contains(
+                    where: { $0.uuidString == sourceEventID }
+                ) == true
+            else {
+                continue
+            }
+            try connection.execute(
+                """
+                DELETE FROM completion_episode_source
+                WHERE source_event_id = ?
+                """,
+                bindings: [.text(completionEventID)]
+            )
+            try connection.execute(
+                "DELETE FROM personalization_event WHERE id = ?",
+                bindings: [.text(completionEventID)]
             )
         }
     }

@@ -27,6 +27,63 @@ final class PersonalizationDatabaseTests: XCTestCase {
         XCTAssertNotEqual(first, Data(repeating: 0, count: 64))
     }
 
+    func testKeychainSchemaAnchorRejectsDatabaseDowngrade()
+        async throws
+    {
+        let provider = KeychainPersonalizationKeyProvider(
+            service: "cx.mia.stenotab.tests.\(UUID().uuidString)",
+            account: "corpus-key"
+        )
+        defer { try? provider.deleteKey() }
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appending(
+            path: "personalization.sqlite"
+        )
+        let database = try PersonalizationDatabase(
+            databaseURL: databaseURL,
+            keyProvider: provider
+        )
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "downgrade must not finalize",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date()
+        )
+        try await database.recordPendingConsent(
+            capture,
+            collectionGeneration: 0
+        )
+        try await database.deletePendingConsentMarkerForTesting(
+            eventID: capture.id
+        )
+        try await database.rollBackAuthenticatedConsentSchemaForTesting()
+
+        XCTAssertThrowsError(
+            try PersonalizationDatabase(
+                databaseURL: databaseURL,
+                keyProvider: provider
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? PersonalizationPersistenceError,
+                .database(
+                    "Invalid authenticated consent schema version"
+                )
+            )
+        }
+    }
+
     func testScopeLookupHMACIsDomainSeparatedFromStoredText() throws {
         let keyData = Data(repeating: 0x42, count: 64)
         let value = "message"
@@ -1959,6 +2016,54 @@ final class PersonalizationDatabaseTests: XCTestCase {
         let completionEpisodes =
             try await fixture.database.completionEpisodes()
         XCTAssertEqual(eventCount, 0)
+        XCTAssertEqual(completionEpisodes, [])
+    }
+
+    func testInvalidSourceConsentCascadesToDependentCompletionEpisode()
+        async throws
+    {
+        let fixture = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let sourceContext = PersonalizationContext(
+            applicationBundleIdentifier: "com.example.Source",
+            editorIdentifier: "source"
+        )
+        let source = try XCTUnwrap(
+            PersonalizationCapture.acceptedSuggestion(
+                id: UUID(),
+                fieldText: "private source",
+                selection: UTF16Selection(location: 14, length: 0),
+                insertion: " text",
+                acceptanceScope: .entireSuggestion,
+                context: sourceContext,
+                capturedAt: Date(timeIntervalSince1970: 860)
+            )
+        )
+        let dependent = makeCompletionEpisode(
+            id: UUID(),
+            input: "dependent prompt",
+            suggestion: " dependent suggestion",
+            outcome: "",
+            date: Date(timeIntervalSince1970: 861),
+            sourceEventIDs: [source.id],
+            sourceContexts: [sourceContext]
+        )
+        try await fixture.database.record(source)
+        try await fixture.database.record(dependent)
+        try await fixture.database
+            .corruptAuthenticatedConsentStateForTesting(
+                eventID: source.id
+            )
+
+        _ = try await fixture.database.reconcilePendingConsentEvents(
+            collectionGeneration: 0,
+            directTypingGeneration: 0
+        )
+
+        let eventCount = try await fixture.database.eventCount()
+        XCTAssertEqual(eventCount, 0)
+        let completionEpisodes =
+            try await fixture.database.completionEpisodes()
         XCTAssertEqual(completionEpisodes, [])
     }
 

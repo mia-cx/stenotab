@@ -60,11 +60,24 @@ public struct SuggestionConsumption: Sendable, Equatable {
     ) -> Outcome {
         streamed = Array(suggestion)
         self.isFinal = isFinal
+        if
+            confirmedConsumedCount < consumed.count,
+            streamed.count > confirmedConsumedCount
+        {
+            // Text typed before it was streamed is direct writing. Once a
+            // later chunk reaches that run-ahead span, end this association
+            // instead of retroactively claiming it or showing a suffix whose
+            // provenance can no longer be represented as one matched prefix.
+            return .diverged
+        }
         return evaluate()
     }
 
     public mutating func finishStreaming() -> Outcome {
         isFinal = true
+        if confirmedConsumedCount < consumed.count {
+            return .diverged
+        }
         return evaluate()
     }
 

@@ -276,7 +276,9 @@ final class CompletionCoordinator: NSObject {
             pendingCompletionEpisodeResolution != nil
             || completionEpisodeTracker.activeInvocationID != nil
         let shouldObserveWriting =
-            wasEnabled && writingHistoryCollectionIsEnabled()
+            wasEnabled
+            && policyAllowsCurrentApplication()
+            && writingHistoryCollectionIsEnabled()
         let shutdownSnapshot =
             (hasActiveCompletionEpisode || shouldObserveWriting)
             ? accessibility.snapshot()
@@ -404,7 +406,9 @@ final class CompletionCoordinator: NSObject {
             // Take the last available authoritative observation before the
             // disabled-state guard begins discarding unsettled episodes.
             reconcile()
-            finalizeWritingHistoryBeforeDisabling()
+            finalizeWritingHistoryBeforeCollectionPause(
+                boundary: .collectionDisabled
+            )
         }
         enabled.toggle()
         sender.state = enabled ? .on : .off
@@ -421,6 +425,11 @@ final class CompletionCoordinator: NSObject {
     }
 
     func applicationPolicyDidChange() {
+        if !policyAllowsCurrentApplication() {
+            finalizeWritingHistoryBeforeCollectionPause(
+                boundary: .applicationDisabled
+            )
+        }
         invalidatePendingCompletion()
         clearOCRContext()
         clearSuggestion(
@@ -719,7 +728,7 @@ final class CompletionCoordinator: NSObject {
         guard policyAllowsCurrentApplication() else {
             invalidatePendingCompletion()
             clearOCRContext()
-            discardPendingCompletionEpisode()
+            reconcilePendingCompletionEpisodeWhileDisabled()
             clearSuggestion(
                 resolution:
                     completionEpisodeTracker.abandonedSuggestionResolution
@@ -902,7 +911,9 @@ final class CompletionCoordinator: NSObject {
         }
     }
 
-    private func finalizeWritingHistoryBeforeDisabling() {
+    private func finalizeWritingHistoryBeforeCollectionPause(
+        boundary: WritingEpisodeBoundary
+    ) {
         guard writingHistoryCollectionIsEnabled() else {
             writingHistoryTracker = WritingHistoryTracker()
             return
@@ -920,7 +931,7 @@ final class CompletionCoordinator: NSObject {
             at: now
         )
         if let completed = writingHistoryTracker.finalize(
-            boundary: .collectionDisabled,
+            boundary: boundary,
             at: now
         ) {
             onWritingEpisode(completed)
