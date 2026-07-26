@@ -1,10 +1,64 @@
 import CompletionCore
 import Foundation
-import StenoTabPersistence
+@testable import StenoTabPersistence
 @testable import StenoTab
 import XCTest
 
 final class PersonalizationIntegrationTests: XCTestCase {
+    func testInFlightRecordIsRemovedWhenConsentIsRevoked()
+        async throws
+    {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let consentEpoch = PersonalizationConsentEpoch()
+        let worker = PersonalizationModelWorker(
+            database: database,
+            collectionConsentEpoch: consentEpoch
+        )
+        _ = try await worker.prepare()
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "RevokedUniqueToken",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date()
+        )
+        await worker.setRecordDidPersistForTesting {
+            consentEpoch.advance(to: 1)
+        }
+
+        let model = try await worker.record(
+            capture,
+            retentionPolicy: PersonalizationRetentionPolicy(
+                maximumAge: nil,
+                maximumEncryptedBytes: nil
+            ),
+            generation: 0,
+            consentGeneration: 0
+        )
+
+        let storedSuggestions = try await database.acceptedSuggestions()
+        XCTAssertEqual(storedSuggestions, [])
+        XCTAssertEqual(model.vocabularyEntries(), [])
+    }
+
     @MainActor
     func testDisablingCollectionCancelsPersonalizationConsumers() throws {
         let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
@@ -869,17 +923,80 @@ final class PersonalizationIntegrationTests: XCTestCase {
         XCTAssertEqual(storedSuggestions, [])
     }
 
+    @MainActor
+    func testFailedDeleteRecoversStoreAndAllowsLaterWrites() async throws {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        store.attach(database: database)
+        await store.flushPendingPersistence()
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        let episode = makeCompletionEpisode(
+            context: context,
+            index: 99,
+            collectionGeneration: store.captureGeneration,
+            initialText:
+                (0..<400).map { "private chunk \($0) " }.joined()
+        )
+        try await database.record(episode)
+        let swapped =
+            try await database.swapFirstTwoTextChunkPayloadsForTesting()
+        XCTAssertTrue(swapped)
+
+        store.deleteEvent(id: episode.id)
+        await store.flushPendingPersistence()
+
+        XCTAssertNotNil(store.operationError)
+        XCTAssertEqual(store.storedEventCount, 1)
+        let laterCapture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "RecoveryUniqueToken",
+            acceptanceScope: .entireSuggestion,
+            context: context,
+            capturedAt: Date()
+        )
+        store.record(laterCapture)
+        await store.flushPendingPersistence()
+
+        let storedSuggestions = try await database.acceptedSuggestions()
+        XCTAssertEqual(storedSuggestions.map(\.id), [laterCapture.id])
+    }
+
     private func makeCompletionEpisode(
         context: PersonalizationContext,
         index: Int,
         collectionGeneration: UInt64? = nil,
-        date suppliedDate: Date? = nil
+        date suppliedDate: Date? = nil,
+        initialText suppliedInitialText: String? = nil
     ) -> CompletionEpisodeCapture {
         let date =
             suppliedDate
             ?? Date(timeIntervalSince1970: 1_000 + Double(index))
         let id = UUID()
-        let initialText = "quasarUniqueToken input \(index)"
+        let initialText =
+            suppliedInitialText ?? "quasarUniqueToken input \(index)"
         let finalText = initialText + " generatedUniqueToken\(index)"
         return CompletionEpisodeCapture(
             id: id,

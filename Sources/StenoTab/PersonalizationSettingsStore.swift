@@ -3,6 +3,27 @@ import Foundation
 import NaturalLanguage
 import StenoTabPersistence
 
+final class PersonalizationConsentEpoch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generation: UInt64
+
+    init(generation: UInt64 = 0) {
+        self.generation = generation
+    }
+
+    var current: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return generation
+    }
+
+    func advance(to generation: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.generation = max(self.generation, generation)
+    }
+}
+
 @MainActor
 final class PersonalizationSettingsStore: ObservableObject {
     private enum RecentHistoryKind {
@@ -33,13 +54,7 @@ final class PersonalizationSettingsStore: ObservableObject {
             if oldValue, !collectionEnabled {
                 collectionConsentGeneration &+= 1
                 let consentGeneration = collectionConsentGeneration
-                if let modelWorker {
-                    Task {
-                        await modelWorker.advanceConsentGeneration(
-                            to: consentGeneration
-                        )
-                    }
-                }
+                collectionConsentEpoch.advance(to: consentGeneration)
                 onHistoryReset?()
             }
         }
@@ -92,6 +107,7 @@ final class PersonalizationSettingsStore: ObservableObject {
     private let defaults: UserDefaults
     private var collectionGeneration: UInt64 = 0
     private var collectionConsentGeneration: UInt64 = 0
+    private let collectionConsentEpoch = PersonalizationConsentEpoch()
     private var derivedPersonalizationIsInvalidated = false
     private var completionEpisodeDeleteAllBoundary: Date?
     private var completionEpisodeApplicationDeletionBoundaries:
@@ -128,7 +144,7 @@ final class PersonalizationSettingsStore: ObservableObject {
         self.database = database
         let worker = PersonalizationModelWorker(
             database: database,
-            collectionConsentGeneration: collectionConsentGeneration
+            collectionConsentEpoch: collectionConsentEpoch
         )
         modelWorker = worker
         enqueuePersistenceOperation { [self] in
@@ -240,7 +256,6 @@ final class PersonalizationSettingsStore: ObservableObject {
                 operationError = nil
             } catch {
                 if
-                    generation == collectionGeneration,
                     completionEpisodeDeleteAllBoundary == attemptedBoundary
                 {
                     completionEpisodeDeleteAllBoundary = previousBoundary
@@ -277,6 +292,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 guard
                     generation == collectionGeneration,
+                    collectionEnabled,
+                    consentGeneration == collectionConsentGeneration,
                     !derivedPersonalizationIsInvalidated
                 else {
                     return
@@ -321,6 +338,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 guard
                     generation == collectionGeneration,
+                    collectionEnabled,
+                    consentGeneration == collectionConsentGeneration,
                     !derivedPersonalizationIsInvalidated
                 else {
                     return
@@ -358,6 +377,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 guard
                     generation == collectionGeneration,
+                    collectionEnabled,
+                    consentGeneration == collectionConsentGeneration,
                     !derivedPersonalizationIsInvalidated
                 else {
                     return
@@ -411,6 +432,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 guard
                     generation == collectionGeneration,
+                    collectionEnabled,
+                    consentGeneration == collectionConsentGeneration,
                     !derivedPersonalizationIsInvalidated
                 else {
                     return
@@ -502,7 +525,6 @@ final class PersonalizationSettingsStore: ObservableObject {
                 refresh()
             } catch {
                 if
-                    generation == collectionGeneration,
                     completionEpisodeApplicationDeletionBoundaries[
                         bundleIdentifier
                     ] == attemptedBoundary
@@ -723,17 +745,21 @@ actor PersonalizationModelWorker {
     private var voiceSourceEventCount = 0
     private var voiceSources: [VoiceSource] = []
     private var collectionGeneration: UInt64 = 0
-    private var collectionConsentGeneration: UInt64
+    private let collectionConsentEpoch: PersonalizationConsentEpoch
     private var collectionOperationIsRunning = false
     private var collectionOperationWaiters:
         [CheckedContinuation<Void, Never>] = []
+#if DEBUG
+    private var recordDidPersistForTesting: (@Sendable () -> Void)?
+#endif
 
     init(
         database: PersonalizationDatabase,
-        collectionConsentGeneration: UInt64 = 0
+        collectionConsentEpoch: PersonalizationConsentEpoch =
+            PersonalizationConsentEpoch()
     ) {
         self.database = database
-        self.collectionConsentGeneration = collectionConsentGeneration
+        self.collectionConsentEpoch = collectionConsentEpoch
     }
 
     func prepare() async throws -> PersonalLanguageModel {
@@ -749,12 +775,13 @@ actor PersonalizationModelWorker {
         return model
     }
 
-    func advanceConsentGeneration(to generation: UInt64) {
-        collectionConsentGeneration = max(
-            collectionConsentGeneration,
-            generation
-        )
+#if DEBUG
+    func setRecordDidPersistForTesting(
+        _ callback: @escaping @Sendable () -> Void
+    ) {
+        recordDidPersistForTesting = callback
     }
+#endif
 
     func record(
         _ capture: AcceptedSuggestionCapture,
@@ -766,12 +793,16 @@ actor PersonalizationModelWorker {
         defer { releaseCollectionOperation() }
         guard
             generation == collectionGeneration,
-            consentGeneration >= collectionConsentGeneration
+            consentGeneration == collectionConsentEpoch.current
         else {
             return model
         }
-        collectionConsentGeneration = consentGeneration
         try await database.record(capture)
+#if DEBUG
+        let didPersist = recordDidPersistForTesting
+        recordDidPersistForTesting = nil
+        didPersist?()
+#endif
         model.ingest(capture)
         try await database.saveLanguageModel(model)
         let example = PersonalizationExample(capture)
@@ -784,7 +815,13 @@ actor PersonalizationModelWorker {
         try await updateVoiceAssessmentIfNeeded()
         let removed = try await database.enforceRetention(retentionPolicy)
         if removed > 0 {
-            return try await rebuild()
+            _ = try await rebuild()
+        }
+        if let revokedModel = try await removeRecordIfConsentRevoked(
+            id: capture.id,
+            consentGeneration: consentGeneration
+        ) {
+            return revokedModel
         }
         return model
     }
@@ -799,17 +836,23 @@ actor PersonalizationModelWorker {
         defer { releaseCollectionOperation() }
         guard
             generation == collectionGeneration,
-            consentGeneration >= collectionConsentGeneration
+            consentGeneration == collectionConsentEpoch.current
         else {
             return model
         }
-        collectionConsentGeneration = consentGeneration
         try await database.record(episode)
         model.ingest(episode)
         try await database.saveLanguageModel(model)
         let removed = try await database.enforceRetention(retentionPolicy)
         if removed > 0 {
-            return try await rebuild()
+            _ = try await rebuild()
+            if let revokedModel = try await removeRecordIfConsentRevoked(
+                id: episode.id,
+                consentGeneration: consentGeneration
+            ) {
+                return revokedModel
+            }
+            return model
         }
         examples.append(
             contentsOf: PersonalizationExample.directlyTyped(from: episode)
@@ -818,6 +861,12 @@ actor PersonalizationModelWorker {
         voiceSourceEventCount += 1
         appendVoiceSource(id: episode.id, context: episode.context)
         try await updateVoiceAssessmentIfNeeded()
+        if let revokedModel = try await removeRecordIfConsentRevoked(
+            id: episode.id,
+            consentGeneration: consentGeneration
+        ) {
+            return revokedModel
+        }
         return model
     }
 
@@ -831,17 +880,22 @@ actor PersonalizationModelWorker {
         defer { releaseCollectionOperation() }
         guard
             generation == collectionGeneration,
-            consentGeneration >= collectionConsentGeneration
+            consentGeneration == collectionConsentEpoch.current
         else {
             return model
         }
-        collectionConsentGeneration = consentGeneration
         try await database.record(feedback)
         model.ingest(feedback)
         try await database.saveLanguageModel(model)
         let removed = try await database.enforceRetention(retentionPolicy)
         if removed > 0 {
-            return try await rebuild()
+            _ = try await rebuild()
+        }
+        if let revokedModel = try await removeRecordIfConsentRevoked(
+            id: feedback.id,
+            consentGeneration: consentGeneration
+        ) {
+            return revokedModel
         }
         return model
     }
@@ -856,17 +910,33 @@ actor PersonalizationModelWorker {
         defer { releaseCollectionOperation() }
         guard
             generation == collectionGeneration,
-            consentGeneration >= collectionConsentGeneration
+            consentGeneration == collectionConsentEpoch.current
         else {
             return model
         }
-        collectionConsentGeneration = consentGeneration
         try await database.record(episode)
         let removed = try await database.enforceRetention(retentionPolicy)
         if removed > 0 {
-            return try await rebuild()
+            _ = try await rebuild()
+        }
+        if let revokedModel = try await removeRecordIfConsentRevoked(
+            id: episode.id,
+            consentGeneration: consentGeneration
+        ) {
+            return revokedModel
         }
         return model
+    }
+
+    private func removeRecordIfConsentRevoked(
+        id: UUID,
+        consentGeneration: UInt64
+    ) async throws -> PersonalLanguageModel? {
+        guard consentGeneration != collectionConsentEpoch.current else {
+            return nil
+        }
+        try await database.deleteEvent(id: id)
+        return try await rebuild()
     }
 
     func deleteEvent(
