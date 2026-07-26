@@ -42,6 +42,10 @@ public struct LocalModelProfile: Codable, Sendable, Equatable, Identifiable {
         "stenotab/\(id)"
     }
 
+    public var isMLXCheckpoint: Bool {
+        modelFile == nil
+    }
+
     public var compatibleServerModelIDs: Set<String> {
         Set(
             [serverModelID, repository, modelFile]
@@ -54,13 +58,12 @@ public enum LocalModelProfiles {
     public static let all: [LocalModelProfile] = [
         LocalModelProfile(
             id: "gemma-4-e2b-base",
-            displayName: "Gemma 4 E2B Base · Recommended",
-            repository: "mradermacher/gemma-4-E2B-GGUF",
-            modelFile: "gemma-4-E2B.Q4_K_M.gguf",
+            displayName: "Gemma 4 E2B Base · 4-bit",
+            repository: "mlx-community/gemma-4-e2b-4bit",
             apiStyle: .textCompletions,
             minimumUnifiedMemoryGB: 16,
             supportsImages: false,
-            qualityNote: "Recommended Q4_K_M model for user-voice continuation."
+            qualityNote: "Recommended for fast, local text completion."
         ),
     ]
 
