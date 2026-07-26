@@ -65,6 +65,12 @@ final class PersonalizationSettingsStore: ObservableObject {
                 collectDirectTyping,
                 forKey: Keys.collectDirectTyping
             )
+            if oldValue, !collectDirectTyping {
+                collectionConsentGeneration &+= 1
+                collectionConsentEpoch.advance(
+                    to: collectionConsentGeneration
+                )
+            }
         }
     }
     @Published var useLocalCompletions: Bool {
@@ -147,11 +153,19 @@ final class PersonalizationSettingsStore: ObservableObject {
             collectionConsentEpoch: collectionConsentEpoch
         )
         modelWorker = worker
+        let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
             do {
-                languageModel = try await worker.prepare()
-                voiceAssessment = await worker.voiceAssessmentSnapshot()
-                refreshStatistics()
+                let preparedModel = try await worker.prepare()
+                let preparedVoiceAssessment =
+                    await worker.voiceAssessmentSnapshot()
+                let statistics = try await database.storageStatistics()
+                guard generation == collectionGeneration else { return }
+                languageModel = preparedModel
+                voiceAssessment = preparedVoiceAssessment
+                storedEventCount = statistics.eventCount
+                encryptedPayloadBytes = statistics.encryptedPayloadBytes
+                operationError = nil
             } catch {
                 operationError = String(describing: error)
             }
@@ -160,19 +174,24 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func refresh() {
         guard let database else { return }
+        let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
             do {
                 let statistics = try await database.storageStatistics()
+                let episodes = try await database.writingEpisodes(
+                    limit: 20
+                )
+                let acceptedSuggestions =
+                    try await database.acceptedSuggestions(limit: 20)
+                let completionEpisodes =
+                    try await database.completionEpisodes(limit: 20)
+                guard generation == collectionGeneration else { return }
                 storedEventCount = statistics.eventCount
                 encryptedPayloadBytes =
                     statistics.encryptedPayloadBytes
-                recentEpisodes = try await database.writingEpisodes(
-                    limit: 20
-                )
-                recentAcceptedSuggestions =
-                    try await database.acceptedSuggestions(limit: 20)
-                recentCompletionEpisodes =
-                    try await database.completionEpisodes(limit: 20)
+                recentEpisodes = episodes
+                recentAcceptedSuggestions = acceptedSuggestions
+                recentCompletionEpisodes = completionEpisodes
                 operationError = nil
             } catch {
                 operationError = String(describing: error)
@@ -187,44 +206,65 @@ final class PersonalizationSettingsStore: ObservableObject {
         }
     }
 
-    private func refreshStatistics() {
-        guard let database else { return }
-        Task {
-            do {
-                let statistics = try await database.storageStatistics()
-                storedEventCount = statistics.eventCount
-                encryptedPayloadBytes =
-                    statistics.encryptedPayloadBytes
-                operationError = nil
-            } catch {
-                operationError = String(describing: error)
-            }
-        }
-    }
-
     private func refreshAfterRecording(
-        _ historyKind: RecentHistoryKind
+        _ historyKind: RecentHistoryKind,
+        generation: UInt64,
+        consentGeneration: UInt64
     ) async throws {
         guard let database else { return }
         let statistics = try await database.storageStatistics()
-        storedEventCount = statistics.eventCount
-        encryptedPayloadBytes = statistics.encryptedPayloadBytes
-
-        guard isHistoryInspectorVisible else {
+        let inspectorWasVisible = isHistoryInspectorVisible
+        var acceptedSuggestions:
+            [AcceptedSuggestionCapture]?
+        var completionEpisodes:
+            [CompletionEpisodeCapture]?
+        var writingEpisodes:
+            [WritingEpisodeCapture]?
+        guard inspectorWasVisible else {
+            guard
+                generation == collectionGeneration,
+                collectionEnabled,
+                consentGeneration == collectionConsentGeneration,
+                !derivedPersonalizationIsInvalidated
+            else {
+                return
+            }
+            storedEventCount = statistics.eventCount
+            encryptedPayloadBytes = statistics.encryptedPayloadBytes
             operationError = nil
             return
         }
         switch historyKind {
         case .acceptedSuggestions:
-            recentAcceptedSuggestions =
+            acceptedSuggestions =
                 try await database.acceptedSuggestions(limit: 20)
         case .completionEpisodes:
-            recentCompletionEpisodes =
+            completionEpisodes =
                 try await database.completionEpisodes(limit: 20)
         case .none:
             break
         case .writingEpisodes:
-            recentEpisodes = try await database.writingEpisodes(limit: 20)
+            writingEpisodes =
+                try await database.writingEpisodes(limit: 20)
+        }
+        guard
+            generation == collectionGeneration,
+            collectionEnabled,
+            consentGeneration == collectionConsentGeneration,
+            !derivedPersonalizationIsInvalidated
+        else {
+            return
+        }
+        storedEventCount = statistics.eventCount
+        encryptedPayloadBytes = statistics.encryptedPayloadBytes
+        if let acceptedSuggestions {
+            recentAcceptedSuggestions = acceptedSuggestions
+        }
+        if let completionEpisodes {
+            recentCompletionEpisodes = completionEpisodes
+        }
+        if let writingEpisodes {
+            recentEpisodes = writingEpisodes
         }
         operationError = nil
     }
@@ -290,6 +330,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                     generation: generation,
                     consentGeneration: consentGeneration
                 )
+                let updatedVoiceAssessment =
+                    await modelWorker.voiceAssessmentSnapshot()
                 guard
                     generation == collectionGeneration,
                     collectionEnabled,
@@ -299,9 +341,12 @@ final class PersonalizationSettingsStore: ObservableObject {
                     return
                 }
                 languageModel = updatedModel
-                voiceAssessment =
-                    await modelWorker.voiceAssessmentSnapshot()
-                try await refreshAfterRecording(.acceptedSuggestions)
+                voiceAssessment = updatedVoiceAssessment
+                try await refreshAfterRecording(
+                    .acceptedSuggestions,
+                    generation: generation,
+                    consentGeneration: consentGeneration
+                )
             } catch {
                 operationError = String(describing: error)
             }
@@ -336,6 +381,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                     generation: generation,
                     consentGeneration: consentGeneration
                 )
+                let updatedVoiceAssessment =
+                    await modelWorker.voiceAssessmentSnapshot()
                 guard
                     generation == collectionGeneration,
                     collectionEnabled,
@@ -345,9 +392,12 @@ final class PersonalizationSettingsStore: ObservableObject {
                     return
                 }
                 languageModel = updatedModel
-                voiceAssessment =
-                    await modelWorker.voiceAssessmentSnapshot()
-                try await refreshAfterRecording(.writingEpisodes)
+                voiceAssessment = updatedVoiceAssessment
+                try await refreshAfterRecording(
+                    .writingEpisodes,
+                    generation: generation,
+                    consentGeneration: consentGeneration
+                )
             } catch {
                 operationError = String(describing: error)
             }
@@ -384,7 +434,11 @@ final class PersonalizationSettingsStore: ObservableObject {
                     return
                 }
                 languageModel = updatedModel
-                try await refreshAfterRecording(.none)
+                try await refreshAfterRecording(
+                    .none,
+                    generation: generation,
+                    consentGeneration: consentGeneration
+                )
             } catch {
                 operationError = String(describing: error)
             }
@@ -439,7 +493,11 @@ final class PersonalizationSettingsStore: ObservableObject {
                     return
                 }
                 languageModel = updatedModel
-                try await refreshAfterRecording(.completionEpisodes)
+                try await refreshAfterRecording(
+                    .completionEpisodes,
+                    generation: generation,
+                    consentGeneration: consentGeneration
+                )
             } catch {
                 operationError = String(describing: error)
             }
@@ -480,10 +538,11 @@ final class PersonalizationSettingsStore: ObservableObject {
                     id: id,
                     generation: generation
                 )
+                let rebuiltVoiceAssessment =
+                    await modelWorker.voiceAssessmentSnapshot()
                 guard generation == collectionGeneration else { return }
                 languageModel = rebuiltModel
-                voiceAssessment =
-                    await modelWorker.voiceAssessmentSnapshot()
+                voiceAssessment = rebuiltVoiceAssessment
                 finishDerivedPersonalizationInvalidation(
                     generation: generation
                 )
@@ -515,10 +574,11 @@ final class PersonalizationSettingsStore: ObservableObject {
                     value: bundleIdentifier,
                     generation: generation
                 )
+                let rebuiltVoiceAssessment =
+                    await modelWorker.voiceAssessmentSnapshot()
                 guard generation == collectionGeneration else { return }
                 languageModel = rebuiltModel
-                voiceAssessment =
-                    await modelWorker.voiceAssessmentSnapshot()
+                voiceAssessment = rebuiltVoiceAssessment
                 finishDerivedPersonalizationInvalidation(
                     generation: generation
                 )
@@ -578,10 +638,11 @@ final class PersonalizationSettingsStore: ObservableObject {
                     policy,
                     generation: generation
                 )
+                let rebuiltVoiceAssessment =
+                    await modelWorker.voiceAssessmentSnapshot()
                 guard generation == collectionGeneration else { return }
                 languageModel = rebuiltModel
-                voiceAssessment =
-                    await modelWorker.voiceAssessmentSnapshot()
+                voiceAssessment = rebuiltVoiceAssessment
                 finishDerivedPersonalizationInvalidation(
                     generation: generation
                 )
@@ -621,12 +682,25 @@ final class PersonalizationSettingsStore: ObservableObject {
             return
         }
         do {
-            languageModel = try await modelWorker.prepare()
-            voiceAssessment = await modelWorker.voiceAssessmentSnapshot()
-            if let database {
-                let statistics = try await database.storageStatistics()
-                storedEventCount = statistics.eventCount
-                encryptedPayloadBytes = statistics.encryptedPayloadBytes
+            let recoveredModel = try await modelWorker.prepare()
+            let recoveredVoiceAssessment =
+                await modelWorker.voiceAssessmentSnapshot()
+            let recoveredStatistics: PersonalizationStorageStatistics? =
+                if let database {
+                    try await database.storageStatistics()
+                } else {
+                    nil
+                }
+            guard generation == collectionGeneration else {
+                operationError = originalErrorDescription
+                return
+            }
+            languageModel = recoveredModel
+            voiceAssessment = recoveredVoiceAssessment
+            if let recoveredStatistics {
+                storedEventCount = recoveredStatistics.eventCount
+                encryptedPayloadBytes =
+                    recoveredStatistics.encryptedPayloadBytes
             }
             finishDerivedPersonalizationInvalidation(
                 generation: generation
@@ -803,6 +877,12 @@ actor PersonalizationModelWorker {
         recordDidPersistForTesting = nil
         didPersist?()
 #endif
+        if let revokedModel = try await removeRecordIfConsentRevoked(
+            id: capture.id,
+            consentGeneration: consentGeneration
+        ) {
+            return revokedModel
+        }
         model.ingest(capture)
         try await database.saveLanguageModel(model)
         let example = PersonalizationExample(capture)
@@ -816,12 +896,6 @@ actor PersonalizationModelWorker {
         let removed = try await database.enforceRetention(retentionPolicy)
         if removed > 0 {
             _ = try await rebuild()
-        }
-        if let revokedModel = try await removeRecordIfConsentRevoked(
-            id: capture.id,
-            consentGeneration: consentGeneration
-        ) {
-            return revokedModel
         }
         return model
     }
@@ -841,17 +915,22 @@ actor PersonalizationModelWorker {
             return model
         }
         try await database.record(episode)
+#if DEBUG
+        let didPersist = recordDidPersistForTesting
+        recordDidPersistForTesting = nil
+        didPersist?()
+#endif
+        if let revokedModel = try await removeRecordIfConsentRevoked(
+            id: episode.id,
+            consentGeneration: consentGeneration
+        ) {
+            return revokedModel
+        }
         model.ingest(episode)
         try await database.saveLanguageModel(model)
         let removed = try await database.enforceRetention(retentionPolicy)
         if removed > 0 {
             _ = try await rebuild()
-            if let revokedModel = try await removeRecordIfConsentRevoked(
-                id: episode.id,
-                consentGeneration: consentGeneration
-            ) {
-                return revokedModel
-            }
             return model
         }
         examples.append(
@@ -861,12 +940,6 @@ actor PersonalizationModelWorker {
         voiceSourceEventCount += 1
         appendVoiceSource(id: episode.id, context: episode.context)
         try await updateVoiceAssessmentIfNeeded()
-        if let revokedModel = try await removeRecordIfConsentRevoked(
-            id: episode.id,
-            consentGeneration: consentGeneration
-        ) {
-            return revokedModel
-        }
         return model
     }
 
@@ -885,17 +958,17 @@ actor PersonalizationModelWorker {
             return model
         }
         try await database.record(feedback)
-        model.ingest(feedback)
-        try await database.saveLanguageModel(model)
-        let removed = try await database.enforceRetention(retentionPolicy)
-        if removed > 0 {
-            _ = try await rebuild()
-        }
         if let revokedModel = try await removeRecordIfConsentRevoked(
             id: feedback.id,
             consentGeneration: consentGeneration
         ) {
             return revokedModel
+        }
+        model.ingest(feedback)
+        try await database.saveLanguageModel(model)
+        let removed = try await database.enforceRetention(retentionPolicy)
+        if removed > 0 {
+            _ = try await rebuild()
         }
         return model
     }
@@ -915,15 +988,15 @@ actor PersonalizationModelWorker {
             return model
         }
         try await database.record(episode)
-        let removed = try await database.enforceRetention(retentionPolicy)
-        if removed > 0 {
-            _ = try await rebuild()
-        }
         if let revokedModel = try await removeRecordIfConsentRevoked(
             id: episode.id,
             consentGeneration: consentGeneration
         ) {
             return revokedModel
+        }
+        let removed = try await database.enforceRetention(retentionPolicy)
+        if removed > 0 {
+            _ = try await rebuild()
         }
         return model
     }

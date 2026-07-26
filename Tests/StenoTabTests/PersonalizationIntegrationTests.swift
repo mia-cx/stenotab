@@ -59,6 +59,79 @@ final class PersonalizationIntegrationTests: XCTestCase {
         XCTAssertEqual(model.vocabularyEntries(), [])
     }
 
+    func testInFlightWritingRecordIsRemovedWhenConsentIsRevoked()
+        async throws
+    {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let consentEpoch = PersonalizationConsentEpoch()
+        let worker = PersonalizationModelWorker(
+            database: database,
+            collectionConsentEpoch: consentEpoch
+        )
+        _ = try await worker.prepare()
+        let date = Date()
+        let initial = CapturedFieldState(
+            text: "",
+            selection: UTF16Selection(location: 0, length: 0)
+        )
+        let final = CapturedFieldState(
+            text: "RevokedDirectToken",
+            selection: UTF16Selection(location: 18, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: final,
+            edits: [
+                WritingEditCapture(
+                    insertedText: final.text,
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: final.selection,
+                    fieldBefore: initial,
+                    fieldAfter: final,
+                    startedAt: date,
+                    endedAt: date
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date,
+            boundary: .submitted
+        )
+        await worker.setRecordDidPersistForTesting {
+            consentEpoch.advance(to: 1)
+        }
+
+        let model = try await worker.record(
+            episode,
+            retentionPolicy: PersonalizationRetentionPolicy(
+                maximumAge: nil,
+                maximumEncryptedBytes: nil
+            ),
+            generation: 0,
+            consentGeneration: 0
+        )
+
+        let storedEpisodes = try await database.writingEpisodes()
+        XCTAssertEqual(storedEpisodes, [])
+        XCTAssertEqual(model.vocabularyEntries(), [])
+    }
+
     @MainActor
     func testDisablingCollectionCancelsPersonalizationConsumers() throws {
         let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
