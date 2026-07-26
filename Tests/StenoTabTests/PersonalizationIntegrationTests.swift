@@ -95,6 +95,187 @@ final class PersonalizationIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testDisableBeforeAttachCanImmediatelyResumeCollection()
+        async throws
+    {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        store.collectionEnabled = false
+        store.attach(database: database)
+        await store.flushPendingPersistence()
+        store.collectionEnabled = true
+        let capture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "ResumedUniqueToken",
+            acceptanceScope: .entireSuggestion,
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            capturedAt: Date()
+        )
+
+        store.record(capture)
+        await store.flushPendingPersistence()
+
+        let storedSuggestions = try await database.acceptedSuggestions()
+        XCTAssertEqual(storedSuggestions.map(\.id), [capture.id])
+    }
+
+    @MainActor
+    func testDisablingCollectionDoesNotStrandSuccessfulDeleteAll()
+        async throws
+    {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        store.attach(database: database)
+        await store.flushPendingPersistence()
+        let context = PersonalizationContext(editorIdentifier: "editor")
+        let oldCapture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "OldUniqueToken",
+            acceptanceScope: .entireSuggestion,
+            context: context,
+            capturedAt: Date()
+        )
+        store.record(oldCapture)
+        await store.flushPendingPersistence()
+
+        store.deleteAll()
+        store.collectionEnabled = false
+        await store.flushPendingPersistence()
+
+        let suggestionsAfterDelete =
+            try await database.acceptedSuggestions()
+        XCTAssertEqual(suggestionsAfterDelete, [])
+        XCTAssertEqual(store.vocabularyEntries, [])
+        store.collectionEnabled = true
+        let newCapture = AcceptedSuggestionCapture(
+            id: UUID(),
+            field: CapturedFieldState(
+                text: "",
+                selection: UTF16Selection(location: 0, length: 0)
+            ),
+            insertion: "NewUniqueToken",
+            acceptanceScope: .entireSuggestion,
+            context: context,
+            capturedAt: Date()
+        )
+        store.record(newCapture)
+        await store.flushPendingPersistence()
+
+        let storedSuggestions = try await database.acceptedSuggestions()
+        XCTAssertEqual(storedSuggestions.map(\.id), [newCapture.id])
+    }
+
+    @MainActor
+    func testQueuedWritingEpisodeHonorsDirectTypingToggle() async throws {
+        let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: suiteName)
+        )
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try PersonalizationDatabase(
+            databaseURL: directory.appending(
+                path: "personalization.sqlite"
+            ),
+            keyProvider: StaticPersonalizationKeyProvider(
+                keyData: Data(repeating: 0x42, count: 64)
+            )
+        )
+        let store = PersonalizationSettingsStore(defaults: defaults)
+        store.attach(database: database)
+        await store.flushPendingPersistence()
+        let date = Date()
+        let initial = CapturedFieldState(
+            text: "",
+            selection: UTF16Selection(location: 0, length: 0)
+        )
+        let final = CapturedFieldState(
+            text: "DirectUniqueToken",
+            selection: UTF16Selection(location: 17, length: 0)
+        )
+        let episode = WritingEpisodeCapture(
+            id: UUID(),
+            initialField: initial,
+            finalField: final,
+            edits: [
+                WritingEditCapture(
+                    insertedText: final.text,
+                    provenance: .directlyTyped,
+                    selectionBefore: initial.selection,
+                    selectionAfter: final.selection,
+                    fieldBefore: initial,
+                    fieldAfter: final,
+                    startedAt: date,
+                    endedAt: date
+                ),
+            ],
+            context: PersonalizationContext(editorIdentifier: "editor"),
+            startedAt: date,
+            endedAt: date,
+            boundary: .submitted
+        )
+
+        store.record(episode)
+        store.collectDirectTyping = false
+        await store.flushPendingPersistence()
+
+        let storedEpisodes = try await database.writingEpisodes()
+        XCTAssertEqual(storedEpisodes, [])
+    }
+
+    @MainActor
     func testSettingsLoadDisablesLegacyClipboardAndOCROptIns() throws {
         let suiteName = "cx.mia.stenotab.tests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(

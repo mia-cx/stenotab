@@ -31,12 +31,12 @@ final class PersonalizationSettingsStore: ObservableObject {
                 forKey: Keys.collectionEnabled
             )
             if oldValue, !collectionEnabled {
-                collectionGeneration &+= 1
-                let generation = collectionGeneration
+                collectionConsentGeneration &+= 1
+                let consentGeneration = collectionConsentGeneration
                 if let modelWorker {
                     Task {
-                        await modelWorker.advanceCollectionGeneration(
-                            to: generation
+                        await modelWorker.advanceConsentGeneration(
+                            to: consentGeneration
                         )
                     }
                 }
@@ -91,6 +91,7 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     private let defaults: UserDefaults
     private var collectionGeneration: UInt64 = 0
+    private var collectionConsentGeneration: UInt64 = 0
     private var derivedPersonalizationIsInvalidated = false
     private var completionEpisodeDeleteAllBoundary: Date?
     private var completionEpisodeApplicationDeletionBoundaries:
@@ -125,7 +126,10 @@ final class PersonalizationSettingsStore: ObservableObject {
 
     func attach(database: PersonalizationDatabase) {
         self.database = database
-        let worker = PersonalizationModelWorker(database: database)
+        let worker = PersonalizationModelWorker(
+            database: database,
+            collectionConsentGeneration: collectionConsentGeneration
+        )
         modelWorker = worker
         enqueuePersistenceOperation { [self] in
             do {
@@ -212,7 +216,9 @@ final class PersonalizationSettingsStore: ObservableObject {
     func deleteAll() {
         guard let modelWorker else { return }
         invalidateDerivedPersonalization()
-        completionEpisodeDeleteAllBoundary = Date()
+        let previousBoundary = completionEpisodeDeleteAllBoundary
+        let attemptedBoundary = Date()
+        completionEpisodeDeleteAllBoundary = attemptedBoundary
         collectionGeneration &+= 1
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
@@ -233,7 +239,17 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 operationError = nil
             } catch {
-                operationError = String(describing: error)
+                if
+                    generation == collectionGeneration,
+                    completionEpisodeDeleteAllBoundary == attemptedBoundary
+                {
+                    completionEpisodeDeleteAllBoundary = previousBoundary
+                }
+                await recoverAfterFailedDestructiveOperation(
+                    error,
+                    generation: generation,
+                    modelWorker: modelWorker
+                )
             }
         }
     }
@@ -242,10 +258,13 @@ final class PersonalizationSettingsStore: ObservableObject {
         guard collectionEnabled, let modelWorker else { return }
         let policy = retentionPolicy
         let generation = collectionGeneration
+        let consentGeneration = collectionConsentGeneration
         enqueuePersistenceOperation { [self] in
             guard
                 collectionEnabled,
-                generation == collectionGeneration
+                generation == collectionGeneration,
+                consentGeneration == collectionConsentGeneration,
+                !derivedPersonalizationIsInvalidated
             else {
                 return
             }
@@ -253,7 +272,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                 let updatedModel = try await modelWorker.record(
                     capture,
                     retentionPolicy: policy,
-                    generation: generation
+                    generation: generation,
+                    consentGeneration: consentGeneration
                 )
                 guard
                     generation == collectionGeneration,
@@ -281,11 +301,14 @@ final class PersonalizationSettingsStore: ObservableObject {
         }
         let policy = retentionPolicy
         let generation = collectionGeneration
+        let consentGeneration = collectionConsentGeneration
         enqueuePersistenceOperation { [self] in
             guard
                 collectionEnabled,
                 collectDirectTyping,
-                generation == collectionGeneration
+                generation == collectionGeneration,
+                consentGeneration == collectionConsentGeneration,
+                !derivedPersonalizationIsInvalidated
             else {
                 return
             }
@@ -293,7 +316,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                 let updatedModel = try await modelWorker.record(
                     episode,
                     retentionPolicy: policy,
-                    generation: generation
+                    generation: generation,
+                    consentGeneration: consentGeneration
                 )
                 guard
                     generation == collectionGeneration,
@@ -315,10 +339,13 @@ final class PersonalizationSettingsStore: ObservableObject {
         guard collectionEnabled, let modelWorker else { return }
         let policy = retentionPolicy
         let generation = collectionGeneration
+        let consentGeneration = collectionConsentGeneration
         enqueuePersistenceOperation { [self] in
             guard
                 collectionEnabled,
-                generation == collectionGeneration
+                generation == collectionGeneration,
+                consentGeneration == collectionConsentGeneration,
+                !derivedPersonalizationIsInvalidated
             else {
                 return
             }
@@ -326,7 +353,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                 let updatedModel = try await modelWorker.record(
                     feedback,
                     retentionPolicy: policy,
-                    generation: generation
+                    generation: generation,
+                    consentGeneration: consentGeneration
                 )
                 guard
                     generation == collectionGeneration,
@@ -364,10 +392,13 @@ final class PersonalizationSettingsStore: ObservableObject {
         }
         let policy = retentionPolicy
         let generation = collectionGeneration
+        let consentGeneration = collectionConsentGeneration
         enqueuePersistenceOperation { [self] in
             guard
                 collectionEnabled,
-                generation == collectionGeneration
+                generation == collectionGeneration,
+                consentGeneration == collectionConsentGeneration,
+                !derivedPersonalizationIsInvalidated
             else {
                 return
             }
@@ -375,7 +406,8 @@ final class PersonalizationSettingsStore: ObservableObject {
                 let updatedModel = try await modelWorker.record(
                     episode,
                     retentionPolicy: policy,
-                    generation: generation
+                    generation: generation,
+                    consentGeneration: consentGeneration
                 )
                 guard
                     generation == collectionGeneration,
@@ -434,7 +466,11 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 refresh()
             } catch {
-                operationError = String(describing: error)
+                await recoverAfterFailedDestructiveOperation(
+                    error,
+                    generation: generation,
+                    modelWorker: modelWorker
+                )
             }
         }
     }
@@ -442,8 +478,11 @@ final class PersonalizationSettingsStore: ObservableObject {
     func deleteApplicationHistory(bundleIdentifier: String) {
         guard let modelWorker else { return }
         invalidateDerivedPersonalization()
+        let previousBoundary =
+            completionEpisodeApplicationDeletionBoundaries[bundleIdentifier]
+        let attemptedBoundary = Date()
         completionEpisodeApplicationDeletionBoundaries[bundleIdentifier] =
-            Date()
+            attemptedBoundary
         collectionGeneration &+= 1
         let generation = collectionGeneration
         enqueuePersistenceOperation { [self] in
@@ -462,7 +501,21 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 refresh()
             } catch {
-                operationError = String(describing: error)
+                if
+                    generation == collectionGeneration,
+                    completionEpisodeApplicationDeletionBoundaries[
+                        bundleIdentifier
+                    ] == attemptedBoundary
+                {
+                    completionEpisodeApplicationDeletionBoundaries[
+                        bundleIdentifier
+                    ] = previousBoundary
+                }
+                await recoverAfterFailedDestructiveOperation(
+                    error,
+                    generation: generation,
+                    modelWorker: modelWorker
+                )
             }
         }
     }
@@ -512,7 +565,11 @@ final class PersonalizationSettingsStore: ObservableObject {
                 )
                 refresh()
             } catch {
-                operationError = String(describing: error)
+                await recoverAfterFailedDestructiveOperation(
+                    error,
+                    generation: generation,
+                    modelWorker: modelWorker
+                )
             }
         }
     }
@@ -529,6 +586,36 @@ final class PersonalizationSettingsStore: ObservableObject {
     ) {
         guard generation == collectionGeneration else { return }
         derivedPersonalizationIsInvalidated = false
+    }
+
+    private func recoverAfterFailedDestructiveOperation(
+        _ originalError: Error,
+        generation: UInt64,
+        modelWorker: PersonalizationModelWorker
+    ) async {
+        let originalErrorDescription = String(describing: originalError)
+        guard generation == collectionGeneration else {
+            operationError = originalErrorDescription
+            return
+        }
+        do {
+            languageModel = try await modelWorker.prepare()
+            voiceAssessment = await modelWorker.voiceAssessmentSnapshot()
+            if let database {
+                let statistics = try await database.storageStatistics()
+                storedEventCount = statistics.eventCount
+                encryptedPayloadBytes = statistics.encryptedPayloadBytes
+            }
+            finishDerivedPersonalizationInvalidation(
+                generation: generation
+            )
+            operationError = originalErrorDescription
+        } catch {
+            operationError =
+                originalErrorDescription
+                + "; recovery failed: "
+                + String(describing: error)
+        }
     }
 
     func report(error: Error) {
@@ -636,12 +723,17 @@ actor PersonalizationModelWorker {
     private var voiceSourceEventCount = 0
     private var voiceSources: [VoiceSource] = []
     private var collectionGeneration: UInt64 = 0
+    private var collectionConsentGeneration: UInt64
     private var collectionOperationIsRunning = false
     private var collectionOperationWaiters:
         [CheckedContinuation<Void, Never>] = []
 
-    init(database: PersonalizationDatabase) {
+    init(
+        database: PersonalizationDatabase,
+        collectionConsentGeneration: UInt64 = 0
+    ) {
         self.database = database
+        self.collectionConsentGeneration = collectionConsentGeneration
     }
 
     func prepare() async throws -> PersonalLanguageModel {
@@ -657,18 +749,28 @@ actor PersonalizationModelWorker {
         return model
     }
 
-    func advanceCollectionGeneration(to generation: UInt64) {
-        collectionGeneration = max(collectionGeneration, generation)
+    func advanceConsentGeneration(to generation: UInt64) {
+        collectionConsentGeneration = max(
+            collectionConsentGeneration,
+            generation
+        )
     }
 
     func record(
         _ capture: AcceptedSuggestionCapture,
         retentionPolicy: PersonalizationRetentionPolicy,
-        generation: UInt64
+        generation: UInt64,
+        consentGeneration: UInt64 = 0
     ) async throws -> PersonalLanguageModel {
         await acquireCollectionOperation()
         defer { releaseCollectionOperation() }
-        guard generation == collectionGeneration else { return model }
+        guard
+            generation == collectionGeneration,
+            consentGeneration >= collectionConsentGeneration
+        else {
+            return model
+        }
+        collectionConsentGeneration = consentGeneration
         try await database.record(capture)
         model.ingest(capture)
         try await database.saveLanguageModel(model)
@@ -690,11 +792,18 @@ actor PersonalizationModelWorker {
     func record(
         _ episode: WritingEpisodeCapture,
         retentionPolicy: PersonalizationRetentionPolicy,
-        generation: UInt64
+        generation: UInt64,
+        consentGeneration: UInt64 = 0
     ) async throws -> PersonalLanguageModel {
         await acquireCollectionOperation()
         defer { releaseCollectionOperation() }
-        guard generation == collectionGeneration else { return model }
+        guard
+            generation == collectionGeneration,
+            consentGeneration >= collectionConsentGeneration
+        else {
+            return model
+        }
+        collectionConsentGeneration = consentGeneration
         try await database.record(episode)
         model.ingest(episode)
         try await database.saveLanguageModel(model)
@@ -715,11 +824,18 @@ actor PersonalizationModelWorker {
     func record(
         _ feedback: CompletionFeedbackCapture,
         retentionPolicy: PersonalizationRetentionPolicy,
-        generation: UInt64
+        generation: UInt64,
+        consentGeneration: UInt64 = 0
     ) async throws -> PersonalLanguageModel {
         await acquireCollectionOperation()
         defer { releaseCollectionOperation() }
-        guard generation == collectionGeneration else { return model }
+        guard
+            generation == collectionGeneration,
+            consentGeneration >= collectionConsentGeneration
+        else {
+            return model
+        }
+        collectionConsentGeneration = consentGeneration
         try await database.record(feedback)
         model.ingest(feedback)
         try await database.saveLanguageModel(model)
@@ -733,11 +849,18 @@ actor PersonalizationModelWorker {
     func record(
         _ episode: CompletionEpisodeCapture,
         retentionPolicy: PersonalizationRetentionPolicy,
-        generation: UInt64
+        generation: UInt64,
+        consentGeneration: UInt64 = 0
     ) async throws -> PersonalLanguageModel {
         await acquireCollectionOperation()
         defer { releaseCollectionOperation() }
-        guard generation == collectionGeneration else { return model }
+        guard
+            generation == collectionGeneration,
+            consentGeneration >= collectionConsentGeneration
+        else {
+            return model
+        }
+        collectionConsentGeneration = consentGeneration
         try await database.record(episode)
         let removed = try await database.enforceRetention(retentionPolicy)
         if removed > 0 {
