@@ -1108,13 +1108,14 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         in authoritativeText: String,
         beforeUTF16Offset upperOffset: Int
     ) -> Int? {
+        let minimumAnchorLength = 6
         let predictedUnits = Array(predictedPrefix.utf16)
         let authoritativeUnits = Array(authoritativeText.utf16)
         let maximumLength = min(predictedUnits.count, 128)
-        guard maximumLength >= 2 else { return nil }
+        guard maximumLength >= minimumAnchorLength else { return nil }
         for length in stride(
             from: maximumLength,
-            through: 2,
+            through: minimumAnchorLength,
             by: -1
         ) {
             let predictedSelection = UTF16Selection(
@@ -1150,13 +1151,14 @@ public struct PersonalLanguageModel: Codable, Sendable, Equatable {
         in authoritativeText: String,
         afterUTF16Offset lowerOffset: Int
     ) -> Int? {
+        let minimumAnchorLength = 6
         let predictedUnits = Array(predictedSuffix.utf16)
         let authoritativeUnits = Array(authoritativeText.utf16)
         let maximumLength = min(predictedUnits.count, 128)
-        guard maximumLength >= 2 else { return nil }
+        guard maximumLength >= minimumAnchorLength else { return nil }
         for length in stride(
             from: maximumLength,
-            through: 2,
+            through: minimumAnchorLength,
             by: -1
         ) {
             let predictedSelection = UTF16Selection(
